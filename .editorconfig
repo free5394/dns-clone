@@ -13,6 +13,9 @@ insert_final_newline = true   # 文件末尾插入一个新行[reference:33]
 [*.{js,ts,jsx,tsx}]
 indent_size = 4
 
+[*.{json,yaml,yml}]
+indent_size = 2
+
 # 针对 Markdown 文件的特殊规则[reference:34]
 [*.md]
 trim_trailing_whitespace = false
