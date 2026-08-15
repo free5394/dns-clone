@@ -1,0 +1,41 @@
+# idea
+.idea/
+.history/
+.vscode/
+.trae/
+
+# claude（整体排除，避免 scheduled_tasks.lock、plans/、skills/ 等本地状态误提交）
+.claude/
+.omo
+
+# 锁文件
+*.lock
+
+# 临时文件
+tmp/
+
+# 日志
+logs/
+
+# ─── Node / wrangler 本地开发 ───
+node_modules/
+
+# wrangler 本地持久化与构建产物
+.wrangler/
+dist/
+
+# 本地 secrets （勿提交；模板见 .dev.vars.example）
+*.vars
+*.vars.*
+
+# 本地环境变量 （勿提交；模板见 .env.example）
+!.env.example
+*.env
+*.env.*
+
+# wrangler types 生成的环境类型（由 pnpm cf-typegen 重新生成）
+worker-configuration.d.ts
+
+# 测试覆盖率产物（阶段 F）
+coverage/
+

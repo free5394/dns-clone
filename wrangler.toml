@@ -1,0 +1,24 @@
+#:schema node_modules/wrangler/config-schema.json
+# dns-clone Worker 配置
+# 由 wrangler dev / wrangler types / wrangler deploy 共同读取
+# 注意：database_id 占位符 e4b233b0-1234-5678-9012-deadbeefcafe 必须在部署前替换为真实 UUID，否则 scripts/predeploy.cjs 会拦截
+
+name = "dns-clone"
+main = "src/index.ts"
+compatibility_date = "2026-01-15"
+keep_vars = true
+
+# 启用 Workers 观测能力（Tail Logs / Analytics）
+[observability]
+enabled = true
+
+# 每分钟触发一次 scheduled handler，在 settings.next_sync_task 控制的两种批任务间轮转
+[triggers]
+crons = ["* * * * *"]
+
+# 唯一绑定：D1 数据库（env.WUYA）。控制台配置依赖该绑定名，不要修改
+[[d1_databases]]
+binding = "WUYA"
+database_name = "wuya-db"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+migrations_dir = "src/db/migrations"

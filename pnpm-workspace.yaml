@@ -1,0 +1,5 @@
+# pnpm 11 配置文件
+# 允许 esbuild / workerd 的原生构建脚本（wrangler 运行必需）
+allowBuilds:
+  esbuild: true
+  workerd: true
