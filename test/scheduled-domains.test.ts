@@ -104,6 +104,25 @@ describe("syncScheduledDomains batch execution", () => {
         expect(row.n).toBe(10);
     });
 
+    it("negative BATCH_SIZE is clamped to default 10, not unlimited (I5)", async () => {
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('BATCH_SIZE', '-3') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run();
+        // 造 12 条：旧实现 LIMIT -3 在 SQLite 里=无上限 → 12 条全处理；
+        // 钳制后默认 10 → 恰好 10 条 success、2 条 pending
+        await seedDomains(Array.from({ length: 12 }, (_, i) => ({ target: `neg${i}.example.com` })));
+        stubHappyPathFetch();
+
+        await syncScheduledDomains(env);
+
+        const { results } = await env.WUYA.prepare(
+            "SELECT last_sync_status, COUNT(*) as n FROM domains GROUP BY last_sync_status"
+        ).all() as { results: { last_sync_status: string; n: number }[] };
+        const byStatus = Object.fromEntries(results.map((r) => [r.last_sync_status, r.n]));
+        expect(byStatus.success).toBe(10);
+        expect(byStatus.pending).toBe(2);
+    });
+
     it("failure-first: failed domains picked before pending ones", async () => {
         await env.WUYA.prepare(
             "INSERT INTO settings (key, value) VALUES ('BATCH_SIZE', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"

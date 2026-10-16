@@ -10,6 +10,7 @@ import { FETCH_STRATEGIES } from '../sync/ip-sources.ts';
 import { syncAllDomains, syncSystemDomains, syncSingleDomain } from '../sync/domains.ts';
 import { syncSingleIpSource, syncAllIpSources } from '../sync/ip-sources.ts';
 import { assertSafeHttpUrl } from '../util/url-safety.ts';
+import { MAX_BATCH_SIZE } from '../util/batch-size.ts';
 
 /** 允许写入的 settings 白名单 */
 const ALLOWED_SETTINGS_KEYS = new Set([
@@ -19,6 +20,7 @@ const ALLOWED_SETTINGS_KEYS = new Set([
     'GITHUB_OWNER',
     'GITHUB_REPO',
     'THREE_NETWORK_SOURCE',
+    'BATCH_SIZE',
 ]);
 
 /** 检测 D1/SQLite UNIQUE 约束违例（D1 同时支持 message 与 code 两种错误呈现方式） */
@@ -168,6 +170,13 @@ async function apiSetSettings(request: Request, db: D1Database): Promise<Respons
             settings[key] = value;
         } else {
             settings[key] = String(value);
+        }
+        // I5: BATCH_SIZE 必须是 1..100 的整数——负数在 SQLite LIMIT 中等于无上限
+        if (key === 'BATCH_SIZE') {
+            const n = Number(settings[key]);
+            if (settings[key] === null || !Number.isInteger(n) || n < 1 || n > MAX_BATCH_SIZE) {
+                return jsonResponse({ error: `BATCH_SIZE 必须为 1 到 ${MAX_BATCH_SIZE} 之间的整数。` }, 400);
+            }
         }
     }
 

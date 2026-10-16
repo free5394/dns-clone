@@ -8,6 +8,7 @@ import { createLogStreamResponse } from '../util/sse.ts';
 import { runWithOptionalLog } from '../util/run-with-log.ts';
 import { fetchWithTimeout } from '../util/fetch.ts';
 import { assertSafeHttpUrl } from '../util/url-safety.ts';
+import { normalizeBatchSize } from '../util/batch-size.ts';
 
 interface IpSourceRow {
     id: number;
@@ -54,8 +55,8 @@ type LogFn = (msg: string) => void;
 
 /** 定时任务：批量同步 IP 源（失败优先） */
 export async function syncScheduledIpSources(env: { WUYA: D1Database }): Promise<void> {
-    // FIX-12: BATCH_SIZE 由 settings 配置（默认 10；非法值回退）
-    const BATCH_SIZE = Number(await getSetting(env.WUYA, 'BATCH_SIZE')) || 10;
+    // FIX-12: BATCH_SIZE 由 settings 配置（默认 10；非法值回退）；I5: 负数钳制为默认值
+    const BATCH_SIZE = normalizeBatchSize(await getSetting(env.WUYA, 'BATCH_SIZE'));
     const db = env.WUYA;
     const log: LogFn = (msg) => console.log(beijingTimeLog(msg));
 

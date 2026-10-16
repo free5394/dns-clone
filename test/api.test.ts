@@ -300,6 +300,35 @@ describe("POST /api/settings (Task 2.6 白名单 + 配对验证)", () => {
         const row = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'THREE_NETWORK_SOURCE'").first();
         expect(row).toBeNull();
     });
+
+    it("accepts BATCH_SIZE within 1-100 and persists it (I5)", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/settings", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({ BATCH_SIZE: 25 }),
+        });
+        expect(res.status).toBe(200);
+        const row = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'BATCH_SIZE'").first() as { value: string } | null;
+        expect(row?.value).toBe("25");
+    });
+
+    it("rejects invalid BATCH_SIZE values (I5)", async () => {
+        const cookie = await loginAndGetCookie();
+        // 同文件用例共享 D1 状态：清掉前序用例写入的值，保证"不得落库"断言干净
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = 'BATCH_SIZE'").run();
+        for (const bad of [0, -5, 101, "abc", 1.5]) {
+            const res = await SELF.fetch("https://example.com/api/settings", {
+                method: "POST",
+                headers: { Cookie: cookie, "Content-Type": "application/json" },
+                body: JSON.stringify({ BATCH_SIZE: bad }),
+            });
+            expect(res.status, `BATCH_SIZE=${JSON.stringify(bad)} 应被拒绝`).toBe(400);
+        }
+        // 被拒值不得落库
+        const row = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'BATCH_SIZE'").first();
+        expect(row).toBeNull();
+    });
 });
 
 describe("GET /api/settings (Task 2.5 敏感字段过滤)", () => {
