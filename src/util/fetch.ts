@@ -54,16 +54,3 @@ export async function fetchWithRetry(url: string, init: RequestInit = {}, retrie
     }
     throw lastError;
 }
-
-/**
- * 安全解析 JSON 响应（非 2xx 抛错）
- * @param url 请求地址
- * @param init fetch init 选项
- */
-export async function safeJson(url: string, init: RequestInit = {}, timeoutMs = 10000): Promise<unknown> {
-    const response = await fetchWithTimeout(url, init, timeoutMs);
-    if (!response.ok) {
-        throw new Error(`请求失败: HTTP ${response.status} (${url})`);
-    }
-    return await response.json();
-}

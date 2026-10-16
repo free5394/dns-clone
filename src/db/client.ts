@@ -7,21 +7,6 @@ export async function queryAll<T = unknown>(db: D1Database, sql: string, ...bind
     return results as T[];
 }
 
-/** 查询首行 */
-export async function queryFirst(db: D1Database, sql: string, ...bind: unknown[]) {
-    return await db.prepare(sql).bind(...bind).first();
-}
-
-/** 执行写操作，返回 D1Result（含 meta.changes —— 修正 B1 的正确形态） */
-export async function exec(db: D1Database, sql: string, ...bind: unknown[]) {
-    return await db.prepare(sql).bind(...bind).run();
-}
-
-/** 批量执行（D1 事务语义） */
-export async function batch(db: D1Database, statements: D1PreparedStatement[]) {
-    return await db.batch(statements);
-}
-
 /** 读取单个 setting */
 export async function getSetting(db: D1Database, key: string): Promise<string | null> {
     return (await db.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first("value")) as string | null;

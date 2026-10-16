@@ -1,7 +1,7 @@
 // api.ts — API 路由层（handleApiRequest + 所有 /api/* 处理函数）
 // 从 index.legacy.js 提取（原 104-302、227-302、1085-1148 行区域）
 
-import { getSetting, setSetting, getFullSettings, getCfApiSettings, getSafeSettings } from '../db/client.ts';
+import { getSetting, setSetting, getCfApiSettings, getSafeSettings } from '../db/client.ts';
 import { ensureInitialData } from '../db/migrations.ts';
 import { jsonResponse, getCookie } from '../util/http.ts';
 import { hashPassword, isAuthenticated, verifyPassword } from '../util/auth.ts';
