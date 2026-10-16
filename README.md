@@ -586,6 +586,10 @@ DELETE FROM login_attempts WHERE ip = '你的IP';
 2.  确认数据库已选中并保存部署。
 3.  仍未解决，查看 Worker 日志（Cloudflare Dashboard → 你的 Worker → Logs），寻找 `数据库初始化失败` 字样。
 
+### 日志报 `no such table: settings`（旧版本代码）
+
+旧版本存在初始化自举缺陷：全新空库上，首次访问在读取迁移门控时就会因 `settings` 表不存在而失败，导致每个请求 500，且无法自愈。更新到最新代码后，首次访问会自动建表（幂等 DDL），无需手动干预。仍停留在旧版本的话，可临时在 D1 控制台执行仓库内 `src/db/migrations/0001_initial.sql` 完成建表。
+
 ### CLI 部署报错 `database_id 仍为占位符`
 
 `wrangler.toml` 中 `database_id` 没替换。先运行 `pnpm dlx wrangler d1 create wuya-db` 拿到真实 UUID，填入后重新 `pnpm deploy`。
