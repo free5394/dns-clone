@@ -61,6 +61,21 @@ export async function getCurrentGitHubContent({ token, owner, repo, path, log }:
     }
 }
 
+/**
+ * 大内容分块 base64 编码（UTF-8 安全）。
+ * 一次性 String.fromCharCode(...bytes) 的实参数有栈上限（约 65k），
+ * IP 聚合文件达数万字节时会抛 RangeError，必须分块拼接。
+ */
+function encodeBase64Utf8(content: string): string {
+    const bytes = new TextEncoder().encode(content);
+    let binary = '';
+    const CHUNK_SIZE = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK_SIZE));
+    }
+    return btoa(binary);
+}
+
 /** 更新/创建 GitHub 文件（内容 base64 编码，UTF-8 安全） */
 export async function updateFileOnGitHub({ token, owner, repo, path, content, message, log }: {
     token: string;
@@ -85,7 +100,7 @@ export async function updateFileOnGitHub({ token, owner, repo, path, content, me
 
     const body = JSON.stringify({
         message,
-        content: btoa(String.fromCharCode(...new TextEncoder().encode(content))),
+        content: encodeBase64Utf8(content),
         sha
     });
 

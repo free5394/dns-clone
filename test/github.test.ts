@@ -143,4 +143,24 @@ describe("updateFileOnGitHub", () => {
         const encoded = JSON.parse(putCall![1]!.body as string).content as string;
         expect(decodeURIComponent(escape(atob(encoded)))).toBe("优选 IP 列表");
     });
+
+    it("large content (200KB) encodes without RangeError and round-trips", async () => {
+        const spy = mockFetch((url, init) => {
+            if (url === "https://api.github.com/repos/owner/repo") return json({ name: "repo" });
+            if (init?.method === "PUT") return json({});
+            return json({ message: "Not Found" }, 404);
+        });
+
+        // 200,000 字节远超 V8 spread 实参上限（约 65k）：旧实现 String.fromCharCode(...bytes) 必抛 RangeError
+        const largeContent = "1.2.3.4\n".repeat(25000);
+        await updateFileOnGitHub({
+            token: "token", owner: "owner", repo: "repo", path: "big.txt",
+            content: largeContent, message: "big", log: () => {},
+        });
+
+        const putCall = spy.mock.calls.find((c) => c[1]?.method === "PUT");
+        expect(putCall).toBeDefined();
+        const encoded = JSON.parse(putCall![1]!.body as string).content as string;
+        expect(atob(encoded)).toBe(largeContent);
+    });
 });
