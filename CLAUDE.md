@@ -147,3 +147,17 @@ pnpm deploy
 - `wrangler.toml` 是部署相关真相之源（cron 表达式、绑定名、compatibility_date）；改这些前先核对 README 同步。
 - `src/db/migrations.ts` 是表结构的真相之源；新增字段时**直接改 `expectedSchemas`**（idempotent DDL），不要手工 ALTER。
 - `vitest.config.ts` 是测试环境配置真相之源；改动需保持 `maxWorkers: 1`（D1 SQLite 锁约束）。
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on `free5394/dns-clone` (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five canonical roles, label strings equal to their names (`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+single-context（根目录一份 `GLOSSARY.md`，架构决定放 `docs/adr/`）。See `docs/agents/domain.md`.
