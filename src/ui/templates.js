@@ -288,6 +288,13 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
 
     const ipSourceCards = ipSources.map(s => {
         const fullUrl = `${origin}/${s.github_path}`;
+        // Suggestion ⑧: 坏 url 行不得让整页抛错（域名卡片已有同样兜底）
+        let sourceHost;
+        try {
+            sourceHost = new URL(s.url).hostname;
+        } catch (e) {
+            sourceHost = s.url || '解析错误';
+        }
         return `
         <div class="public-card" data-copy-content="${escapeHtml(fullUrl)}">
             <div class="public-card-header">
@@ -296,7 +303,7 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
             </div>
             <div class="public-card-content">${escapeHtml(fullUrl)}</div>
             <div class="public-card-footer">
-                <i class="fa-solid fa-link fa-xs"></i> <span>来源: ${escapeHtml(new URL(s.url).hostname)}</span>
+                <i class="fa-solid fa-link fa-xs"></i> <span>来源: ${escapeHtml(sourceHost)}</span>
             </div>
         </div>`;
     }).join('');

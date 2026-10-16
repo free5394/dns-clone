@@ -91,6 +91,21 @@ describe("fetchIpsFromSource multi-source fallback", () => {
 
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(row.id).run();
     });
+
+    it("filters out pseudo-IPv4 with octets > 255 (Suggestion ③)", async () => {
+        vi.stubGlobal("fetch", vi.fn(async () =>
+            new Response("300.1.1.1\n1.1.1.1\n999.999.999.999\n256.0.0.1", { status: 200 })
+        ));
+        const ips = await fetchIpsFromSource({
+            id: 1,
+            url: "https://example.com/mixed.txt",
+            github_path: "mixed.txt",
+            commit_message: "update",
+            fetch_strategy: "direct_regex",
+        });
+        // 只有合法 IPv4 入选：越界段（999/300/256）不得发布给订阅器
+        expect(ips).toEqual(["1.1.1.1"]);
+    });
 });
 
 describe("syncDomainLogic writes back to D1", () => {

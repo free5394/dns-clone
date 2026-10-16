@@ -21,14 +21,19 @@ interface IpSourceRow {
 
 type StrategyFn = (url: string) => Promise<string[]>;
 
+/** 提取文本中的合法 IPv4（Suggestion ③：段值 ≤255，防止 999.x.x.x 伪 IP 发布给订阅器） */
+function extractIpv4(text: string): string[] {
+    const candidates = text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
+    return [...new Set(candidates.filter(ip => ip.split('.').every(seg => Number(seg) <= 255)))];
+}
+
 /** 抓取策略表 */
 export const FETCH_STRATEGIES: Record<string, StrategyFn> = {
     direct_regex: async (url) => {
         const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 15000);
         if (!res.ok) throw new Error(`HTTP error ${res.status}`);
         const text = await res.text();
-        const ips = text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
-        return [...new Set(ips)];
+        return extractIpv4(text);
     },
     phantomjs_cloud: async (url) => {
         const res = await fetchWithTimeout('https://PhantomJsCloud.com/api/browser/v2/a-demo-key-with-low-quota-per-ip-address/', {
@@ -38,16 +43,14 @@ export const FETCH_STRATEGIES: Record<string, StrategyFn> = {
         }, 20000);
         if (!res.ok) throw new Error(`PhantomJsCloud API error ${res.status}`);
         const text = await res.text();
-        const ips = text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
-        return [...new Set(ips)];
+        return extractIpv4(text);
     },
     proxy_codetabs: async (url) => {
         const proxyUrl = 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url);
         const res = await fetchWithTimeout(proxyUrl, {}, 15000);
         if (!res.ok) throw new Error(`CodeTabs Proxy error ${res.status}`);
         const text = await res.text();
-        const ips = text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
-        return [...new Set(ips)];
+        return extractIpv4(text);
     },
 };
 

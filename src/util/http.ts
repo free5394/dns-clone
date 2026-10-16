@@ -9,20 +9,14 @@ export function jsonResponse(data: unknown, status = 200, headers: Record<string
     });
 }
 
-/** 统一 JSON 错误响应 */
-export function jsonError(message: string, status = 400, details?: unknown): Response {
-    const body: Record<string, unknown> = { error: message };
-    if (details !== undefined) body.details = details;
-    return jsonResponse(body, status);
-}
-
-/** 从 Cookie 头中按 key 提取 value（找不到返回 null） */
+/** 从 Cookie 头中按 key 提取 value（找不到返回 null；值按首个 = 之后整体保留，Suggestion ⑦） */
 export function getCookie(request: Request, name: string): string | null {
     const header = request.headers.get('Cookie');
     if (!header) return null;
     for (const raw of header.split(';')) {
-        const [key, value] = raw.trim().split('=');
-        if (key === name) return value ?? null;
+        const eq = raw.indexOf('=');
+        if (eq < 0) continue;
+        if (raw.slice(0, eq).trim() === name) return raw.slice(eq + 1).trim() || null;
     }
     return null;
 }

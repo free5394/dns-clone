@@ -75,6 +75,16 @@ describe("getPublicHomepage HTML 转义 (P0-2)", () => {
         expect(html).toContain("未知线路");
         expect(html).toContain("N/A");
     });
+    it("ipSource.url 非法时安全降级不抛错 (Suggestion ⑧)", () => {
+        const ipSources = [{
+            url: "not a valid url",
+            github_path: "ok.txt",
+            last_synced_time: "2026-01-01T00:00:00Z",
+        }];
+        // 旧实现 new URL(s.url).hostname 直接抛 TypeError → 整个公开首页 500
+        const html = getPublicHomepage(requestUrl, [], ipSources, "三网聚合", false);
+        expect(html).toContain("ok.txt");
+    });
 });
 
 describe("getDashboardPage 仪表盘转义 (I2)", () => {
