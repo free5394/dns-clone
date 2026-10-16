@@ -95,17 +95,27 @@ export async function handleApiRequest(request: Request, env: { WUYA: D1Database
 }
 
 async function apiSetup(request: Request, db: D1Database): Promise<Response> {
-  const passwordSet = await getSetting(db, 'ADMIN_PASSWORD_HASH');
-  if (passwordSet) return jsonResponse({ error: '应用已经初始化。' }, 403);
-  const { password } = await request.json() as { password?: string };
-  if (!password || password.length < 8 || password.length > 1024) return jsonResponse({ error: '密码长度必须为 8 到 1024 个字符之间。' }, 400);
-  const salt = crypto.randomUUID();
-  const hash = await hashPassword(password, salt);
-  await db.batch([
-      db.prepare("INSERT INTO settings (key, value) VALUES ('ADMIN_PASSWORD_HASH', ?)").bind(hash),
-      db.prepare("INSERT INTO settings (key, value) VALUES ('PASSWORD_SALT', ?)").bind(salt),
-  ]);
-  return jsonResponse({ success: true });
+    const { password } = await request.json() as { password?: string };
+    if (!password || password.length < 8 || password.length > 1024) return jsonResponse({ error: '密码长度必须为 8 到 1024 个字符之间。' }, 400);
+
+    // I4: 原子占用——先条件插入占位哈希（仅当凭据尚不存在），成功者才覆盖真哈希。
+    // 旧实现 check-then-act 在并发下两者都过检查 → 后者 UNIQUE 冲突 500；
+    // 现在落败方 changes=0，直接 403，且不存在半途状态。
+    const salt = crypto.randomUUID();
+    const hash = await hashPassword(password, salt);
+    const placeholder = "pbkdf2$100000$pending$pending";
+    const claim = await db.prepare(
+        "INSERT INTO settings (key, value) SELECT 'ADMIN_PASSWORD_HASH', ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'ADMIN_PASSWORD_HASH')"
+    ).bind(placeholder).run();
+    if (claim.meta.changes === 0) {
+        return jsonResponse({ error: '应用已经初始化。' }, 403);
+    }
+
+    await db.batch([
+        db.prepare("UPDATE settings SET value = ? WHERE key = 'ADMIN_PASSWORD_HASH'").bind(hash),
+        db.prepare("INSERT INTO settings (key, value) VALUES ('PASSWORD_SALT', ?)").bind(salt),
+    ]);
+    return jsonResponse({ success: true });
 }
 
 async function apiLogin(request: Request, db: D1Database): Promise<Response> {

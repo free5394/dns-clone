@@ -2,6 +2,7 @@
 // 覆盖 plan v2 用例表 + fix-plan 14 项 findings 回归
 import { SELF, env } from "cloudflare:test";
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
+import { handleApiRequest } from "../src/routes/api.ts";
 
 // 种子密码（见 apply-migrations.ts）
 const PASSWORD = "test-password-123";
@@ -48,6 +49,77 @@ describe("/api/login", () => {
         expect(setCookie).toContain("Max-Age=86400");
     });
 });
+
+describe("/api/setup 原子占用 (I4)", () => {
+    /**
+     * 带屏障的 D1 边界包装（技能准则：数据库边界允许 mock）。
+     * 用途：workerd 把并发请求串行化，跨请求的 check→act 竞态无法自然复现；
+     * 这里让 apiSetup 的凭据 SELECT 等待两个请求都到达后才放行，
+     * 把竞态窗口确定性地打开——旧实现两者都通过检查 → 后者主键冲突 500。
+     */
+    function makeRacyDb(realDb: D1Database, expectedArrivals = 2) {
+        let arrivals = 0;
+        let release: () => void = () => {};
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const wrapStmt = (stmt: D1PreparedStatement): D1PreparedStatement => ({
+            bind: (...vals: unknown[]) => wrapStmt(stmt.bind(...(vals as Parameters<D1PreparedStatement["bind"]>))),
+            first: async (...col: unknown[]) => {
+                arrivals += 1;
+                if (arrivals >= expectedArrivals) release();
+                await gate;
+                return await (stmt.first as (...a: unknown[]) => Promise<unknown>)(...col);
+            },
+            all: () => stmt.all(),
+            raw: () => stmt.raw(),
+            run: () => stmt.run(),
+        } as unknown as D1PreparedStatement);
+        return new Proxy(realDb, {
+            get(target, prop) {
+                if (prop === "prepare") {
+                    return (sql: string) => {
+                        const s = target.prepare(sql);
+                        // 只门控"读凭据"的 SELECT——即竞态读侧
+                        return /SELECT value FROM settings WHERE key = \?/.test(sql) ? wrapStmt(s) : s;
+                    };
+                }
+                return Reflect.get(target, prop);
+            },
+        }) as unknown as D1Database;
+    }
+
+    it("concurrent setup: exactly one 200, the other 403, never 500", async () => {
+        const originalHash = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'ADMIN_PASSWORD_HASH'").first() as { value: string };
+        await env.WUYA.prepare("DELETE FROM settings WHERE key IN ('ADMIN_PASSWORD_HASH', 'PASSWORD_SALT')").run();
+
+        const racyEnv = { WUYA: makeRacyDb(env.WUYA) };
+        const setupReq = (password: string) =>
+            new Request("https://example.com/api/setup", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ password }),
+            });
+
+        try {
+            const [a, b] = await Promise.all([
+                handleApiRequest(setupReq("attacker-pass-123"), racyEnv),
+                handleApiRequest(setupReq("owner-pass-456"), racyEnv),
+            ]);
+
+            const statuses = [a.status, b.status].sort();
+            // 契约：恰一成功 + 一明确拒绝；旧实现（check-then-act）下 loser 是 500（主键冲突冒泡）
+            expect(statuses).toEqual([200, 403]);
+
+            const rows = await env.WUYA.prepare("SELECT COUNT(*) as n FROM settings WHERE key = 'ADMIN_PASSWORD_HASH'").first() as { n: number };
+            expect(rows.n).toBe(1);
+        } finally {
+            await env.WUYA.batch([
+                env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('ADMIN_PASSWORD_HASH', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(originalHash.value),
+                env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('PASSWORD_SALT', 'test-salt') ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
+            ]);
+        }
+    });
+});
+
 
 describe("/api/login 限流 (FIX-05)", () => {
     // 每个测试前清空 login_attempts 与 sessions，避免累计状态污染
