@@ -75,12 +75,18 @@ export async function initializeAndMigrateDatabase(env: { WUYA: D1Database }): P
         }
     }
 
-    const { token, zoneId } = await getCfApiSettings(db);
-    if (!token || !zoneId) return;
-
     // 索引与清理：登录尝试表 + 索引（计划 FIX-05）
+    // I1：必须在 CF 凭据检查之前执行——未配置凭据的实例也需要索引与 login_attempts 清理
     await db.prepare("CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_time ON login_attempts(ip, attempted_at)").run();
     await db.prepare("DELETE FROM login_attempts WHERE attempted_at < datetime('now', '-1 hour')").run();
+
+    // 记录本次迁移时间，供下次门控使用
+    // I1：门控写入不得依赖 CF 凭据，否则未配置凭据时 isStale 恒真，每请求重跑全量 DDL
+    await setSetting(db, 'last_migrated_at', new Date().toISOString());
+
+    // invalid domain 修复依赖 CF API（读取 zone 名），仅在有凭据时执行
+    const { token, zoneId } = await getCfApiSettings(db);
+    if (!token || !zoneId) return;
 
     const invalidDomains = await queryAll<{ id: number; target_domain: string }>(
         db,
@@ -100,9 +106,6 @@ export async function initializeAndMigrateDatabase(env: { WUYA: D1Database }): P
             console.error("Failed to fix invalid domain entries:", e instanceof Error ? e.message : e);
         }
     }
-
-    // 记录本次迁移时间，供下次门控使用
-    await setSetting(db, 'last_migrated_at', new Date().toISOString());
 }
 
 /** 初始化默认数据（IP 源 + 系统域名），在配置 CF 凭据后调用 */
