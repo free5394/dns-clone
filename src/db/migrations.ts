@@ -14,9 +14,15 @@ export async function initializeAndMigrateDatabase(env: { WUYA: D1Database }): P
     const db = env.WUYA;
 
     // P1-8 门控：上次迁移在 24h 内则跳过，避免每请求执行整套 DDL
-    const lastMigratedAt = await getSetting(db, 'last_migrated_at');
-    const isFresh = !lastMigratedAt;
-    const isStale = isFresh || (Date.now() - new Date(lastMigratedAt).getTime()) > 24 * 60 * 60 * 1000;
+    // FIX-19: 全新空库上 settings 表尚不存在，门控读取必然抛错且发生在建表 DDL 之前，
+    // 导致自举死锁（首次访问永远 500）。读失败视为全新库，落入下方幂等 DDL 自举。
+    let lastMigratedAt: string | null = null;
+    try {
+        lastMigratedAt = await getSetting(db, 'last_migrated_at');
+    } catch {
+        lastMigratedAt = null;
+    }
+    const isStale = !lastMigratedAt || (Date.now() - new Date(lastMigratedAt).getTime()) > 24 * 60 * 60 * 1000;
     if (!isStale) return;
 
     const expectedSchemas: Record<string, string[]> = {
