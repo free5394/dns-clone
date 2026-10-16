@@ -9,6 +9,13 @@ function escapeHtml(s) {
     }[c]));
 }
 
+// 脚本上下文 JSON 安全化（I2）：JSON.stringify 不转义 <，
+// 值里含 </script> 会提前闭合 <script> 标签造成注入；把 < 序列化为 \u003c，
+// 解析后仍是原字符，仅阻断标签逃逸
+function safeJsonForScript(value) {
+    return JSON.stringify(value).replace(/</g, '\\u003c');
+}
+
 /**
  * 渲染公共 HTML 骨架（DOCTYPE + PicoCSS + FontAwesome + 全局 CSS 变量）
  * 所有动态值在调用方传入前已经过 escapeHtml；本函数只做字符串拼接。
@@ -435,12 +442,12 @@ export function getDashboardPage(domains, ipSources, settings) {
         <div id="page-settings" class="page">
             <div class="page-header"><h2>系统设置</h2></div>
             <form id="settingsForm">
-                <fieldset><legend><i class="fa-brands fa-cloudflare"></i> Cloudflare API 设置</legend><label for="cfToken">API 令牌 (Token)</label><input type="password" id="cfToken" value="${settings.CF_API_TOKEN||''}"><label for="cfZoneId">区域 (Zone) ID</label><input type="text" id="cfZoneId" value="${settings.CF_ZONE_ID||''}">
+                <fieldset><legend><i class="fa-brands fa-cloudflare"></i> Cloudflare API 设置</legend><label for="cfToken">API 令牌 (Token)</label><input type="password" id="cfToken" value="${escapeHtml(settings.CF_API_TOKEN||'')}"><label for="cfZoneId">区域 (Zone) ID</label><input type="text" id="cfZoneId" value="${escapeHtml(settings.CF_ZONE_ID||'')}">
                     <details class="tutorial-details"><summary>如何获取 API 令牌和区域 ID？</summary><div class="tutorial-content"><ol><li><strong>获取 API 令牌 (Token):</strong><ol type="a"><li>登录 <a href="https://dash.cloudflare.com/" target="_blank">Cloudflare</a>，进入 <strong>“我的个人资料”</strong> &rarr; <strong>“API 令牌”</strong>。</li><li>点击 <strong>“创建令牌”</strong>，然后选择 <strong>“编辑区域 DNS”</strong> 模板并点击“使用模板”。</li><li>在 <strong>“区域资源”</strong> 部分，选择您需要操作的具体域名区域。</li><li>点击“继续以显示摘要”和“创建令牌”，复制生成的令牌。<strong>注意：令牌仅显示一次，请妥善保管。</strong></li></ol></li><li><strong>获取区域 ID (Zone ID):</strong><ol type="a"><li>在 Cloudflare 仪表板主页，点击您需要操作的域名。</li><li>在域名的“概述”页面，您可以在右下角找到 <strong>“区域 ID”</strong>，点击即可复制。</li></ol></li></ol></div></details>
                 </fieldset>
                  <fieldset><legend><i class="fa-solid fa-network-wired"></i> 三网优选IP源设置</legend><label for="threeNetworkSource">三网采集源</label><select id="threeNetworkSource"><option value="CloudFlareYes" ${settings.THREE_NETWORK_SOURCE === 'CloudFlareYes' ? 'selected' : ''}>CloudFlareYes</option><option value="api.uouin.com" ${settings.THREE_NETWORK_SOURCE === 'api.uouin.com' ? 'selected' : ''}>api.uouin.com</option><option value="wetest.vip" ${settings.THREE_NETWORK_SOURCE === 'wetest.vip' ? 'selected' : ''}>wetest.vip</option></select><small>为系统预设的电信/移动/联通域名选择IP来源。更改后保存设置将自动同步一次系统域名。</small>
                 </fieldset>
-                <fieldset><legend><i class="fa-brands fa-github"></i> GitHub API 设置</legend><label for="githubToken">GitHub Token</label><input type="password" id="githubToken" value="${settings.GITHUB_TOKEN||''}" placeholder="具有 repo 权限的 Personal Access Token"><label for="githubOwner">GitHub 用户名/组织名</label><input type="text" id="githubOwner" value="${settings.GITHUB_OWNER||''}" placeholder="例如: my-username"><label for="githubRepo">仓库名称</label><input type="text" id="githubRepo" value="${settings.GITHUB_REPO||''}" placeholder="例如: my-dns-records">
+                <fieldset><legend><i class="fa-brands fa-github"></i> GitHub API 设置</legend><label for="githubToken">GitHub Token</label><input type="password" id="githubToken" value="${escapeHtml(settings.GITHUB_TOKEN||'')}" placeholder="具有 repo 权限的 Personal Access Token"><label for="githubOwner">GitHub 用户名/组织名</label><input type="text" id="githubOwner" value="${escapeHtml(settings.GITHUB_OWNER||'')}" placeholder="例如: my-username"><label for="githubRepo">仓库名称</label><input type="text" id="githubRepo" value="${escapeHtml(settings.GITHUB_REPO||'')}" placeholder="例如: my-dns-records">
                     <details class="tutorial-details"><summary>如何获取 GitHub API 信息？</summary><div class="tutorial-content"><ol><li><strong>获取 GitHub Token:</strong><ol type="a"><li>登录 <a href="https://github.com/" target="_blank">GitHub</a>，点击右上角头像，进入 <strong>“Settings”</strong>。</li><li>在左侧菜单中，选择 <strong>“Developer settings”</strong> &rarr; <strong>“Personal access tokens”</strong> &rarr; <strong>“Tokens (classic)”</strong>。</li><li>点击 <strong>“Generate new token”</strong>，并选择 <strong>“Generate new token (classic)”</strong>。</li><li>为令牌添加描述（Note），设置合适的过期时间（Expiration）。</li><li>在 <strong>“Select scopes”</strong> 部分，勾选 <code>repo</code> 权限。</li><li>点击页面底部的 <strong>“Generate token”</strong>，并复制生成的令牌。<strong>注意：令牌仅显示一次，请妥善保管。</strong></li></ol></li><li><strong>获取用户名/组织名 和 仓库名称:</strong><ol type="a"><li><strong>用户名/组织名</strong> 就是您的GitHub个人主页URL中，github.com后面的那部分，或者您组织的主页URL。</li><li><strong>仓库名称</strong> 是您在GitHub上创建的，用来存储IP文件的仓库的名字。如果仓库不存在，系统将在第一次同步时自动为您创建为私有仓库。</li></ol></li></ol></div></details>
                 </fieldset>
                 <button type="submit">保存设置</button>
@@ -460,7 +467,10 @@ function getDashboardScript(domains, ipSources, settings) { return `
       const container = document.getElementById('notifications');
       const toast = document.createElement('div');
       toast.className = \`toast toast-\${type}\`;
-      toast.innerHTML = \`<div>\${message}</div>\`;
+      // I2: 通知一律 textContent，避免 e.message / API 文案中的 HTML 被解析执行
+      const msg = document.createElement('div');
+      msg.textContent = message;
+      toast.appendChild(msg);
       container.appendChild(toast);
       setTimeout(() => toast.classList.add('show'), 10);
       setTimeout(() => {
@@ -471,22 +481,25 @@ function getDashboardScript(domains, ipSources, settings) { return `
       }, duration);
   }
   async function apiFetch(url, options = {}) { const res = await fetch(url, { headers: { "Content-Type": "application/json", ...options.headers }, ...options }); if (!res.ok) { const errData = await res.json().catch(() => ({ error: \`HTTP 错误: \${res.status}\` })); if (res.status === 401) { showNotification('会话已过期，请重新登录。', 'error'); setTimeout(() => window.location.href = '/login', 2000); } throw new Error(errData.error); } try { return await res.json(); } catch (e) { return {}; } }
-  let currentDomains = ${JSON.stringify(domains)};
-  let currentIpSources = ${JSON.stringify(ipSources)};
-  let currentSettings = ${JSON.stringify(settings)};
+  let currentDomains = ${safeJsonForScript(domains)};
+  let currentIpSources = ${safeJsonForScript(ipSources)};
+  let currentSettings = ${safeJsonForScript(settings)};
   let zoneName = currentSettings.zoneName || '';
   let successfulProbeStrategy = null;
+
+  // I2: 客户端渲染统一转义助手（与服务器端 escapeHtml 同语义）
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
   const formatBeijingTime = (isoStr) => { if (!isoStr) return '从未'; const d = new Date(isoStr); return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(d).replace(/\\//g, '-'); };
   
   function renderLiveRecords(records) {
       if (!records || records.length === 0) return '无记录';
       const first = records[0];
-      if (records.length === 1) return \`<b>\${first.type}:</b> \${first.content}\`;
-      return \`<details class="record-details"><summary><b>\${first.type}:</b> (共 \${records.length} 条)</summary><ul>\${records.map(r => \`<li><b>\${r.type}:</b> \${r.content}</li>\`).join('')}</ul></details>\`;
+      if (records.length === 1) return \`<b>\${esc(first.type)}:</b> \${esc(first.content)}\`;
+      return \`<details class="record-details"><summary><b>\${esc(first.type)}:</b> (共 \${records.length} 条)</summary><ul>\${records.map(r => \`<li><b>\${esc(r.type)}:</b> \${esc(r.content)}</li>\`).join('')}</ul></details>\`;
   }
   
-  function renderStatus(item) { switch (item.last_sync_status) { case 'success': return \`<span class="status-success">✔ 同步成功</span>\`; case 'failed': return \`<span class="status-failed" title="\${item.last_sync_error || '未知错误'}">✖ 同步失败</span>\`; case 'no_change': return \`<span class="status-no_change">✔ 内容一致</span>\`; default: return '○ 待定'; } }
+  function renderStatus(item) { switch (item.last_sync_status) { case 'success': return \`<span class="status-success">✔ 同步成功</span>\`; case 'failed': return \`<span class="status-failed" title="\${esc(item.last_sync_error || '未知错误')}">✖ 同步失败</span>\`; case 'no_change': return \`<span class="status-no_change">✔ 内容一致</span>\`; default: return '○ 待定'; } }
   
   function renderDomainCard(domain) {
       let prefix = domain.target_domain;
@@ -495,14 +508,14 @@ function getDashboardScript(domains, ipSources, settings) { return `
       } else if (zoneName && domain.target_domain === zoneName) {
           prefix = '@';
       }
-      const displayContent = domain.notes ? \`<strong>\${domain.notes}</strong>\` : \`<span class="domain-cell" title="\${domain.target_domain}">\${prefix}</span>\`;
+      const displayContent = domain.notes ? \`<strong>\${esc(domain.notes)}</strong>\` : \`<span class="domain-cell" title="\${esc(domain.target_domain)}">\${esc(prefix)}</span>\`;
       const isSystem = domain.is_system;
       const systemClass = isSystem ? 'system-domain' : '';
       const sourceDisplay = isSystem ? '系统内置' : domain.source_domain;
 
       return \`
       <div class="domain-card \${systemClass}" id="domain-card-\${domain.id}">
-          <div class="card-col"><strong>我的域名 → 克隆源</strong><span class="domain-cell" title="\${domain.target_domain}" onclick="window.copyToClipboard('\${domain.target_domain}')">\${displayContent}</span><small class="domain-cell" title="\${domain.source_domain}">\${sourceDisplay}</small></div>
+          <div class="card-col"><strong>我的域名 → 克隆源</strong><span class="domain-cell" title="\${esc(domain.target_domain)}" data-target="\${esc(domain.target_domain)}" onclick="window.copyToClipboard(this.dataset.target)">\${displayContent}</span><small class="domain-cell" title="\${esc(domain.source_domain)}">\${esc(sourceDisplay)}</small></div>
           <div class="card-col"><strong>当前解析</strong><div class="records-placeholder" data-domain-id="\${domain.id}"><i class="fa-solid fa-spinner fa-spin"></i> 正在查询...</div></div>
           <div class="card-col"><strong>上次同步</strong><div>\${renderStatus(domain)}</div><small>\${formatBeijingTime(domain.last_synced_time)}</small></div>
           <div class="card-actions"><button class="outline" onclick="window.individualSync(\${domain.id})">同步</button><button class="secondary outline" onclick="window.openModal('domainModal', \${domain.id})" \${isSystem ? 'disabled' : ''}>编辑</button><button class="contrast outline" onclick="window.deleteDomain(\${domain.id})" \${isSystem ? 'disabled' : ''}>删除</button></div>
@@ -518,11 +531,12 @@ function getDashboardScript(domains, ipSources, settings) { return `
   }
 
    function renderIpSourceCard(source) {
-      const fileUrl = \`\${window.location.origin}/\${source.github_path}\`;
+      // github_path 是 admin 可控值：URL 属性用 encodeURIComponent 阻断 scheme/属性逃逸，展示文本用 esc
+      const fileUrl = \`\${window.location.origin}/\${encodeURIComponent(source.github_path)}\`;
       return \`
       <div class="domain-card" id="ip-source-card-\${source.id}">
-           <div class="card-col" style="flex-grow: 2;"><strong>GitHub 文件路径</strong><a href="\${fileUrl}" target="_blank" class="domain-cell" onclick="event.stopPropagation();">\${source.github_path}</a><small class="domain-cell" title="\${source.url}">源: \${source.url}</small></div>
-           <div class="card-col"><strong>抓取策略</strong><span>\${source.fetch_strategy || '尚未探测'}</span></div>
+           <div class="card-col" style="flex-grow: 2;"><strong>GitHub 文件路径</strong><a href="\${esc(fileUrl)}" target="_blank" rel="noopener" class="domain-cell" onclick="event.stopPropagation();">\${esc(source.github_path)}</a><small class="domain-cell" title="\${esc(source.url)}">源: \${esc(source.url)}</small></div>
+           <div class="card-col"><strong>抓取策略</strong><span>\${esc(source.fetch_strategy || '尚未探测')}</span></div>
           <div class="card-col"><strong>上次同步</strong><small>\${renderStatus(source)} @ \${formatBeijingTime(source.last_synced_time)}</small></div>
           <div class="card-actions"><button class="outline" onclick="window.syncSingleIpSource(\${source.id})">同步</button><button class="secondary outline" onclick="window.openModal('ipSourceModal', \${source.id})">编辑</button><button class="contrast outline" onclick="window.deleteIpSource(\${source.id})">删除</button></div>
       </div>\`;
@@ -628,7 +642,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
       const method = id ? 'PUT' : 'POST';
       try { const result = await apiFetch(apiUrl, { method, body: JSON.stringify(payload) }); showNotification(result.message, 'success'); closeModal('ipSourceModal'); await refreshIpSources(); } catch (e) { showNotification(\`保存失败: <code>\${e.message}</code>\`, 'error'); }
   }
-    window.deleteIpSource = async (id) => { if (!confirm('确定要删除这个IP源吗？')) return; try { await apiFetch(\`/api/ip_sources/\${id}\`, { method: 'DELETE' }); showNotification('IP源已删除', 'success'); await refreshIpSources(); } catch(e) { showNotification(\`删除失败: code>\${e.message}</code>\`, 'error'); } }
+    window.deleteIpSource = async (id) => { if (!confirm('确定要删除这个IP源吗？')) return; try { await apiFetch(\`/api/ip_sources/\${id}\`, { method: 'DELETE' }); showNotification('IP源已删除', 'success'); await refreshIpSources(); } catch(e) { showNotification(\`删除失败: <code>\${esc(e.message)}</code>\`, 'error'); } }
     async function refreshIpSources() { try { currentIpSources = await apiFetch('/api/ip_sources'); renderIpSourceList(); } catch (e) { showNotification(\`更新IP源列表失败: <code>\${e.message}</code>\`, 'error'); } }
 
   async function handleStreamingRequest(url, btn, logOutputElem) {
