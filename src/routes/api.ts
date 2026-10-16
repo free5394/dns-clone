@@ -10,6 +10,7 @@ import { FETCH_STRATEGIES } from '../sync/ip-sources.ts';
 import { syncAllDomains, syncSystemDomains, syncSingleDomain } from '../sync/domains.ts';
 import { syncSingleIpSource, syncAllIpSources } from '../sync/ip-sources.ts';
 import { assertSafeHttpUrl } from '../util/url-safety.ts';
+import { fetchWithTimeout } from '../util/fetch.ts';
 import { MAX_BATCH_SIZE } from '../util/batch-size.ts';
 
 /** 允许写入的 settings 白名单 */
@@ -29,6 +30,17 @@ const isUniqueViolation = (e: unknown): boolean =>
         /UNIQUE constraint failed/i.test(e.message) ||
         /SQLITE_CONSTRAINT/i.test(e.message)
     );
+
+/** 读取 JSON 请求体；非法 JSON 返回 null，由调用方回 400（Suggestion ①：不冒泡成 500） */
+async function readJsonBody<T>(request: Request): Promise<T | null> {
+    try {
+        return await request.json() as T;
+    } catch {
+        return null;
+    }
+}
+
+const BAD_JSON = () => jsonResponse({ error: '请求体不是合法 JSON。' }, 400);
 
 /** API 路由分发 */
 export async function handleApiRequest(request: Request, env: { WUYA: D1Database }): Promise<Response> {
@@ -95,7 +107,9 @@ export async function handleApiRequest(request: Request, env: { WUYA: D1Database
 }
 
 async function apiSetup(request: Request, db: D1Database): Promise<Response> {
-    const { password } = await request.json() as { password?: string };
+    const body = await readJsonBody<{ password?: string }>(request);
+    if (body === null) return BAD_JSON();
+    const { password } = body;
     if (!password || password.length < 8 || password.length > 1024) return jsonResponse({ error: '密码长度必须为 8 到 1024 个字符之间。' }, 400);
 
     // I4: 原子占用——先条件插入占位哈希（仅当凭据尚不存在），成功者才覆盖真哈希。
@@ -130,7 +144,9 @@ async function apiLogin(request: Request, db: D1Database): Promise<Response> {
     return jsonResponse({ error: "尝试过于频繁，请稍后再试。" }, 429);
   }
 
-  const { password } = await request.json() as { password?: string };
+  const loginBody = await readJsonBody<{ password?: string }>(request);
+  if (loginBody === null) return BAD_JSON();
+  const { password } = loginBody;
   const [storedHash, salt] = await Promise.all([getSetting(db, 'ADMIN_PASSWORD_HASH'), getSetting(db, 'PASSWORD_SALT')]);
   if (!storedHash || !salt) return jsonResponse({ error: '应用尚未初始化。' }, 400);
   const result = await verifyPassword(password || '', storedHash, salt);
@@ -168,7 +184,9 @@ async function apiGetSettings(request: Request, db: D1Database): Promise<Respons
 }
 
 async function apiSetSettings(request: Request, db: D1Database): Promise<Response> {
-    const rawSettings = await request.json() as Record<string, unknown>;
+    const rawBody = await readJsonBody<Record<string, unknown>>(request);
+    if (rawBody === null || typeof rawBody !== 'object') return BAD_JSON();
+    const rawSettings = rawBody;
 
     // 白名单：仅允许写入已知 key；保留 null 以表达"清除该字段"语义
     const settings: Record<string, string | null> = {};
@@ -232,9 +250,11 @@ async function apiGetDomains(request: Request, db: D1Database): Promise<Response
 }
 
 async function handleDomainMutation(request: Request, db: D1Database, isUpdate = false, id: string | null = null): Promise<Response> {
-  const { source_domain, target_domain_prefix, is_deep_resolve, ttl, notes } = await request.json() as {
+  const body = await readJsonBody<{
       source_domain?: string; target_domain_prefix?: string; is_deep_resolve?: number; ttl?: number; notes?: string;
-  };
+  }>(request);
+  if (body === null) return BAD_JSON();
+  const { source_domain, target_domain_prefix, is_deep_resolve, ttl, notes } = body;
   if (!source_domain || !target_domain_prefix) {
       return jsonResponse({ error: '缺少必填字段。' }, 400);
   }
@@ -281,8 +301,10 @@ async function apiGetDomainRecords(id: string, db: D1Database): Promise<Response
         if (!token || !zoneId) return jsonResponse({ error: 'Cloudflare API 未配置。' }, 400);
         const domain = await db.prepare("SELECT target_domain FROM domains WHERE id = ?").bind(id).first() as { target_domain: string } | null;
         if (!domain) return jsonResponse({ error: '目标不存在。' }, 404);
-        const url = `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?name=${domain.target_domain}&per_page=100`;
-        const response = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+        // Suggestion ⑨: 查询参数编码（未编码时 " / & / 空格 会破坏或改写 CF API 查询）+ 超时
+        const q = new URLSearchParams({ name: domain.target_domain, per_page: '100' }).toString();
+        const url = `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?${q}`;
+        const response = await fetchWithTimeout(url, { headers: { 'Authorization': `Bearer ${token}` } }, 10000);
         const data = await response.json() as { success: boolean; result?: unknown; errors?: unknown[] };
         if (!data.success) return jsonResponse({ error: `Cloudflare API 错误: ${JSON.stringify(data.errors)}` }, 500);
         return jsonResponse(data.result);
@@ -297,9 +319,11 @@ async function apiGetIpSources(db: D1Database): Promise<Response> {
 }
 
 async function apiAddIpSource(request: Request, db: D1Database): Promise<Response> {
-    const { url, github_path, commit_message, fetch_strategy } = await request.json() as {
+    const body = await readJsonBody<{
         url?: string; github_path?: string; commit_message?: string; fetch_strategy?: string;
-    };
+    }>(request);
+    if (body === null) return BAD_JSON();
+    const { url, github_path, commit_message, fetch_strategy } = body;
     if (!url || !github_path || !commit_message || !fetch_strategy) {
         return jsonResponse({ error: '缺少必填字段或尚未成功探测获取策略。' }, 400);
     }
@@ -319,9 +343,11 @@ async function apiAddIpSource(request: Request, db: D1Database): Promise<Respons
 }
 
 async function apiUpdateIpSource(request: Request, db: D1Database, id: number): Promise<Response> {
-    const { url, github_path, commit_message, fetch_strategy } = await request.json() as {
+    const body = await readJsonBody<{
         url?: string; github_path?: string; commit_message?: string; fetch_strategy?: string;
-    };
+    }>(request);
+    if (body === null) return BAD_JSON();
+    const { url, github_path, commit_message, fetch_strategy } = body;
     if (!url || !github_path || !commit_message || !fetch_strategy) {
         return jsonResponse({ error: '缺少必填字段或尚未成功探测获取策略。' }, 400);
     }
@@ -346,7 +372,9 @@ async function apiDeleteIpSource(db: D1Database, id: number): Promise<Response> 
 }
 
 async function apiProbeIpSource(request: Request): Promise<Response> {
-    const { url } = await request.json() as { url?: string };
+    const body = await readJsonBody<{ url?: string }>(request);
+    if (body === null) return BAD_JSON();
+    const { url } = body;
     if (!url) return jsonResponse({ error: '缺少用于探测的 URL 参数。' }, 400);
     try {
         assertSafeHttpUrl(url);

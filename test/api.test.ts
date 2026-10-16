@@ -1,7 +1,7 @@
 // api.test.ts — API 路由分发 + 登录 + 域名 CRUD + 设置白名单 + 权限守卫 + 敏感字段过滤
 // 覆盖 plan v2 用例表 + fix-plan 14 项 findings 回归
 import { SELF, env } from "cloudflare:test";
-import { describe, it, expect, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { handleApiRequest } from "../src/routes/api.ts";
 
 // 种子密码（见 apply-migrations.ts）
@@ -116,6 +116,57 @@ describe("/api/setup 原子占用 (I4)", () => {
                 env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('ADMIN_PASSWORD_HASH', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(originalHash.value),
                 env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('PASSWORD_SALT', 'test-salt') ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
             ]);
+        }
+    });
+});
+
+
+describe("请求体容错 (Suggestion ①)", () => {
+    it("POST /api/login with malformed JSON body returns 400 not 500", async () => {        const res = await SELF.fetch("https://example.com/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{not-json",
+        });
+        expect(res.status).toBe(400);
+    });
+
+    it("POST /api/settings with malformed JSON body returns 400 not 500", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/settings", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: "garbage",
+        });
+        expect(res.status).toBe(400);
+    });
+
+    it("GET /api/domains/:id/records URL-encodes target_domain in query (Suggestion ⑨)", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const weird = `" onmouseover="alert(1)/x.example.com`;
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, is_enabled) VALUES (?, ?, 'test-zone-id', 0, 60, 1)"
+        ).bind("src.example.com", weird).run();
+        const row = await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?").bind(weird).first() as { id: number };
+
+        const calls: string[] = [];
+        vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+            calls.push(String(url));
+            return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
+        }));
+        try {
+            const res = await SELF.fetch(`https://example.com/api/domains/${row.id}/records`, { headers: { Cookie: cookie } });
+            expect(res.status).toBe(200);
+            const cfCall = calls.find((u) => u.includes("api.cloudflare.com"));
+            expect(cfCall).toBeDefined();
+            // 关键语义：CF 收到的 name 解码后必须完整等于原 target_domain。
+            // 未编码时裸 " 与空格会截断查询串、把 & 后的内容改写进参数
+            const parsed = new URL(cfCall!);
+            expect(parsed.searchParams.get("name")).toBe(weird);
+            expect(parsed.searchParams.get("per_page")).toBe("100");
+        } finally {
+            vi.unstubAllGlobals();
+            await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(row.id).run();
         }
     });
 });
