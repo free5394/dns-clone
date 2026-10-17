@@ -14,7 +14,7 @@ enabled = true
 
 # 每分钟触发一次 scheduled handler，在 settings.next_sync_task 控制的两种批任务间轮转
 [triggers]
-crons = ["* * * * *"]
+crons = ["0,30 * * * *"]
 
 # 唯一绑定：D1 数据库（env.WUYA）。控制台配置依赖该绑定名，不要修改
 [[d1_databases]]
