@@ -5,7 +5,7 @@
 
 name = "dns-clone"
 main = "src/index.ts"
-compatibility_date = "2026-01-15"
+compatibility_date = "2026-05-20"
 keep_vars = true
 
 # 启用 Workers 观测能力（Tail Logs / Analytics）
