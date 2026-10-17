@@ -13,6 +13,9 @@
 .opencode/
 .omo/
 
+# dsh
+.scratch/
+
 # 临时文件
 tmp/
 
