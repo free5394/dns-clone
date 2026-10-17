@@ -8,9 +8,9 @@ Cloudflare Worker 项目：域名克隆（DNS 同步） + IP 聚合（推送到 
 - **唯一入口**：`src/index.ts`（约 78 行），导出 `fetch` 与 `scheduled` 两个 handler，组装 8 个模块。
 - **唯一绑定**：`env.WUYA` → D1 数据库。**变量名必须为 `WUYA`（全大写）**，参见 `src/index.ts:12`。缺失会返回 `500`。
 - **三个路由分支**（`src/index.ts:22-30`）：
-    - `/api/*` → `handleApiRequest`（`src/routes/api.ts`）
-    - 其它非根路径（除 `/login`、`/admin`）→ `handleGitHubFileProxy`（订阅器直读，`src/routes/github-proxy.ts`）
-    - `/`、`/login`、`/admin` → `handleUiRequest`（`src/routes/ui.ts`）
+  - `/api/*` → `handleApiRequest`（`src/routes/api.ts`）
+  - 其它非根路径（除 `/login`、`/admin`）→ `handleGitHubFileProxy`（订阅器直读，`src/routes/github-proxy.ts`）
+  - `/`、`/login`、`/admin` → `handleUiRequest`（`src/routes/ui.ts`）
 - **定时任务**：Cron `* * * * *`（每分钟）触发 `scheduled` handler，通过 `settings.next_sync_task` 在 `domains` ↔ `ip_sources` 两种批任务间**轮转**，每批处理 `BATCH_SIZE` 条（默认 10，由 `settings.BATCH_SIZE` 配置，非数值回退到 10）且失败优先（`src/sync/domains.ts:62-80`、`src/sync/ip-sources.ts:57-76`）。**无论同步成功或失败都翻转 `next_sync_task`**，避免单点失败永久卡死。
 - **数据表**（5 张）：`settings` / `domains` / `ip_sources` / `sessions` / `login_attempts`，由 `initializeAndMigrateDatabase` 幂等创建，24h 门控（`last_migrated_at`）。
 
