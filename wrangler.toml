@@ -1,7 +1,7 @@
 #:schema node_modules/wrangler/config-schema.json
 # dns-clone Worker 配置
 # 由 wrangler dev / wrangler types / wrangler deploy 共同读取
-# 注意：database_id 占位符 REPLACE_WITH_YOUR_D1_ID 必须在部署前替换为真实 UUID，否则 scripts/predeploy.cjs 会拦截
+# 注意：database_id 占位符 REPLACE_WITH_YOUR_D1_ID 必须在部署前替换为真实 ID，否则 scripts/predeploy.cjs 会拦截
 
 name = "dns-clone"
 main = "src/index.ts"
