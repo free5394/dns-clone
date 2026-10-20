@@ -474,7 +474,7 @@ bsk emulate --session $sid --off
 - 不改变信息架构（哪些字段展示、列表排序规则），只改呈现。
 - 不重绘图标（继续用 Font Awesome）。
 - 不改任何文案语义；如确需改，先同步 `README.md`。
-- 不默认跟随系统主题（`prefers-color-scheme`）——列为 P3 可选项，因为会改变用户当前看到的外观。
+- ~~不默认跟随系统主题（`prefers-color-scheme`）——列为 P3 可选项，因为会改变用户当前看到的外观。~~ 已在 FIX-24 改为默认跟随系统，见 §10.3。
 
 ---
 
@@ -519,3 +519,17 @@ bsk emulate --session $sid --off
 用户反馈首页「进入后台」与主题切换按钮上下不齐。实测两元素中心相差 `8px`，恰等于主题按钮 `margin-bottom:16px` 的一半：同级元素一个是 `<a>`（Pico 不给外边距），一个是 `<button>`（Pico 有 `margin-bottom:var(--pico-spacing)`），而容器 `align-items:center` 连外边距一起居中，带外边距的那一个视觉上被推高半个外边距。
 
 修法是在 `.public-nav-actions a, .public-nav-actions button` 共享规则里统一 `margin: 0`（该规则本就负责归一化这两个元素的 padding/border），而非只给 `#theme-toggle` 打补丁。修复后三档视口 `spreadCenterY` 均为 0。另用同一判据全站扫描「同一 flex/grid 行里既有无外边距元素又有有外边距元素」的组合，首页与后台（含弹窗、设置页）均为 0 处。
+
+### 10.3 主题默认跟随系统 + 后台可切换（FIX-24）
+
+§9 曾把「默认跟随系统」列为不做的事，与 §4.2 的决定 Q5（默认跟随 `prefers-color-scheme`，手动选择可覆盖并记住）矛盾；实现也确实停在旧形态：`applyTheme(localStorage.getItem('theme') || 'light')`，`prefers-color-scheme` 一次都没读。FIX-24 按 Q5 落地，并把 Non-goals 一条划掉。
+
+改动三处：
+
+1. `getHtmlLayout` 的首帧脚本从"读 localStorage，缺省 light"改为 `已保存值 → 系统偏好`，并监听 `matchMedia('(prefers-color-scheme: dark)')` 的 `change`：**用户没显式选过就跟着系统变**，选过一次就以保存值为准。首帧同时写 `class="dark"` 与 `data-theme`，避免暗色用户看到白闪。
+2. 主题逻辑上移到布局（每页都有，只定义一次），首页模板里那份 `applyTheme` 删除——此前后台页完全没有主题入口，本轮在侧栏标题旁加了 `#theme-toggle` 按钮，五类页面共用同一份 JS，不会漂移。
+3. 按钮本身：`margin: 0`（同 FIX-23 的根因，Pico 给 `button` 加 `margin-bottom`，`align-items:center` 会连外边距一起居中，实测按钮比站名中线高 `8px`）；`flex: 0 0 auto` + `44×44`——侧栏在 ≤1024px 收窄到 200px 后，1.75rem 的站名曾把按钮挤到 `33.5px` 并让站名折成两行，故在 ≤1024 断点把标题降到 1.25rem、内边距收到 `var(--space-4) var(--space-5)`。
+
+实测（`1440 / 1024 / 900 / 768 / 390` 五档，同一浏览器会话）：标题与按钮中线差 `0.00–0.01px`，按钮恒为 `44×44`，`scrollWidth-innerWidth = -15`（无横向滚动）；清空 `localStorage` 后首帧等于系统偏好（`theme: light`、`body #f0f2f5`），点击后 `theme: dark`、`stored: 'dark'`、`body #121212`，重载保持暗色。`pnpm test` 142 项、`pnpm typecheck` 均通过。
+
+注：测试用的 Chrome 装了会强制写 `data-theme="light"` 的扩展（`html` 带 `tongyi-design-pc` 类），因此探针里 `data-theme` 属性可能被它改回 `light`；判定以 `classList.contains('dark')` 与实际背景色为准，真实无扩展环境下两处一致。

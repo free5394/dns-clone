@@ -178,3 +178,43 @@ describe("首页导航按钮中线对齐 (FIX-23)", () => {
         expect(rule![1]).toMatch(/margin:\s*0;/);
     });
 });
+
+describe("主题：默认跟随系统，后台也能切换 (FIX-24)", () => {
+    const homeBody = () => getPublicHomepage("https://example.com/", [], [], "三网聚合", true);
+    // baseSettings 定义在另一个 describe 内，这里自备一份最小设置
+    const dashboardSettings = { CF_ZONE_ID: "zone", GITHUB_TOKEN: "t", GITHUB_OWNER: "o", GITHUB_REPO: "r" };
+
+    it("首帧主题脚本在无保存值时才回退到系统偏好，不再硬编码 light", () => {
+        const html = getHtmlLayout("测试", "");
+        expect(html).toMatch(/prefers-color-scheme: dark/);
+        expect(html).toMatch(/localStorage\.getItem\('theme'\)/);
+        // 旧实现是 getItem('theme')||'light'，会让"跟随系统"名存实亡
+        expect(html).not.toMatch(/getItem\('theme'\)\s*\|\|\s*'light'/);
+    });
+
+    it("系统偏好变化时，未显式选择过的用户跟着变", () => {
+        const html = getHtmlLayout("测试", "");
+        expect(html).toMatch(/addEventListener\('change'/);
+    });
+
+    it("主题逻辑只在布局里定义一次，首页模板里不再重复", () => {
+        const html = getHtmlLayout("测试", homeBody());
+        expect((html.match(/function applyTheme/g) || []).length).toBe(1);
+        expect(homeBody()).not.toMatch(/function applyTheme/);
+    });
+
+    it("后台页有主题切换按钮，且全站每个页面只有一枚", () => {
+        const dashboard = getDashboardPage([], [], dashboardSettings);
+        expect(dashboard).toMatch(/id="theme-toggle"/);
+        expect((dashboard.match(/id="theme-toggle"/g) || []).length).toBe(1);
+        expect((homeBody().match(/id="theme-toggle"/g) || []).length).toBe(1);
+    });
+
+    it("侧栏主题按钮归零外边距，避免被 Pico 的 button 底部外边距顶高", () => {
+        const html = getHtmlLayout("测试", getDashboardPage([], [], dashboardSettings));
+        const rule = html.match(/#theme-toggle \{([\s\S]*?)\}/);
+        expect(rule).not.toBeNull();
+        expect(rule![1]).toMatch(/margin:\s*0;/);
+        expect(html).toMatch(/\.sidebar-header \{[^}]*display: flex;/);
+    });
+});

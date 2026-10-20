@@ -170,7 +170,7 @@ main.container { max-width: none; padding: 0; display: flex; }
 }
 .auth-container > article { width: 100%; max-width: 480px; }
 .sidebar { width: var(--sidebar-width); flex-shrink: 0; background: var(--pico-card-background-color); height: 100vh; position: sticky; top: 0; border-right: 1px solid var(--pico-card-border-color); display: flex; flex-direction: column; }
-.sidebar-header { padding: 1.5rem; text-align: left; border-bottom: 1px solid var(--pico-card-border-color); }
+.sidebar-header { padding: 1.5rem; text-align: left; border-bottom: 1px solid var(--pico-card-border-color); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .sidebar-header h3 { margin: 0; font-size: 1.75rem; font-weight: 700; color: var(--pico-primary); }
 .sidebar-nav { padding: 1rem 0; flex-grow: 1; }
 .sidebar-nav a { display: flex; align-items: center; gap: .85rem; padding: .85rem 1.5rem; color: var(--text-body); text-decoration: none; margin: 0 .75rem; border-radius: 6px; transition: background-color .2s ease, color .2s ease; font-weight: 500; }
@@ -250,7 +250,9 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
 }
 .public-nav-actions a { background-color: var(--c-button-bg); color: var(--c-button-text); }
 .public-nav-actions a:hover { filter: brightness(1.1); }
-#theme-toggle { background: var(--c-icon-bg); color: var(--c-text); font-size: 1.2rem; width: 40px; height: 40px; display:flex; align-items:center; justify-content:center; }
+/* FIX-24: margin 归零，否则 Pico 给 button 的底部外边距会让按钮相对标题顶高半个外边距；
+   flex:0 0 auto 保证侧栏变窄时按钮不被挤压（曾实测被压到 33px）；44px 满足触控区要求 */
+#theme-toggle { background: var(--c-icon-bg); color: var(--c-text); font-size: 1.2rem; width: 44px; height: 44px; margin: 0; padding: 0; flex: 0 0 auto; display:flex; align-items:center; justify-content:center; }
 .public-container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
 .public-section h2 { font-size: 1.5rem; margin-bottom: var(--space-5); color: var(--c-text); border: none; padding: 0; }
 .public-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.5rem; }
@@ -300,6 +302,9 @@ dialog article footer button.secondary:hover { background: var(--surface-2); bor
     .main-content { padding: var(--space-8) var(--space-6); }
     .domain-card { gap: var(--space-4); }
     .public-container { padding: var(--space-6) var(--space-5); }
+    /* FIX-24: 侧栏缩到 200px 后，1.5rem 内边距 + 1.75rem 站名会把主题按钮挤到 33px 并让站名折行 */
+    .sidebar-header { padding: var(--space-4) var(--space-5); }
+    .sidebar-header h3 { font-size: 1.25rem; }
 }
 /* ≤1023：列表退回单列卡片，行内标签重新可见（表格布局需要 ≥1024 的宽度才不挤） */
 @media (max-width: 1023px) {
@@ -337,7 +342,9 @@ dialog article footer button.secondary:hover { background: var(--surface-2); bor
     .card-actions { flex-direction: column; }
     .card-actions button { width: 100%; }
 }
-</style><script>/* 首帧即应用已保存主题：避免暗色闪白，也让没有切换按钮的后台页跟随主题 */try{var t=localStorage.getItem('theme')||'light';document.documentElement.dataset.theme=t;document.documentElement.classList.toggle('dark',t==='dark')}catch(e){}</script></head><body><main class="container">${content}</main><div id="notifications" class="notifications" role="status" aria-live="polite"></div></body></html>`; }
+</style><script>/* 首帧即应用已保存主题：避免暗色闪白，也让没有切换按钮的后台页跟随主题 *//* FIX-24 主题：首帧按"已保存值 → 系统偏好"决定，避免暗色闪白；用户没显式选过就一直跟着系统变。
+   切换按钮由各页自行放置（首页导航、后台侧栏），逻辑只在这里定义一次，避免两处实现漂移。 */
+(function(){var mq=window.matchMedia('(prefers-color-scheme: dark)');function stored(){try{return localStorage.getItem('theme')}catch(e){return null}}function applyTheme(t){var dark=t==='dark';document.documentElement.classList.toggle('dark',dark);document.documentElement.dataset.theme=dark?'dark':'light';var btn=document.getElementById('theme-toggle');if(!btn)return;btn.innerHTML=dark?'<i class="fa-solid fa-sun" aria-hidden="true"></i>':'<i class="fa-solid fa-moon" aria-hidden="true"></i>';btn.setAttribute('aria-label',dark?'切换到浅色主题':'切换到深色主题')}function preferred(){return stored()||(mq.matches?'dark':'light')}applyTheme(preferred());document.addEventListener('DOMContentLoaded',function(){var btn=document.getElementById('theme-toggle');if(!btn)return;btn.addEventListener('click',function(){var next=document.documentElement.classList.contains('dark')?'light':'dark';try{localStorage.setItem('theme',next)}catch(e){}applyTheme(next)})});mq.addEventListener('change',function(e){if(!stored())applyTheme(e.matches?'dark':'light')})})()</script></head><body><main class="container">${content}</main><div id="notifications" class="notifications" role="status" aria-live="polite"></div></body></html>`; }
 
 export function getSetupPage() { return `<div class="auth-container"><article id="setupForm"><h1>系统初始化</h1><p>请设置一个安全的管理员密码以保护您的应用。</p><form><label for="password">管理员密码 (最少8位)</label><input type="password" id="password" required minlength="8"><button type="submit">设置密码</button></form><p id="error-msg" style="color:red"></p></article></div><script>document.querySelector('#setupForm form').addEventListener('submit',async function(e){e.preventDefault();const password=document.getElementById('password').value;document.getElementById('error-msg').textContent='';try{const res=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})});if(!res.ok){const err=await res.json();throw new Error(err.error||'设置失败')}alert('设置成功，页面即将刷新...');setTimeout(()=>window.location.reload(),1000)}catch(e){document.getElementById('error-msg').textContent=e.message}});</script>`;}
 
@@ -452,23 +459,6 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
 
     <script>
         const toast = document.getElementById('copy-toast');
-        const themeToggle = document.getElementById('theme-toggle');
-        // 主题切换：同时维护 class（首页自定义变量）与 data-theme（Pico v2 组件认这个）
-        function applyTheme(theme) {
-            const dark = theme === 'dark';
-            document.documentElement.classList.toggle('dark', dark);
-            document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
-            themeToggle.innerHTML = dark
-                ? '<i class="fa-solid fa-sun" aria-hidden="true"></i>'
-                : '<i class="fa-solid fa-moon" aria-hidden="true"></i>';
-            themeToggle.setAttribute('aria-label', dark ? '切换到浅色主题' : '切换到深色主题');
-            localStorage.setItem('theme', theme);
-        }
-
-        applyTheme(localStorage.getItem('theme') || 'light');
-        themeToggle.addEventListener('click', () => {
-            applyTheme(document.documentElement.classList.contains('dark') ? 'light' : 'dark');
-        });
 
         function showToast(message) {
             toast.textContent = message;
@@ -526,7 +516,7 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
  */
 export function getDashboardPage(domains, ipSources, settings) { 
     const githubSettingsComplete = settings.GITHUB_TOKEN && settings.GITHUB_OWNER && settings.GITHUB_REPO;
-    return `<aside class="sidebar"><div class="sidebar-header"><h3>DNS Clone</h3></div><nav class="sidebar-nav"><a href="#page-dns-clone" class="nav-link active" data-target="page-dns-clone"><i class="fa-solid fa-clone fa-fw"></i> 域名克隆</a><a href="#page-github-upload" class="nav-link" data-target="page-github-upload"><i class="fa-brands fa-github fa-fw"></i> GitHub 上传</a><a href="#page-settings" class="nav-link" data-target="page-settings"><i class="fa-solid fa-gear fa-fw"></i> 系统设置</a></nav></aside>
+    return `<aside class="sidebar"><div class="sidebar-header"><h3>DNS Clone</h3><button id="theme-toggle" type="button" aria-label="切换到深色主题"><i class="fa-solid fa-moon" aria-hidden="true"></i></button></div><nav class="sidebar-nav"><a href="#page-dns-clone" class="nav-link active" data-target="page-dns-clone"><i class="fa-solid fa-clone fa-fw"></i> 域名克隆</a><a href="#page-github-upload" class="nav-link" data-target="page-github-upload"><i class="fa-brands fa-github fa-fw"></i> GitHub 上传</a><a href="#page-settings" class="nav-link" data-target="page-settings"><i class="fa-solid fa-gear fa-fw"></i> 系统设置</a></nav></aside>
     <div class="main-content">
         <div id="page-dns-clone" class="page active">
             <div class="page-header"><h2>域名克隆列表</h2><button id="addDomainBtn" ${settings.CF_ZONE_ID ? '' : 'disabled'}>＋ 添加克隆目标</button></div>
