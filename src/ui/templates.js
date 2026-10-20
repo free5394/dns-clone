@@ -620,8 +620,8 @@ function getDashboardScript(domains, ipSources, settings) { return `
   function renderDomainList() { 
       const container = document.getElementById('domain-list-container');
       if (currentDomains.length > 0) {
-        // 表头只在 ≥768 显示（与行共用 row-grid 列宽）；窄屏由行内 .col-label 承担
-        container.innerHTML = '<div class="domain-list-head row-grid"><span>我的域名 → 克隆源</span><span>当前解析</span><span>上次同步</span><span></span></div>' + currentDomains.map(renderDomainCard).join(''); 
+        // 表头只在 ≥1024 显示（与行共用 row-grid 列宽）；窄屏由行内 .col-label 承担
+        container.innerHTML = '<div class="domain-list-head row-grid"><span>克隆目标</span><span>当前解析</span><span>上次同步</span><span></span></div>' + currentDomains.map(renderDomainCard).join(''); 
       } else {
         container.innerHTML = '<div class="empty-state"><p>暂无域名克隆目标，点右上角「添加克隆目标」新建一条。</p></div>';
       }
