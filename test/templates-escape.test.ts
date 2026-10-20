@@ -231,14 +231,17 @@ describe("布局铺满视口 (FIX-25)", () => {
         expect(rule![1]).toMatch(/flex-grow:\s*1;/);
     });
 
-    it("前台容器与导航保持原有 1200px 限宽，不被后台铺满改动波及", () => {
+    it("前台容器与导航保持原有 1200px 限宽并居中，不被后台铺满改动波及", () => {
         const html = layoutSource();
         const container = html.match(/\.public-container \{([\s\S]*?)\}/);
         expect(container).not.toBeNull();
         expect(container![1]).toMatch(/max-width:\s*1200px;/);
+        // 居中靠 margin: auto，只锁 max-width 会漏掉"限宽但左对齐"的回归
+        expect(container![1]).toMatch(/margin:\s*0 auto;/);
         const nav = html.match(/\.public-nav \{([\s\S]*?)\}/);
         expect(nav).not.toBeNull();
         expect(nav![1]).toMatch(/max-width:\s*1200px;/);
+        expect(nav![1]).toMatch(/margin:\s*0 auto 2rem auto;/);
     });
 });
 

@@ -178,7 +178,7 @@ main.container { max-width: none; padding: 0; display: flex; }
 .sidebar-nav a.active { color: var(--c-button-text); background-color: var(--c-button-bg); font-weight: 600; }
 /* FIX-25: 不再限宽居中。原先 max-width:1180px + margin-inline:auto，在 1920 下两侧各留 237.5px 空白，
    用户反馈「只占中间、两边一大块空白」。内容区铺满侧栏以外的全部宽度，靠 padding 留呼吸；
-   需要窄一些的局部（如设置页表单 #page-settings）单独限宽。 */
+   需要窄一些的局部单独限宽；设置页曾属于这一类，FIX-26 后已按用户决定一并铺满（见下方 #settingsForm 规则）。 */
 .main-content { flex-grow: 1; min-width: 0; width: 100%; padding: var(--space-10) var(--space-8); }
 .page-header { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); flex-wrap: wrap; margin-bottom: var(--space-6); }
 .page-header h2 { margin: 0; font-size: 1.75rem; font-weight: 700; letter-spacing: -0.01em; }
