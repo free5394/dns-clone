@@ -103,7 +103,7 @@ export function getHtmlLayout(title, content) { return `<!DOCTYPE html><html lan
     --c-text-accent: var(--c-primary);
     --c-icon-bg: #e9ecef;
     --c-button-bg: var(--c-primary);
-    --c-button-text: #ffffff;
+    --c-button-text: var(--pico-primary-inverse);
     --noise-bg: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch"/></filter><rect width="100%" height="100%" filter="url(%23n)" opacity="0.1"/></svg>');
 }
 /* 暗色令牌：与浅色块同特异性（0,2,0）且排在其后，保证胜出 */
@@ -119,7 +119,7 @@ export function getHtmlLayout(title, content) { return `<!DOCTYPE html><html lan
     --c-text-accent: var(--c-primary);
     --c-icon-bg: #2c2c2e;
     --c-button-bg: #0b64d8;
-    --c-button-text: #ffffff;
+    --c-button-text: var(--pico-primary-inverse);
     /* 后台硬编码色统一改引用这些语义色后即可自动跟随暗色 */
     --surface-1: #1c1c1e;
     --surface-2: #121212;
