@@ -231,13 +231,13 @@ describe("布局铺满视口 (FIX-25)", () => {
         expect(rule![1]).toMatch(/flex-grow:\s*1;/);
     });
 
-    it("首页容器与导航不再限宽", () => {
+    it("前台容器与导航保持原有 1200px 限宽，不被后台铺满改动波及", () => {
         const html = layoutSource();
         const container = html.match(/\.public-container \{([\s\S]*?)\}/);
         expect(container).not.toBeNull();
-        expect(container![1]).not.toMatch(/max-width/);
+        expect(container![1]).toMatch(/max-width:\s*1200px;/);
         const nav = html.match(/\.public-nav \{([\s\S]*?)\}/);
         expect(nav).not.toBeNull();
-        expect(nav![1]).not.toMatch(/max-width/);
+        expect(nav![1]).toMatch(/max-width:\s*1200px;/);
     });
 });

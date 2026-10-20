@@ -229,8 +229,9 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
 .public-nav {
     position: sticky;
     top: 1rem;
-    /* FIX-25: 同步去掉 1200px 上限，导航与内容区一起铺满，内边距与 .public-container 对齐 */
-    margin: 0 0 2rem 0;
+    /* 前台限宽保持原样：用户要求前台页面不做修改（FIX-25 仅作用于后台） */
+    max-width: 1200px;
+    margin: 0 auto 2rem auto;
     padding: 0.75rem var(--space-6);
     display: flex;
     justify-content: space-between;
@@ -258,8 +259,8 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
 /* FIX-24: margin 归零，否则 Pico 给 button 的底部外边距会让按钮相对标题顶高半个外边距；
    flex:0 0 auto 保证侧栏变窄时按钮不被挤压（曾实测被压到 33px）；44px 满足触控区要求 */
 #theme-toggle { background: var(--c-icon-bg); color: var(--c-text); font-size: 1.2rem; width: 44px; height: 44px; margin: 0; padding: 0; flex: 0 0 auto; display:flex; align-items:center; justify-content:center; }
-/* FIX-25: 去掉 1200px 上限，与后台一致铺满视口 */
-.public-container { padding: 1.5rem; }
+/* 前台限宽保持原样：用户要求前台页面不做修改（FIX-25 仅作用于后台） */
+.public-container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
 .public-section h2 { font-size: 1.5rem; margin-bottom: var(--space-5); color: var(--c-text); border: none; padding: 0; }
 .public-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.5rem; }
 .public-card {
