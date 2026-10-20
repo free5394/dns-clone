@@ -45,3 +45,9 @@ worker-configuration.d.ts
 # 测试覆盖率产物（阶段 F）
 coverage/
 
+.e2e-run/
+
+.codegraph/
+
+.archify/
+
