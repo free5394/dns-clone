@@ -191,6 +191,8 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
 .row-grid { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.6fr) minmax(0, 1.2fr) auto; gap: var(--space-5); align-items: center; }
 .domain-card { background-color: var(--pico-card-background-color); border: 1px solid var(--pico-card-border-color); border-radius: var(--pico-border-radius); padding: var(--space-4) var(--space-5); margin-bottom: var(--space-3); transition: border-color .15s ease; }
 .domain-card:hover { border-color: var(--pico-primary); }
+/* 系统内置行（hostmonit 三网等）不可编辑/删除：主色浅染 + 淡色描边区分，不新增文案 */
+.domain-card.system-domain { background-color: color-mix(in srgb, var(--pico-primary) 4%, var(--pico-card-background-color)); border-color: color-mix(in srgb, var(--pico-primary) 32%, var(--pico-card-border-color)); }
 .card-col { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 /* 行内小标签：窄屏可见，≥768 由列表表头代替（保留给读屏） */
 .col-label { font-size: 0.8125rem; color: var(--text-muted); font-weight: 500; }
@@ -208,6 +210,8 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
    与深色卡片同色导致按钮"消失"（实测 rgb(24,28,37) 文字压在 #1c1c1e 卡片上） */
 .card-actions button.contrast { color: var(--danger); border-color: var(--danger); background: transparent; }
 .card-actions button.contrast:hover:not([disabled]) { background: var(--danger); border-color: var(--danger); color: #fff; }
+/* 系统内置行的「删除」是禁用态：别再留着红色描边，否则看起来像可点的破坏性操作 */
+.card-actions button.contrast[disabled] { color: var(--text-muted); border-color: var(--border-subtle); }
 .record-details summary { display: inline-flex; align-items: center; cursor: pointer; user-select: none; list-style: none; font-weight: 500; }
 .record-details ul { margin: 8px 0 0; padding-left: 20px; font-size: 0.9em; }
 /* 同步状态改徽标：底色由语义色混合，亮暗主题都跟着走，不再靠纯文字颜色 */
