@@ -533,3 +533,22 @@ bsk emulate --session $sid --off
 实测（`1440 / 1024 / 900 / 768 / 390` 五档，同一浏览器会话）：标题与按钮中线差 `0.00–0.01px`，按钮恒为 `44×44`，`scrollWidth-innerWidth = -15`（无横向滚动）；清空 `localStorage` 后首帧等于系统偏好（`theme: light`、`body #f0f2f5`），点击后 `theme: dark`、`stored: 'dark'`、`body #121212`，重载保持暗色。`pnpm test` 142 项、`pnpm typecheck` 均通过。
 
 注：测试用的 Chrome 装了会强制写 `data-theme="light"` 的扩展（`html` 带 `tongyi-design-pc` 类），因此探针里 `data-theme` 属性可能被它改回 `light`；判定以 `classList.contains('dark')` 与实际背景色为准，真实无扩展环境下两处一致。
+
+### 10.4 宽屏只占中间（FIX-25）
+
+用户反馈：界面只占中间一条，两侧留一大块空白。实测确认是两个独立的限宽，不是同一个原因：
+
+| 页面 | 元素 | 原规则 | 1920 下实测 |
+| --- | --- | --- | --- |
+| `/admin` | `.main-content` | `max-width: 1180px; margin-inline: auto` | 内容区 1180px，左侧空白 237.5px、右侧 237.5px（`250 → 487.5` 与 `1667.5 → 1905`） |
+| `/` | `.public-container`、`.public-nav` | `max-width: 1200px; margin: 0 auto` | 内容区 1200px，两侧各 352.5px |
+
+后台那条是 P2 我自己加的（当时为了限制行宽、降低扫读成本），首页那条是改造前就有的。宽屏上"限宽居中"是合理的排版手段，但这个站的主界面是高密度表格式列表，用户希望一眼看全，所以改为铺满。
+
+改动三处：`.main-content` 去掉 `max-width` 与 `margin-inline: auto`（保留 `flex-grow: 1; min-width: 0`）；`.public-container` 去掉 `max-width` 与 `margin: 0 auto`；`.public-nav` 去掉 `max-width`，`margin` 由 `0 auto 2rem auto` 改为 `0 0 2rem 0`（它的横向内边距 `var(--space-6)` 与容器 `1.5rem` 相等，铺满后左右文字仍对齐）。需要窄一点的局部继续单独限宽（设置页表单 `#page-settings { max-width: 820px }` 保留）。
+
+实测（同一浏览器会话，1920 / 1600 / 1440 / 1200 四档）：
+
+- `/admin`：内容区宽度恒等于 `视口 − 250（侧栏）`，1920 下 1655px、1600 下 1335px、1440 下 1175px、1200 下 935px，左右各只剩 32px 内边距，无空白块。
+- `/`：容器与导航宽度恒等于视口宽度，1920 下卡片网格 1857px、五列。
+- 四档均 `scrollWidth − innerWidth = −15`（只有滚动条本身），无横向溢出。

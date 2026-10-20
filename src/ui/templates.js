@@ -176,7 +176,10 @@ main.container { max-width: none; padding: 0; display: flex; }
 .sidebar-nav a { display: flex; align-items: center; gap: .85rem; padding: .85rem 1.5rem; color: var(--text-body); text-decoration: none; margin: 0 .75rem; border-radius: 6px; transition: background-color .2s ease, color .2s ease; font-weight: 500; }
 .sidebar-nav a:hover { background: var(--surface-2); color: var(--text-strong); }
 .sidebar-nav a.active { color: var(--c-button-text); background-color: var(--c-button-bg); font-weight: 600; }
-.main-content { flex-grow: 1; min-width: 0; width: 100%; max-width: 1180px; margin-inline: auto; padding: var(--space-10) var(--space-8); }
+/* FIX-25: 不再限宽居中。原先 max-width:1180px + margin-inline:auto，在 1920 下两侧各留 237.5px 空白，
+   用户反馈「只占中间、两边一大块空白」。内容区铺满侧栏以外的全部宽度，靠 padding 留呼吸；
+   需要窄一些的局部（如设置页表单 #page-settings）单独限宽。 */
+.main-content { flex-grow: 1; min-width: 0; width: 100%; padding: var(--space-10) var(--space-8); }
 .page-header { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); flex-wrap: wrap; margin-bottom: var(--space-6); }
 .page-header h2 { margin: 0; font-size: 1.75rem; font-weight: 700; letter-spacing: -0.01em; }
 .page { display: none; }
@@ -184,8 +187,8 @@ main.container { max-width: none; padding: 0; display: flex; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 article, fieldset { border-radius: var(--pico-border-radius); border: 1px solid var(--pico-card-border-color); background: var(--pico-card-background-color); padding: 2rem; }
 dialog article { box-shadow: var(--shadow-overlay); }
-/* 手动同步日志框：与上方按钮拉开距离，避免两块贴在一起 */
-.sync-log { margin-top: var(--space-8); }
+/* 手动同步日志框：与上方按钮拉开距离；内边距需大于圆角，避免文字被圆角压住 */
+.sync-log { margin-top: var(--space-8); padding: var(--space-4); }
 /* 禁用态：Pico 用 opacity:.5 淡化，白字压在淡蓝底上≈1.9:1 不可读；改为中性底 + 静音字（4.6:1 以上） */
 button[disabled], button[disabled]:hover { opacity: 1; background-color: var(--surface-2); border-color: var(--border-subtle); color: var(--text-muted); cursor: not-allowed; }
 legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
@@ -226,8 +229,8 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
 .public-nav {
     position: sticky;
     top: 1rem;
-    max-width: 1200px;
-    margin: 0 auto 2rem auto;
+    /* FIX-25: 同步去掉 1200px 上限，导航与内容区一起铺满，内边距与 .public-container 对齐 */
+    margin: 0 0 2rem 0;
     padding: 0.75rem var(--space-6);
     display: flex;
     justify-content: space-between;
@@ -255,7 +258,8 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
 /* FIX-24: margin 归零，否则 Pico 给 button 的底部外边距会让按钮相对标题顶高半个外边距；
    flex:0 0 auto 保证侧栏变窄时按钮不被挤压（曾实测被压到 33px）；44px 满足触控区要求 */
 #theme-toggle { background: var(--c-icon-bg); color: var(--c-text); font-size: 1.2rem; width: 44px; height: 44px; margin: 0; padding: 0; flex: 0 0 auto; display:flex; align-items:center; justify-content:center; }
-.public-container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
+/* FIX-25: 去掉 1200px 上限，与后台一致铺满视口 */
+.public-container { padding: 1.5rem; }
 .public-section h2 { font-size: 1.5rem; margin-bottom: var(--space-5); color: var(--c-text); border: none; padding: 0; }
 .public-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.5rem; }
 .public-card {

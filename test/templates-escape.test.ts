@@ -218,3 +218,26 @@ describe("主题：默认跟随系统，后台也能切换 (FIX-24)", () => {
         expect(html).toMatch(/\.sidebar-header \{[^}]*display: flex;/);
     });
 });
+
+describe("布局铺满视口 (FIX-25)", () => {
+    // 本用例只校验 CSS 规则形状，不依赖任何配置值，故用空对象即可
+    const layoutSource = () => getHtmlLayout("测试", getDashboardPage([], [], {}));
+
+    it("后台内容区不再限宽居中", () => {
+        const rule = layoutSource().match(/\.main-content \{([\s\S]*?)\}/);
+        expect(rule).not.toBeNull();
+        expect(rule![1]).not.toMatch(/max-width/);
+        expect(rule![1]).not.toMatch(/margin-inline:\s*auto/);
+        expect(rule![1]).toMatch(/flex-grow:\s*1;/);
+    });
+
+    it("首页容器与导航不再限宽", () => {
+        const html = layoutSource();
+        const container = html.match(/\.public-container \{([\s\S]*?)\}/);
+        expect(container).not.toBeNull();
+        expect(container![1]).not.toMatch(/max-width/);
+        const nav = html.match(/\.public-nav \{([\s\S]*?)\}/);
+        expect(nav).not.toBeNull();
+        expect(nav![1]).not.toMatch(/max-width/);
+    });
+});
