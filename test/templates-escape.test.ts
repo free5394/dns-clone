@@ -241,3 +241,18 @@ describe("布局铺满视口 (FIX-25)", () => {
         expect(nav![1]).toMatch(/max-width:\s*1200px;/);
     });
 });
+
+describe("设置页铺满 (FIX-26)", () => {
+    // 用户决定：设置页与列表页一致铺满，表单保持单列竖排，提交按钮在表单底部居中
+    const layoutHtml = () => getHtmlLayout("测试", getDashboardPage([], [], {}));
+
+    it("设置页不再限宽", () => {
+        expect(layoutHtml()).not.toMatch(/#page-settings \{[^}]*max-width/);
+    });
+
+    it("提交按钮在表单底部居中且不是通栏", () => {
+        expect(layoutHtml()).toContain(
+            '#settingsForm > button[type="submit"] { display: block; width: fit-content; min-width: 12rem; margin: var(--space-5) auto 0 auto; }'
+        );
+    });
+});

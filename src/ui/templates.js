@@ -301,8 +301,10 @@ dialog article footer button { flex: 1 1 0; margin: 0; }
 /* 取消：次按钮用幽灵底，避免实心深灰块和主按钮抢注意力 */
 dialog article footer button.secondary { background: transparent; border: 1px solid var(--pico-card-border-color); color: var(--text-body); }
 dialog article footer button.secondary:hover { background: var(--surface-2); border-color: var(--text-muted); color: var(--text-strong); }
-/* 设置页是表单页：限宽让输入行不超过舒适扫视宽度 */
-#page-settings { max-width: 820px; }
+/* FIX-26: 设置页不再限宽（原先 max-width:820px，1920 下右侧空出 835px）。
+   单列表单沿用 Pico 的「标签在上、输入框在下」，靠 .main-content 的 padding 留白；
+   提交按钮居中，避免铺满后孤零零贴在左下角。 */
+#settingsForm > button[type="submit"] { display: block; width: fit-content; min-width: 12rem; margin: var(--space-5) auto 0 auto; }
 /* ≤1024：侧栏与内容留白收紧 */
 @media (max-width: 1024px) {
     :root { --sidebar-width: 200px; }
