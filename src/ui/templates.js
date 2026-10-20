@@ -184,6 +184,8 @@ main.container { max-width: none; padding: 0; display: flex; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 article, fieldset { border-radius: var(--pico-border-radius); border: 1px solid var(--pico-card-border-color); background: var(--pico-card-background-color); padding: 2rem; }
 dialog article { box-shadow: var(--shadow-overlay); }
+/* 手动同步日志框：与上方按钮拉开距离，避免两块贴在一起 */
+.sync-log { margin-top: var(--space-8); }
 /* 禁用态：Pico 用 opacity:.5 淡化，白字压在淡蓝底上≈1.9:1 不可读；改为中性底 + 静音字（4.6:1 以上） */
 button[disabled], button[disabled]:hover { opacity: 1; background-color: var(--surface-2); border-color: var(--border-subtle); color: var(--text-muted); cursor: not-allowed; }
 legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
@@ -521,12 +523,12 @@ export function getDashboardPage(domains, ipSources, settings) {
         <div id="page-dns-clone" class="page active">
             <div class="page-header"><h2>域名克隆列表</h2><button id="addDomainBtn" ${settings.CF_ZONE_ID ? '' : 'disabled'}>＋ 添加克隆目标</button></div>
             <div id="domain-list-container"></div>
-            <article><h3>手动操作</h3><p>点击下方按钮，可以立即为所有已启用的目标执行一次同步任务。</p><button id="manualSyncBtn">手动同步所有目标</button><pre id="logOutput" style="display:none;"></pre></article>
+            <article><h3>手动操作</h3><p>点击下方按钮，可以立即为所有已启用的目标执行一次同步任务。</p><button id="manualSyncBtn">手动同步所有目标</button><pre id="logOutput" class="sync-log" style="display:none;"></pre></article>
         </div>
         <div id="page-github-upload" class="page">
             <div class="page-header"><h2>GitHub IP源列表</h2><button id="addIpSourceBtn" ${githubSettingsComplete ? '' : 'disabled'}>＋ 添加IP源</button></div>
              <div id="ip-source-list-container"></div>
-            <article><h3>手动操作</h3><p>点击下方按钮，可以立即为所有已启用的IP源执行一次同步并上传到GitHub。</p><button id="manualSyncIpSourcesBtn">同步所有IP源</button><pre id="ipLogOutput" style="display:none;"></pre></article>
+            <article><h3>手动操作</h3><p>点击下方按钮，可以立即为所有已启用的IP源执行一次同步并上传到GitHub。</p><button id="manualSyncIpSourcesBtn">同步所有IP源</button><pre id="ipLogOutput" class="sync-log" style="display:none;"></pre></article>
         </div>
         <div id="page-settings" class="page">
             <div class="page-header"><h2>系统设置</h2></div>
@@ -736,7 +738,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
     async function refreshIpSources() { try { currentIpSources = await apiFetch('/api/ip_sources'); renderIpSourceList(); } catch (e) { showNotification(\`更新IP源列表失败: <code>\${e.message}</code>\`, 'error'); } }
 
   async function handleStreamingRequest(url, btn, logOutputElem) {
-      const allButtons = document.querySelectorAll('button'); allButtons.forEach(b => b.disabled = true); const originalBtnText = btn ? btn.textContent : ''; if (btn) { btn.innerHTML = \`<i class="fa-solid fa-spinner fa-spin"></i> 同步中\`; btn.setAttribute('aria-busy', 'true'); }
+      const allButtons = document.querySelectorAll('button'); allButtons.forEach(b => b.disabled = true); if (btn) btn.setAttribute('aria-busy', 'true'); // 进度只由日志面板呈现，按钮只禁用不改文案
       logOutputElem.style.display = 'block';
       logOutputElem.textContent = '开始同步任务...\\n';
       try { 
@@ -759,7 +761,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
           showNotification('同步任务发生错误', 'error');
       } finally { 
           allButtons.forEach(b => { if (!b.closest('dialog')) b.disabled = false; });
-          if (btn) { btn.innerHTML = originalBtnText; btn.removeAttribute('aria-busy'); } 
+          if (btn) btn.removeAttribute('aria-busy');
       }
   }
 
