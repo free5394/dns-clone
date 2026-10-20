@@ -513,3 +513,9 @@ bsk emulate --session $sid --off
 
 - 强调色在首页只用于「进入后台」与悬停边框，卡片正文已改回正文色；如需更强的视觉记忆点可另议。
 - 列表第一列的副行（克隆源）在窄屏没有标签，如后续觉得歧义可加一句极简说明。
+
+### 10.2 导航中线错位（FIX-23）
+
+用户反馈首页「进入后台」与主题切换按钮上下不齐。实测两元素中心相差 `8px`，恰等于主题按钮 `margin-bottom:16px` 的一半：同级元素一个是 `<a>`（Pico 不给外边距），一个是 `<button>`（Pico 有 `margin-bottom:var(--pico-spacing)`），而容器 `align-items:center` 连外边距一起居中，带外边距的那一个视觉上被推高半个外边距。
+
+修法是在 `.public-nav-actions a, .public-nav-actions button` 共享规则里统一 `margin: 0`（该规则本就负责归一化这两个元素的 padding/border），而非只给 `#theme-toggle` 打补丁。修复后三档视口 `spreadCenterY` 均为 0。另用同一判据全站扫描「同一 flex/grid 行里既有无外边距元素又有有外边距元素」的组合，首页与后台（含弹窗、设置页）均为 0 处。

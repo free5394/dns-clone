@@ -1,7 +1,7 @@
 // templates-escape.test.ts — P0-2：公开首页存储型 XSS 修复回归测试
 // 验证 getPublicHomepage 对用户控制字段（notes/target_domain/github_path/url）做 HTML 实体转义
 import { describe, it, expect } from "vitest";
-import { getPublicHomepage, getDashboardPage } from "../src/ui/templates.js";
+import { getHtmlLayout, getPublicHomepage, getDashboardPage } from "../src/ui/templates.js";
 
 const requestUrl = "https://example.com/";
 
@@ -162,5 +162,19 @@ describe("getDashboardPage 仪表盘转义 (I2)", () => {
         // showNotification 不再走 innerHTML
         expect(html).not.toMatch(/toast\.innerHTML/);
         expect(html).toMatch(/toast\.appendChild\(msg\)/);
+    });
+});
+
+describe("首页导航按钮中线对齐 (FIX-23)", () => {
+    it("共享规则对 a 与 button 一起归零 margin，避免 Pico 的 button 底部外边距把主题按钮顶高", () => {
+        // 首页模板只返回主体，CSS 在 getHtmlLayout 里，按 ui.ts 的方式拼装
+        const body = getPublicHomepage("https://example.com/", [], [], "三网聚合", true);
+        const html = getHtmlLayout("测试", body);
+        // 两个同级元素：进入后台是 <a>，主题切换是 <button>，Pico 只给 button 加 margin-bottom
+        expect(body).toMatch(/<a href="\/admin"/);
+        expect(body).toMatch(/<button id="theme-toggle"/);
+        const rule = html.match(/\.public-nav-actions a, \.public-nav-actions button \{([\s\S]*?)\}/);
+        expect(rule).not.toBeNull();
+        expect(rule![1]).toMatch(/margin:\s*0;/);
     });
 });

@@ -244,6 +244,9 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
     font-weight: 500;
     transition: all 0.2s ease;
     border: none;
+    /* FIX-23: Pico 给 button 加了 margin-bottom，a 没有；align-items:center 会连外边距一起居中，
+       导致按钮比旁边的链接高出半个外边距。两者一起归零才对得齐中线。 */
+    margin: 0;
 }
 .public-nav-actions a { background-color: var(--c-button-bg); color: var(--c-button-text); }
 .public-nav-actions a:hover { filter: brightness(1.1); }
