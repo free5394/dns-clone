@@ -21,43 +21,126 @@ function safeJsonForScript(value) {
  * 所有动态值在调用方传入前已经过 escapeHtml；本函数只做字符串拼接。
  */
 export function getHtmlLayout(title, content) { return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${title}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"><style>
-:root {
+/* Pico v2 的浅色令牌定义在 :root:not([data-theme=dark])（特异性 0,2,0），
+   单纯 :root（0,1,0）会被压过；故浅色块也用 0,2,0 的 [data-theme="light"]，
+   暗色块同样用 0,2,0 并排在后面，靠先后顺序胜出。两面都用属性选择器，避免 :not() 互相冲突。 */
+:root, :root[data-theme="light"] {
     --sidebar-width: 250px;
-    --pico-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    --pico-font-size: 16px;
+    /* 字体：补中文字族，避免 Windows 下落到宋体 */
+    --pico-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+    --pico-font-size: 100%;
     --pico-line-height: 1.6;
-    --pico-border-radius: 12px;
+    /* 间距刻度（4px 基准） */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+    --space-10: 40px;
+    /* 圆角 */
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --pico-border-radius: var(--radius-md);
     --pico-form-element-spacing-vertical: 1rem;
     --pico-form-element-spacing-horizontal: 1.25rem;
     --pico-shadow-sm: 0 2px 4px rgba(0,0,0,0.05);
     --pico-shadow-md: 0 4px 12px rgba(0,0,0,0.1);
     --pico-shadow-lg: 0 10px 30px rgba(0,0,0,0.1);
-    --c-primary: #007aff;
-    --c-primary-hover: #0056b3;
-    --c-bg: #f0f2f5;
-    --c-bg-blur: rgba(248, 249, 250, 0.7);
-    --c-card-bg: rgba(255, 255, 255, 0.6);
-    --c-card-border: rgba(255, 255, 255, 0.9);
-    --c-text: #212529;
-    --c-text-muted: #6c757d;
+    /* 单一主色：替换 Pico 默认 #0172ad，白底 5.48:1 */
+    --pico-primary: #0b64d8;
+    --pico-primary-background: #0b64d8;
+    --pico-primary-border: #0b64d8;
+    --pico-primary-underline: rgba(11, 100, 216, .5);
+    --pico-primary-hover: #0a58bd;
+    --pico-primary-hover-background: #0a58bd;
+    --pico-primary-hover-border: #0a58bd;
+    --pico-primary-focus: rgba(11, 100, 216, .25);
+    --pico-primary-inverse: #ffffff;
+    /* Pico 组件色统一映射到语义令牌：组件层不再出现第二套色值，暗色自动跟随 */
+    --pico-background-color: var(--surface-2);
+    --pico-color: var(--text-body);
+    --pico-muted-color: var(--text-muted);
+    --pico-muted-border-color: var(--border-subtle);
+    --pico-h1-color: var(--text-strong);
+    --pico-h2-color: var(--text-strong);
+    --pico-h3-color: var(--text-strong);
+    --pico-h4-color: var(--text-strong);
+    --pico-h5-color: var(--text-strong);
+    --pico-h6-color: var(--text-strong);
+    --pico-card-background-color: var(--surface-1);
+    --pico-card-border-color: var(--border-subtle);
+    --pico-card-sectioning-background-color: var(--surface-2);
+    --pico-form-element-background-color: var(--surface-1);
+    --pico-form-element-border-color: var(--border-subtle);
+    --pico-form-element-color: var(--text-strong);
+    --pico-form-element-placeholder-color: var(--text-muted);
+    --pico-secondary: var(--text-body);
+    --pico-secondary-border: var(--border-subtle);
+    /* 表面 / 边框 / 文字 */
+    --surface-1: #ffffff;
+    --surface-2: #f0f2f5;
+    --border-subtle: #e4e8ef;
+    --text-strong: #1a1f27;
+    --text-body: #3d4551;
+    --text-muted: #5b6472;
+    /* 语义色（白底均 ≥4.5:1） */
+    --ok: #15803d;
+    --warn: #b45309;
+    --danger: #b91c1c;
+    --info: #0b64d8;
+    /* 首页自定义变量：全部指向令牌，不再手写色值 */
+    --c-primary: var(--pico-primary);
+    --c-primary-hover: var(--pico-primary-hover);
+    --c-bg: var(--surface-2);
+    --c-bg-blur: rgba(240, 242, 245, 0.85);
+    --c-card-bg: var(--surface-1);
+    --c-card-border: var(--border-subtle);
+    --c-text: var(--text-strong);
+    --c-text-muted: var(--text-muted);
     --c-text-accent: var(--c-primary);
     --c-icon-bg: #e9ecef;
     --c-button-bg: var(--c-primary);
     --c-button-text: #ffffff;
     --noise-bg: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch"/></filter><rect width="100%" height="100%" filter="url(%23n)" opacity="0.1"/></svg>');
 }
-html.dark {
-    --c-primary: #0a84ff;
-    --c-primary-hover: #409cff;
+/* 暗色令牌：与浅色块同特异性（0,2,0）且排在其后，保证胜出 */
+:root[data-theme="dark"], :root.dark {
+    --c-primary: #4d9bff;
+    --c-primary-hover: #74b1ff;
     --c-bg: #121212;
-    --c-bg-blur: rgba(29, 29, 31, 0.7);
-    --c-card-bg: rgba(29, 29, 31, 0.5);
-    --c-card-border: rgba(255, 255, 255, 0.1);
+    --c-bg-blur: rgba(28, 28, 30, 0.72);
+    --c-card-bg: #1c1c1e;
+    --c-card-border: #2c2c2e;
     --c-text: #e5e5e7;
-    --c-text-muted: #8e8e93;
+    --c-text-muted: #a1a1a6;
     --c-text-accent: var(--c-primary);
-    --c-icon-bg: #3a3a3c;
-    --c-button-bg: var(--c-primary);
+    --c-icon-bg: #2c2c2e;
+    --c-button-bg: #0b64d8;
+    --c-button-text: #ffffff;
+    /* 后台硬编码色统一改引用这些语义色后即可自动跟随暗色 */
+    --surface-1: #1c1c1e;
+    --surface-2: #121212;
+    --border-subtle: #2c2c2e;
+    --text-strong: #e5e5e7;
+    --text-body: #d4d4d8;
+    --text-muted: #a1a1a6;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --danger: #f87171;
+    /* Pico 主色在暗色下必须一起换，否则链接/按钮/标题仍是浅色主题的深蓝，压深底不可读 */
+    --pico-primary: #4d9bff;
+    --pico-primary-background: #0b64d8;
+    --pico-primary-border: #0b64d8;
+    --pico-primary-hover: #74b1ff;
+    --pico-primary-hover-background: #0a58bd;
+    --pico-primary-hover-border: #0a58bd;
+    --pico-primary-focus: rgba(77, 155, 255, .25);
+    --pico-primary-underline: rgba(77, 155, 255, .5);
+    /* Pico 暗色主题会把 inverse 改回深色，这里锁死白字保证主按钮对比度 */
+    --pico-primary-inverse: #ffffff;
 }
 body {
     font-family: var(--pico-font-family);
@@ -123,9 +206,9 @@ main.container { max-width: none; padding: 0; display: flex; }
 .sidebar-header { padding: 1.5rem; text-align: left; border-bottom: 1px solid var(--pico-card-border-color); }
 .sidebar-header h3 { margin: 0; font-size: 1.75rem; font-weight: 700; color: var(--pico-primary); }
 .sidebar-nav { padding: 1rem 0; flex-grow: 1; }
-.sidebar-nav a { display: flex; align-items: center; gap: .85rem; padding: .85rem 1.5rem; color: #495057; text-decoration: none; margin: 0 .75rem; border-radius: 6px; transition: background-color .2s ease, color .2s ease; font-weight: 500; }
-.sidebar-nav a:hover { background: #e9ecef; color: #212529; }
-.sidebar-nav a.active { color: #fff; background-color: var(--pico-primary); font-weight: 600; }
+.sidebar-nav a { display: flex; align-items: center; gap: .85rem; padding: .85rem 1.5rem; color: var(--text-body); text-decoration: none; margin: 0 .75rem; border-radius: 6px; transition: background-color .2s ease, color .2s ease; font-weight: 500; }
+.sidebar-nav a:hover { background: var(--surface-2); color: var(--text-strong); }
+.sidebar-nav a.active { color: var(--c-button-text); background-color: var(--c-button-bg); font-weight: 600; }
 .main-content { flex-grow: 1; padding: 2.5rem; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
 .page-header h2 { margin: 0; font-size: 2rem; font-weight: 700; }
@@ -134,23 +217,25 @@ main.container { max-width: none; padding: 0; display: flex; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 article, fieldset { border-radius: var(--pico-border-radius); border: 1px solid var(--pico-card-border-color); background: var(--pico-card-background-color); box-shadow: var(--pico-shadow-sm); padding: 2rem; }
 dialog article { box-shadow: var(--pico-shadow-lg); }
+/* 禁用态：Pico 用 opacity:.5 淡化，白字压在淡蓝底上≈1.9:1 不可读；改为中性底 + 静音字（4.6:1 以上） */
+button[disabled], button[disabled]:hover { opacity: 1; background-color: var(--surface-2); border-color: var(--border-subtle); color: var(--text-muted); cursor: not-allowed; }
 legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
 .domain-card { background-color: var(--pico-card-background-color); border: 1px solid var(--pico-card-border-color); border-radius: var(--pico-border-radius); padding: 1.5rem; display: grid; grid-template-columns: 2fr 1.5fr 1fr auto; gap: 1.5rem; align-items: center; transition: box-shadow .2s ease, transform .2s ease; margin-bottom: 1rem; }
 .card-col { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
-.card-col strong { font-size: 0.75rem; color: #6c757d; margin-bottom: .25rem; text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; }
-.card-col .domain-cell { font-size: 1rem; font-weight: 500; color: #212529; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
-.card-col small.domain-cell { color: #6c757d; font-weight: 400; }
+.card-col strong { font-size: 0.75rem; color: var(--text-muted); margin-bottom: .25rem; text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; }
+.card-col .domain-cell { font-size: 1rem; font-weight: 500; color: var(--text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.card-col small.domain-cell { color: var(--text-muted); font-weight: 400; }
 .card-actions { display: flex; justify-content: flex-end; gap: .5rem; }
 .record-details summary { display: inline-flex; align-items: center; cursor: pointer; user-select: none; list-style: none; font-weight: 500; }
 .record-details ul { margin: 8px 0 0; padding-left: 20px; font-size: 0.9em; }
-.status-success { color: #198754; } .status-failed { color: #dc3545; } .status-no_change { color: #6c757d; }
+.status-success { color: var(--ok); } .status-failed { color: var(--danger); } .status-no_change { color: var(--text-muted); }
 .notifications, .home-toast { z-index: 1050; }
 .public-nav {
     position: sticky;
     top: 1rem;
     max-width: 1200px;
     margin: 0 auto 2rem auto;
-    padding: 0.75rem 1rem;
+    padding: 0.75rem var(--space-6);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -181,8 +266,6 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
 .public-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.5rem; }
 .public-card {
     background: var(--c-card-bg);
-    backdrop-filter: blur(5px);
-    -webkit-backdrop-filter: blur(5px);
     border: 1px solid var(--c-card-border);
     border-radius: var(--pico-border-radius);
     box-shadow: var(--pico-shadow-md);
@@ -199,7 +282,7 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
 .public-card-meta { font-size: 0.8rem; color: var(--c-text-muted); white-space: nowrap; }
 .public-card-content { font-family: "SF Mono", "Consolas", "Menlo", monospace; font-size: 1rem; color: var(--c-text-accent); word-break: break-all; }
 .public-card-footer { font-size: 0.85rem; color: var(--c-text-muted); display: flex; align-items: center; gap: 0.5rem; }
-.home-toast { position: fixed; top: 80px; right: 20px; background-color: var(--c-primary); color: #fff; padding: 12px 20px; border-radius: 6px; z-index: 1000; font-weight: 500; box-shadow: var(--pico-shadow-lg); transition: transform 0.4s ease-in-out, opacity 0.4s ease-in-out; transform: translateY(-100px); opacity: 0; }
+.home-toast { position: fixed; top: 80px; right: 20px; background-color: var(--c-button-bg); color: #fff; padding: 12px 20px; border-radius: 6px; z-index: 1000; font-weight: 500; box-shadow: var(--pico-shadow-lg); transition: transform 0.4s ease-in-out, opacity 0.4s ease-in-out; transform: translateY(-100px); opacity: 0; }
 .home-toast.show { transform: translateY(0); opacity: 1; }
 .home-toast.hide { transform: translateY(50px); opacity: 0; }
 
@@ -239,7 +322,7 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
         flex-wrap: wrap;
     }
 }
-</style></head><body><main class="container">${content}</main><div id="notifications" class="notifications"></div></body></html>`; }
+</style><script>/* 首帧即应用已保存主题：避免暗色闪白，也让没有切换按钮的后台页跟随主题 */try{var t=localStorage.getItem('theme')||'light';document.documentElement.dataset.theme=t;document.documentElement.classList.toggle('dark',t==='dark')}catch(e){}</script></head><body><main class="container">${content}</main><div id="notifications" class="notifications"></div></body></html>`; }
 
 export function getSetupPage() { return `<div class="auth-container"><article id="setupForm"><h1>系统初始化</h1><p>请设置一个安全的管理员密码以保护您的应用。</p><form><label for="password">管理员密码 (最少8位)</label><input type="password" id="password" required minlength="8"><button type="submit">设置密码</button></form><p id="error-msg" style="color:red"></p></article></div><script>document.querySelector('#setupForm form').addEventListener('submit',async function(e){e.preventDefault();const password=document.getElementById('password').value;document.getElementById('error-msg').textContent='';try{const res=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})});if(!res.ok){const err=await res.json();throw new Error(err.error||'设置失败')}alert('设置成功，页面即将刷新...');setTimeout(()=>window.location.reload(),1000)}catch(e){document.getElementById('error-msg').textContent=e.message}});</script>`;}
 
@@ -359,23 +442,20 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
     <script>
         const toast = document.getElementById('copy-toast');
         const themeToggle = document.getElementById('theme-toggle');
-        const currentTheme = localStorage.getItem('theme');
-        if (currentTheme) {
-            document.documentElement.classList.add(currentTheme);
-            if (currentTheme === 'dark') {
-                themeToggle.innerHTML = '<i class="fa-solid fa-sun"></i>';
-            }
-        }
-        themeToggle.addEventListener('click', () => {
-            document.documentElement.classList.toggle('dark');
-            let theme = 'light';
-            if (document.documentElement.classList.contains('dark')) {
-                theme = 'dark';
-                themeToggle.innerHTML = '<i class="fa-solid fa-sun"></i>';
-            } else {
-                 themeToggle.innerHTML = '<i class="fa-solid fa-moon"></i>';
-            }
+        // 主题切换：同时维护 class（首页自定义变量）与 data-theme（Pico v2 组件认这个）
+        function applyTheme(theme) {
+            const dark = theme === 'dark';
+            document.documentElement.classList.toggle('dark', dark);
+            document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+            themeToggle.innerHTML = dark
+                ? '<i class="fa-solid fa-sun"></i>'
+                : '<i class="fa-solid fa-moon"></i>';
             localStorage.setItem('theme', theme);
+        }
+
+        applyTheme(localStorage.getItem('theme') || 'light');
+        themeToggle.addEventListener('click', () => {
+            applyTheme(document.documentElement.classList.contains('dark') ? 'light' : 'dark');
         });
 
         function showToast(message) {
