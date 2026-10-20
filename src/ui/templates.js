@@ -46,9 +46,8 @@ export function getHtmlLayout(title, content) { return `<!DOCTYPE html><html lan
     --pico-border-radius: var(--radius-md);
     --pico-form-element-spacing-vertical: 1rem;
     --pico-form-element-spacing-horizontal: 1.25rem;
-    --pico-shadow-sm: 0 2px 4px rgba(0,0,0,0.05);
-    --pico-shadow-md: 0 4px 12px rgba(0,0,0,0.1);
-    --pico-shadow-lg: 0 10px 30px rgba(0,0,0,0.1);
+    /* 只留一档阴影，且只给真正"浮在页面上方"的层（弹窗、toast）用；卡片与导航一律不用 */
+    --shadow-overlay: 0 10px 30px rgba(0, 0, 0, 0.12);
     /* 单一主色：替换 Pico 默认 #0172ad，白底 5.48:1 */
     --pico-primary: #0b64d8;
     --pico-primary-background: #0b64d8;
@@ -108,6 +107,8 @@ export function getHtmlLayout(title, content) { return `<!DOCTYPE html><html lan
 }
 /* 暗色令牌：与浅色块同特异性（0,2,0）且排在其后，保证胜出 */
 :root[data-theme="dark"], :root.dark {
+    /* 暗色下阴影要更重才看得见层次 */
+    --shadow-overlay: 0 10px 30px rgba(0, 0, 0, 0.6);
     --c-primary: #4d9bff;
     --c-primary-hover: #74b1ff;
     --c-bg: #121212;
@@ -182,7 +183,7 @@ main.container { max-width: none; padding: 0; display: flex; }
 .page.active { display: block; animation: fadeIn .3s ease-out forwards; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 article, fieldset { border-radius: var(--pico-border-radius); border: 1px solid var(--pico-card-border-color); background: var(--pico-card-background-color); padding: 2rem; }
-dialog article { box-shadow: var(--pico-shadow-lg); }
+dialog article { box-shadow: var(--shadow-overlay); }
 /* 禁用态：Pico 用 opacity:.5 淡化，白字压在淡蓝底上≈1.9:1 不可读；改为中性底 + 静音字（4.6:1 以上） */
 button[disabled], button[disabled]:hover { opacity: 1; background-color: var(--surface-2); border-color: var(--border-subtle); color: var(--text-muted); cursor: not-allowed; }
 legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
@@ -263,7 +264,7 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
 .public-card-meta { font-size: 0.8rem; color: var(--c-text-muted); white-space: nowrap; }
 .public-card-content { font-family: inherit; font-size: 0.95rem; line-height: 1.5; color: var(--c-text); overflow-wrap: anywhere; word-break: normal; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .public-card-footer { font-size: 0.85rem; color: var(--c-text-muted); display: flex; align-items: center; gap: 0.5rem; }
-.home-toast { position: fixed; top: 80px; right: 20px; background-color: var(--c-button-bg); color: #fff; padding: 12px 20px; border-radius: 6px; z-index: 1000; font-weight: 500; box-shadow: var(--pico-shadow-lg); transition: transform 0.4s ease-in-out, opacity 0.4s ease-in-out; transform: translateY(-100px); opacity: 0; }
+.home-toast { position: fixed; top: 80px; right: 20px; background-color: var(--c-button-bg); color: var(--c-button-text); padding: 12px 20px; border-radius: 6px; z-index: 1000; font-weight: 500; box-shadow: var(--shadow-overlay); transition: transform 0.4s ease-in-out, opacity 0.4s ease-in-out; transform: translateY(-100px); opacity: 0; }
 .home-toast.show { transform: translateY(0); opacity: 1; }
 .home-toast.hide { transform: translateY(50px); opacity: 0; }
 
