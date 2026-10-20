@@ -116,11 +116,11 @@ pnpm deploy
 ## 模块职责速记
 
 - **routes/api.ts**：所有 `/api/*` 端点；登录用 PBKDF2 sha256（`auth.ts`），限流 5 分钟内失败 5 次返 429；`/api/settings` 写入走白名单（6 个 key）+ 配对校验（CF Token + Zone ID 必须同时，GitHub Token + Owner + Repo 必须同时）。
-- **routes/github-proxy.ts**：订阅器直读；要求路径匹配 `ip_sources.github_path` 白名单，自带 `Cache-Control: public, max-age=60, s-maxage=300`。
+- **routes/github-proxy.ts**：订阅器直读；只做「白名单查询 + 设置校验 + 调 GitHub module」（C4：缓存与超时/退避已移入 `sync/github.ts`）。
 - **routes/ui.ts**：首页 / `/login` / `/admin` 页面渲染，调用 `ui/templates.js` 生成 HTML。
 - **sync/domains.ts**：三种模式分流（`resolveRecordsForDomain`）—— `internal:hostmonit:yd/dx/lt` 内置三网；`is_deep_resolve=1` 深度解析 CNAME 链（最多 10 层）；`is_deep_resolve=0` 浅层克隆（同 CNAME）。
 - **sync/ip-sources.ts**：`fetch_strategy` 三选一（`direct_regex` / `phantomjs_cloud` / `proxy_codetabs`）；`/api/ip_sources/probe` 用于自动探测可用策略。
-- **sync/github.ts**：自动创建私有仓库（如不存在）→ 推送 IP 文件 → 提供代理读取。
+- **sync/github.ts**：GitHub 访问的唯一出口（`githubApiRequest`：认证 / User-Agent / Accept / 15s 超时 / 1 次退避重试）；自动创建私有仓库（如不存在）→ 推送 IP 文件 → 订阅器读（读穿边缘缓存，缓存键与 `Cache-Control: public, max-age=60, s-maxage=300` 也在此）。
 - **util/url-safety.ts**：`assertSafeHttpUrl` 拦 SSRF（拒绝内网/回环/链路本地/CGNAT/云元数据，含十进制、十六进制、IPv4-mapped IPv6 绕过形式）。
 - **util/auth.ts**：PBKDF2-HMAC-SHA256（100k 迭代）+ 旧版单轮 SHA-256 登录后自动升级（`legacyHashPassword` 不导出）。
 

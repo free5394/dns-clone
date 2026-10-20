@@ -1,8 +1,21 @@
-// github.ts — GitHub API 封装（仓库检查 / 内容读取 / 文件更新）
+// github.ts — GitHub API 封装（仓库检查 / 内容读取 / 文件更新 / 订阅器读）
 // 从 index.legacy.js 提取（原 1237-1310 行）
+// C4：全仓对 GitHub 的访问只走 githubApiRequest 一个出口（认证、User-Agent、Accept、超时、重试）
 
 import { fetchWithRetry } from '../util/fetch.ts';
 import { HttpError } from '../util/http-error.ts';
+
+/** 订阅器读的边缘缓存命名空间：合成键，不暴露真实请求 URL，也不与上游 URL 互相污染 */
+const SUBSCRIBER_CACHE_NAMESPACE = 'https://github-proxy.cache';
+
+/** 订阅器读的缓存响应头（TTL 归属本模块：5 分钟边缘缓存） */
+const SUBSCRIBER_CACHE_CONTROL = 'public, max-age=60, s-maxage=300';
+
+/** 上游非 2xx 时给订阅器的固定文案：不透传上游 JSON 错误体 */
+const SUBSCRIBER_FETCH_ERROR = '无法获取对应文件，请稍后重试。';
+
+/** 延迟写回调（路由传入 ExecutionContext.waitUntil）；缺省不等待、但吞掉写失败 */
+type WaitUntil = (promise: Promise<unknown>) => void;
 
 /** GitHub API 请求统一封装（非 2xx 由 fetchWithRetry 抛出 HttpError） */
 async function githubApiRequest(url: string, token: string, options: RequestInit = {}): Promise<Response> {
@@ -105,4 +118,53 @@ export async function updateFileOnGitHub({ token, owner, repo, path, content, me
     });
 
     await githubApiRequest(apiUrl, token, { method: 'PUT', body });
+}
+
+/** 订阅器读的合成边缘缓存键（键格式归本模块，路由不再知道缓存怎么拼） */
+function subscriberCacheKey(path: string): Request {
+    return new Request(new URL(path, SUBSCRIBER_CACHE_NAMESPACE).toString());
+}
+
+/**
+ * 订阅器读：读穿边缘缓存 → 未命中走上游（与同步路径同一套超时/退避）→ 仅成功响应写缓存。
+ * 返回已装配响应头与错误映射的 Response，路由只负责白名单与设置校验。
+ * 注意：同步写路径的「远端当前内容读」不走这里，否则变更检测会把缓存旧值当远端当前值。
+ */
+export async function readFileForSubscriber(
+    { token, owner, repo }: { token: string; owner: string; repo: string },
+    path: string,
+    waitUntil?: WaitUntil,
+): Promise<Response> {
+    // Cloudflare Workers 运行时的 caches.default（标准 DOM 的 CacheStorage 接口不含此字段）。
+    const cache = (caches as unknown as { default: Cache }).default;
+    const cacheKey = subscriberCacheKey(path);
+    const cached = await cache.match(cacheKey);
+    if (cached) return cached;
+
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    let upstream: Response;
+    try {
+        upstream = await githubApiRequest(apiUrl, token, {
+            headers: { 'Accept': 'application/vnd.github.v3.raw' }
+        });
+    } catch (e) {
+        // 上游非 2xx 被统一 fetch 归一成 HttpError：状态码原样透传（含 404 / 403），正文换成固定文案；
+        // 网络层错误继续冒泡，由 Worker 入口全局兜底转 500。
+        if (e instanceof HttpError) {
+            return new Response(SUBSCRIBER_FETCH_ERROR, { status: e.status });
+        }
+        throw e;
+    }
+
+    const response = new Response(upstream.body, {
+        headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control': SUBSCRIBER_CACHE_CONTROL
+        }
+    });
+
+    // 写缓存不阻塞订阅器响应；缺省也不等待，写失败不影响本次响应
+    const write = cache.put(cacheKey, response.clone()).catch(() => {});
+    if (waitUntil) waitUntil(write);
+    return response;
 }

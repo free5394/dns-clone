@@ -1,50 +1,26 @@
-// github-proxy.ts — 订阅器直读代理（GitHub 文件白名单代理 + 缓存）
-// 从 index.legacy.js 提取（原 handleGitHubFileProxy）
+// github-proxy.ts — 订阅器直读代理（白名单查询 + 设置校验 + 调 GitHub module）
+// C4：GitHub 访问与边缘缓存统一归入 sync/github.ts，本文件不再自建请求头或缓存
 
 import { getGitHubSettings } from '../db/client.ts';
+import { readFileForSubscriber } from '../sync/github.ts';
 
-/** 订阅器友好代理：按 github_path 白名单从 GitHub 拉取文件并缓存 300s */
+/** 订阅器友好代理：命中 github_path 白名单后由 GitHub module 读穿边缘缓存 */
 export async function handleGitHubFileProxy(fileName: string, env: { WUYA: D1Database }, ctx: ExecutionContext): Promise<Response> {
-    const db = env.WUYA;
-    const source = await db.prepare("SELECT * FROM ip_sources WHERE github_path = ?").bind(fileName).first();
+    const source = await env.WUYA.prepare("SELECT * FROM ip_sources WHERE github_path = ?").bind(fileName).first();
 
     if (!source) {
         return new Response('请求的文件不存在或不在本服务管理范围内。', { status: 404 });
     }
 
-    const githubSettings = await getGitHubSettings(db);
+    const githubSettings = await getGitHubSettings(env.WUYA);
     if (!githubSettings.token || !githubSettings.owner || !githubSettings.repo) {
         return new Response('服务器尚未完成初始化配置。', { status: 500 });
     }
 
-    // Cloudflare Workers 运行时的 caches.default（标准 DOM 的 CacheStorage 接口不含此字段）。
-    const cache = (caches as unknown as { default: Cache }).default;
-    const cacheKey = new Request(new URL(fileName, "https://github-proxy.cache").toString());
-    let response = await cache.match(cacheKey);
-
-    if (!response) {
-        const apiUrl = `https://api.github.com/repos/${githubSettings.owner}/${githubSettings.repo}/contents/${fileName}`;
-        const headers = {
-            'Authorization': `Bearer ${githubSettings.token}`,
-            'User-Agent': 'DNS-Clone-Worker-Proxy',
-            'Accept': 'application/vnd.github.v3.raw'
-        };
-
-        const githubResponse = await fetch(apiUrl, { headers });
-
-        if (!githubResponse.ok) {
-            return new Response('无法获取对应文件，请稍后重试。', { status: githubResponse.status });
-        }
-
-        response = new Response(githubResponse.body, {
-            headers: {
-                'Content-Type': 'text/plain; charset=utf-8',
-                'Cache-Control': 'public, max-age=60, s-maxage=300'
-            }
-        });
-
-        ctx.waitUntil(cache.put(cacheKey, response.clone()));
-    }
-
-    return response;
+    // 缓存写入走延迟回调，不阻塞本次响应
+    return await readFileForSubscriber(
+        { token: githubSettings.token, owner: githubSettings.owner, repo: githubSettings.repo },
+        fileName,
+        (promise) => ctx.waitUntil(promise),
+    );
 }
