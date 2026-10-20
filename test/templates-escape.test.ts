@@ -150,8 +150,8 @@ describe("getDashboardPage 仪表盘转义 (I2)", () => {
         expect(html).toMatch(/function esc\(s\)/);
         // renderStatus 的 title 属性
         expect(html).toMatch(/title="\$\{esc\(item\.last_sync_error/);
-        // renderDomainCard：notes / target_domain / source_domain
-        expect(html).toMatch(/<strong>\$\{esc\(domain\.notes\)\}<\/strong>/);
+        // renderDomainCard：notes / target_domain / source_domain（notes 用 .domain-notes 区别行内标签）
+        expect(html).toMatch(/<strong class="domain-notes">\$\{esc\(domain\.notes\)\}<\/strong>/);
         expect(html).toMatch(/title="\$\{esc\(domain\.target_domain\)\}"/);
         expect(html).toMatch(/\$\{esc\(sourceDisplay\)\}/);
         // renderIpSourceCard：url / github_path

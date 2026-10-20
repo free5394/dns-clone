@@ -156,42 +156,8 @@ body {
     width: 100%;
     min-height: 100vh;
 }
-.background-blurs {
-    position: fixed;
-    top: 0; left: 0;
-    width: 100%; height: 100%;
-    overflow: hidden;
-    z-index: 0;
-}
-.background-blurs::before {
-    content: '';
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    background: var(--noise-bg);
-}
-.blur-orb {
-    position: absolute;
-    border-radius: 50%;
-    filter: blur(100px);
-    opacity: 0.2;
-    animation: move 20s infinite alternate;
-}
-.blur-orb-1 {
-    width: 500px; height: 500px;
-    top: 10%; left: 10%;
-    background-color: #007aff;
-}
-.blur-orb-2 {
-    width: 400px; height: 400px;
-    bottom: 10%; right: 10%;
-    background-color: #ff3b30;
-    animation-delay: -10s;
-}
-@keyframes move {
-    from { transform: translate(-50px, -50px) rotate(0deg); }
-    to { transform: translate(50px, 50px) rotate(360deg); }
-}
+/* 装饰层已移除：双色光斑（filter:blur(100px) + 20s 无限动画）与 SVG 噪点叠加
+   既拖累低端设备合成，也把页面主题色搅成"生成页"观感；层次改由留白与边框承担。 */
 main.container { max-width: none; padding: 0; display: flex; }
 .auth-container {
     display: flex;
@@ -209,26 +175,46 @@ main.container { max-width: none; padding: 0; display: flex; }
 .sidebar-nav a { display: flex; align-items: center; gap: .85rem; padding: .85rem 1.5rem; color: var(--text-body); text-decoration: none; margin: 0 .75rem; border-radius: 6px; transition: background-color .2s ease, color .2s ease; font-weight: 500; }
 .sidebar-nav a:hover { background: var(--surface-2); color: var(--text-strong); }
 .sidebar-nav a.active { color: var(--c-button-text); background-color: var(--c-button-bg); font-weight: 600; }
-.main-content { flex-grow: 1; padding: 2.5rem; }
-.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
-.page-header h2 { margin: 0; font-size: 2rem; font-weight: 700; }
+.main-content { flex-grow: 1; min-width: 0; width: 100%; max-width: 1180px; margin-inline: auto; padding: var(--space-10) var(--space-8); }
+.page-header { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); flex-wrap: wrap; margin-bottom: var(--space-6); }
+.page-header h2 { margin: 0; font-size: 1.75rem; font-weight: 700; letter-spacing: -0.01em; }
 .page { display: none; }
 .page.active { display: block; animation: fadeIn .3s ease-out forwards; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-article, fieldset { border-radius: var(--pico-border-radius); border: 1px solid var(--pico-card-border-color); background: var(--pico-card-background-color); box-shadow: var(--pico-shadow-sm); padding: 2rem; }
+article, fieldset { border-radius: var(--pico-border-radius); border: 1px solid var(--pico-card-border-color); background: var(--pico-card-background-color); padding: 2rem; }
 dialog article { box-shadow: var(--pico-shadow-lg); }
 /* 禁用态：Pico 用 opacity:.5 淡化，白字压在淡蓝底上≈1.9:1 不可读；改为中性底 + 静音字（4.6:1 以上） */
 button[disabled], button[disabled]:hover { opacity: 1; background-color: var(--surface-2); border-color: var(--border-subtle); color: var(--text-muted); cursor: not-allowed; }
 legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
-.domain-card { background-color: var(--pico-card-background-color); border: 1px solid var(--pico-card-border-color); border-radius: var(--pico-border-radius); padding: 1.5rem; display: grid; grid-template-columns: 2fr 1.5fr 1fr auto; gap: 1.5rem; align-items: center; transition: box-shadow .2s ease, transform .2s ease; margin-bottom: 1rem; }
-.card-col { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
-.card-col strong { font-size: 0.75rem; color: var(--text-muted); margin-bottom: .25rem; text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; }
+/* 行网格：表头与数据行共用同一列定义，避免两处漂移 */
+.row-grid { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.6fr) minmax(0, 1.2fr) auto; gap: var(--space-5); align-items: center; }
+.domain-card { background-color: var(--pico-card-background-color); border: 1px solid var(--pico-card-border-color); border-radius: var(--pico-border-radius); padding: var(--space-4) var(--space-5); margin-bottom: var(--space-3); transition: border-color .15s ease; }
+.domain-card:hover { border-color: var(--pico-primary); }
+.card-col { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* 行内小标签：窄屏可见，≥768 由列表表头代替（保留给读屏） */
+.col-label { font-size: 0.8125rem; color: var(--text-muted); font-weight: 500; }
+.domain-notes { font-size: 1rem; font-weight: 500; color: var(--text-strong); }
+.domain-list-head { display: none; }
+@media (min-width: 1024px) {
+    .col-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+    .domain-list-head { display: grid; padding: 0 var(--space-5) var(--space-2); font-size: 0.8125rem; color: var(--text-muted); font-weight: 500; }
+}
 .card-col .domain-cell { font-size: 1rem; font-weight: 500; color: var(--text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .card-col small.domain-cell { color: var(--text-muted); font-weight: 400; }
-.card-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+.card-actions { display: flex; justify-content: flex-end; gap: var(--space-2); flex-wrap: nowrap; }
+.card-actions button { font-size: 0.875rem; padding: .5rem .875rem; white-space: nowrap; margin: 0; }
+/* 删除：破坏性动作用红色幽灵按钮。不写死颜色——Pico 的 .contrast 在暗色主题下取到近黑色，
+   与深色卡片同色导致按钮"消失"（实测 rgb(24,28,37) 文字压在 #1c1c1e 卡片上） */
+.card-actions button.contrast { color: var(--danger); border-color: var(--danger); background: transparent; }
+.card-actions button.contrast:hover:not([disabled]) { background: var(--danger); border-color: var(--danger); color: #fff; }
 .record-details summary { display: inline-flex; align-items: center; cursor: pointer; user-select: none; list-style: none; font-weight: 500; }
 .record-details ul { margin: 8px 0 0; padding-left: 20px; font-size: 0.9em; }
-.status-success { color: var(--ok); } .status-failed { color: var(--danger); } .status-no_change { color: var(--text-muted); }
+/* 同步状态改徽标：底色由语义色混合，亮暗主题都跟着走，不再靠纯文字颜色 */
+.status-success, .status-failed, .status-no_change, .status-pending { display: inline-flex; align-items: center; font-size: 0.8125rem; font-weight: 500; padding: 1px var(--space-2); border-radius: var(--radius-sm); }
+.status-success { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.status-failed { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.status-no_change { color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 12%, transparent); }
+.status-pending { color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 8%, transparent); }
 .notifications, .home-toast { z-index: 1050; }
 .public-nav {
     position: sticky;
@@ -239,12 +225,9 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background: var(--c-bg-blur);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    background: var(--c-card-bg);
     border: 1px solid var(--c-card-border);
     border-radius: var(--pico-border-radius);
-    box-shadow: var(--pico-shadow-md);
     z-index: 100;
 }
 .public-nav-title { font-size: 1.25rem; font-weight: 600; color: var(--c-text); }
@@ -261,68 +244,86 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
 .public-nav-actions a:hover { filter: brightness(1.1); }
 #theme-toggle { background: var(--c-icon-bg); color: var(--c-text); font-size: 1.2rem; width: 40px; height: 40px; display:flex; align-items:center; justify-content:center; }
 .public-container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
-.public-section h2 { font-size: 1.75rem; margin-bottom: 2rem; display: flex; align-items: center; gap: 0.75rem; color: var(--c-text); border: none; padding: 0;}
-.public-section h2::before { content: ''; display: block; width: 5px; height: 1.25rem; background-color: var(--c-primary); border-radius: 3px; }
+.public-section h2 { font-size: 1.5rem; margin-bottom: var(--space-5); color: var(--c-text); border: none; padding: 0; }
 .public-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.5rem; }
 .public-card {
     background: var(--c-card-bg);
     border: 1px solid var(--c-card-border);
     border-radius: var(--pico-border-radius);
-    box-shadow: var(--pico-shadow-md);
-    padding: 1.5rem;
+    padding: var(--space-5);
     cursor: pointer;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color .15s ease;
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: var(--space-3);
 }
-.public-card:hover { transform: translateY(-5px); box-shadow: var(--pico-shadow-lg); }
+.public-card:hover { border-color: var(--c-primary); }
 .public-card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
 .public-card-title { font-size: 1.1rem; font-weight: 600; color: var(--c-text); margin: 0; }
 .public-card-meta { font-size: 0.8rem; color: var(--c-text-muted); white-space: nowrap; }
-.public-card-content { font-family: "SF Mono", "Consolas", "Menlo", monospace; font-size: 1rem; color: var(--c-text-accent); word-break: break-all; }
+.public-card-content { font-family: inherit; font-size: 0.95rem; line-height: 1.5; color: var(--c-text); overflow-wrap: anywhere; word-break: normal; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .public-card-footer { font-size: 0.85rem; color: var(--c-text-muted); display: flex; align-items: center; gap: 0.5rem; }
 .home-toast { position: fixed; top: 80px; right: 20px; background-color: var(--c-button-bg); color: #fff; padding: 12px 20px; border-radius: 6px; z-index: 1000; font-weight: 500; box-shadow: var(--pico-shadow-lg); transition: transform 0.4s ease-in-out, opacity 0.4s ease-in-out; transform: translateY(-100px); opacity: 0; }
 .home-toast.show { transform: translateY(0); opacity: 1; }
 .home-toast.hide { transform: translateY(50px); opacity: 0; }
 
-@media (max-width: 768px) {
-    .public-nav { top: 0; left: 0; right: 0; border-radius: 0; width: 100%; }
-    .public-container { padding: 1rem; }
-    .public-grid { grid-template-columns: 1fr; }
-    main.container {
-        display: block;
-    }
-    .sidebar {
-        width: 100%;
-        height: auto;
-        position: static;
-        border-right: none;
-        border-bottom: 1px solid var(--pico-card-border-color);
-    }
-    .main-content {
-        padding: 1.5rem 1rem;
-    }
-    .page-header {
-        flex-direction: column;
-        gap: 1rem;
-        align-items: flex-start;
-    }
-    .page-header h2 {
-        font-size: 1.75rem;
-    }
-    .domain-card {
-        grid-template-columns: 1fr;
-        gap: 1rem;
-        padding: 1rem;
-    }
-    .card-actions {
-        flex-direction: row;
-        justify-content: flex-start;
-        flex-wrap: wrap;
-    }
+/* 统一焦点环：键盘 Tab 才出现，鼠标点击不残留 */
+:focus-visible { outline: 2px solid var(--pico-primary); outline-offset: 2px; }
+/* 尊重系统"减少动态效果"：关掉入场与悬浮过渡，保留加载中的旋转指示 */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+    .fa-spin { animation-duration: 1.5s !important; animation-iteration-count: infinite !important; }
 }
-</style><script>/* 首帧即应用已保存主题：避免暗色闪白，也让没有切换按钮的后台页跟随主题 */try{var t=localStorage.getItem('theme')||'light';document.documentElement.dataset.theme=t;document.documentElement.classList.toggle('dark',t==='dark')}catch(e){}</script></head><body><main class="container">${content}</main><div id="notifications" class="notifications"></div></body></html>`; }
+/* 字段说明改浮层：原实现没有定位，长文案会内联铺开把标签行撑断 */
+.tooltip { position: relative; display: inline-flex; cursor: help; }
+.tooltip-text { position: absolute; top: calc(100% + 6px); left: 50%; transform: translateX(-50%); width: max-content; max-width: 260px; padding: var(--space-2) var(--space-3); background: var(--text-strong); color: var(--surface-1); font-size: 0.8125rem; font-weight: 400; line-height: 1.5; border-radius: var(--radius-sm); opacity: 0; visibility: hidden; transition: opacity .15s ease; z-index: 10; }
+.tooltip:hover .tooltip-text, .tooltip:focus-within .tooltip-text { opacity: 1; visibility: visible; }
+/* 弹窗底部：主次按钮同宽，修正"取消"贴边 60px、"保存"满宽的失衡 */
+dialog article footer { display: flex; gap: var(--space-3); }
+dialog article footer button { flex: 1 1 0; margin: 0; }
+/* 取消：次按钮用幽灵底，避免实心深灰块和主按钮抢注意力 */
+dialog article footer button.secondary { background: transparent; border: 1px solid var(--pico-card-border-color); color: var(--text-body); }
+dialog article footer button.secondary:hover { background: var(--surface-2); border-color: var(--text-muted); color: var(--text-strong); }
+/* 设置页是表单页：限宽让输入行不超过舒适扫视宽度 */
+#page-settings { max-width: 820px; }
+/* ≤1024：侧栏与内容留白收紧 */
+@media (max-width: 1024px) {
+    :root { --sidebar-width: 200px; }
+    .main-content { padding: var(--space-8) var(--space-6); }
+    .domain-card { gap: var(--space-4); }
+    .public-container { padding: var(--space-6) var(--space-5); }
+}
+/* ≤1023：列表退回单列卡片，行内标签重新可见（表格布局需要 ≥1024 的宽度才不挤） */
+@media (max-width: 1023px) {
+    .row-grid { grid-template-columns: 1fr; gap: var(--space-3); align-items: start; }
+    .domain-list-head { display: none; }
+}
+/* ≤767：后台侧栏折叠为顶栏 */
+@media (max-width: 767px) {
+    .public-nav { top: 0; left: 0; right: 0; border-radius: 0; width: 100%; }
+    .public-container { padding: var(--space-4); }
+    .public-grid { grid-template-columns: 1fr; }
+    main.container { display: block; }
+    .sidebar { width: 100%; height: auto; position: static; border-right: none; border-bottom: 1px solid var(--pico-card-border-color); }
+    .sidebar-header { padding: var(--space-4) var(--space-5); }
+    .sidebar-nav { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-1); padding: var(--space-2) var(--space-3); }
+    .sidebar-nav a { justify-content: center; margin: 0; padding: var(--space-3) var(--space-1); font-size: 0.875rem; gap: var(--space-2); white-space: nowrap; }
+    .main-content { padding: var(--space-5) var(--space-4); }
+    .page-header { flex-direction: column; align-items: flex-start; gap: var(--space-3); }
+    .domain-card { padding: var(--space-4); }
+    .card-actions { justify-content: flex-start; flex-wrap: wrap; }
+    .card-actions button { flex: 1 1 0; }
+}
+/* ≤520：窄屏进一步压缩 */
+@media (max-width: 520px) {
+    .main-content { padding: var(--space-4) var(--space-3); }
+    .page-header h2 { font-size: 1.375rem; }
+    .public-nav { padding: var(--space-2) var(--space-3); }
+    .public-card { padding: var(--space-4); }
+    .card-actions { flex-direction: column; }
+    .card-actions button { width: 100%; }
+}
+</style><script>/* 首帧即应用已保存主题：避免暗色闪白，也让没有切换按钮的后台页跟随主题 */try{var t=localStorage.getItem('theme')||'light';document.documentElement.dataset.theme=t;document.documentElement.classList.toggle('dark',t==='dark')}catch(e){}</script></head><body><main class="container">${content}</main><div id="notifications" class="notifications" role="status" aria-live="polite"></div></body></html>`; }
 
 export function getSetupPage() { return `<div class="auth-container"><article id="setupForm"><h1>系统初始化</h1><p>请设置一个安全的管理员密码以保护您的应用。</p><form><label for="password">管理员密码 (最少8位)</label><input type="password" id="password" required minlength="8"><button type="submit">设置密码</button></form><p id="error-msg" style="color:red"></p></article></div><script>document.querySelector('#setupForm form').addEventListener('submit',async function(e){e.preventDefault();const password=document.getElementById('password').value;document.getElementById('error-msg').textContent='';try{const res=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})});if(!res.ok){const err=await res.json();throw new Error(err.error||'设置失败')}alert('设置成功，页面即将刷新...');setTimeout(()=>window.location.reload(),1000)}catch(e){document.getElementById('error-msg').textContent=e.message}});</script>`;}
 
@@ -364,7 +365,7 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
             </div>
             <div class="public-card-content">${escapeHtml(d.target_domain)}</div>
             <div class="public-card-footer">
-                <i class="fa-solid fa-link fa-xs"></i> <span>来源: ${escapeHtml(sourceHost)}</span>
+                <span>来源: ${escapeHtml(sourceHost)}</span>
             </div>
         </div>`;
     }).join('');
@@ -386,7 +387,7 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
             </div>
             <div class="public-card-content">${escapeHtml(fullUrl)}</div>
             <div class="public-card-footer">
-                <i class="fa-solid fa-link fa-xs"></i> <span>来源: ${escapeHtml(sourceHost)}</span>
+                <span>来源: ${escapeHtml(sourceHost)}</span>
             </div>
         </div>`;
     }).join('');
@@ -397,31 +398,27 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
 
     return `
     <div class="public-body-wrapper">
-        <div class="background-blurs">
-            <div class="blur-orb blur-orb-1"></div>
-            <div class="blur-orb blur-orb-2"></div>
-        </div>
         <nav class="public-nav">
             <div class="public-nav-title">CF-DNS-Clon</div>
             <div class="public-nav-actions">
                 ${authButton}
-                <button id="theme-toggle" aria-label="Toggle theme">
-                    <i class="fa-solid fa-moon"></i>
+                <button id="theme-toggle" type="button" aria-label="切换深浅色主题">
+                    <i class="fa-solid fa-moon" aria-hidden="true"></i>
                 </button>
             </div>
         </nav>
         <div class="public-container">
             <section class="public-section">
-                <h2><i class="fa-solid fa-globe"></i> 优选域名</h2>
+                <h2>优选域名</h2>
                 <div class="public-grid">${domainCards || '<p>暂无可用数据</p>'}</div>
             </section>
             <section class="public-section">
-                <h2><i class="fa-solid fa-server"></i> 优选API</h2>
+                <h2>优选API</h2>
                 <div class="public-grid">${ipSourceCards || '<p>暂无可用数据</p>'}</div>
             </section>
         </div>
     </div>
-    <div id="copy-toast" class="home-toast"></div>
+    <div id="copy-toast" class="home-toast" role="status" aria-live="polite"></div>
     
     <dialog id="login-modal">
       <article>
@@ -448,8 +445,9 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
             document.documentElement.classList.toggle('dark', dark);
             document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
             themeToggle.innerHTML = dark
-                ? '<i class="fa-solid fa-sun"></i>'
-                : '<i class="fa-solid fa-moon"></i>';
+                ? '<i class="fa-solid fa-sun" aria-hidden="true"></i>'
+                : '<i class="fa-solid fa-moon" aria-hidden="true"></i>';
+            themeToggle.setAttribute('aria-label', dark ? '切换到浅色主题' : '切换到深色主题');
             localStorage.setItem('theme', theme);
         }
 
@@ -586,7 +584,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
       return \`<details class="record-details"><summary><b>\${esc(first.type)}:</b> (共 \${records.length} 条)</summary><ul>\${records.map(r => \`<li><b>\${esc(r.type)}:</b> \${esc(r.content)}</li>\`).join('')}</ul></details>\`;
   }
   
-  function renderStatus(item) { switch (item.last_sync_status) { case 'success': return \`<span class="status-success">✔ 同步成功</span>\`; case 'failed': return \`<span class="status-failed" title="\${esc(item.last_sync_error || '未知错误')}">✖ 同步失败</span>\`; case 'no_change': return \`<span class="status-no_change">✔ 内容一致</span>\`; default: return '○ 待定'; } }
+  function renderStatus(item) { switch (item.last_sync_status) { case 'success': return \`<span class="status-success">✔ 同步成功</span>\`; case 'failed': return \`<span class="status-failed" title="\${esc(item.last_sync_error || '未知错误')}">✖ 同步失败</span>\`; case 'no_change': return \`<span class="status-no_change">✔ 内容一致</span>\`; default: return '<span class="status-pending">○ 待定</span>'; } }
   
   function renderDomainCard(domain) {
       let prefix = domain.target_domain;
@@ -595,25 +593,26 @@ function getDashboardScript(domains, ipSources, settings) { return `
       } else if (zoneName && domain.target_domain === zoneName) {
           prefix = '@';
       }
-      const displayContent = domain.notes ? \`<strong>\${esc(domain.notes)}</strong>\` : \`<span class="domain-cell" title="\${esc(domain.target_domain)}">\${esc(prefix)}</span>\`;
+      const displayContent = domain.notes ? \`<strong class="domain-notes">\${esc(domain.notes)}</strong>\` : \`<span class="domain-cell" title="\${esc(domain.target_domain)}">\${esc(prefix)}</span>\`;
       const isSystem = domain.is_system;
       const systemClass = isSystem ? 'system-domain' : '';
       const sourceDisplay = isSystem ? '系统内置' : domain.source_domain;
 
       return \`
-      <div class="domain-card \${systemClass}" id="domain-card-\${domain.id}">
-          <div class="card-col"><strong>我的域名 → 克隆源</strong><span class="domain-cell" title="\${esc(domain.target_domain)}" data-target="\${esc(domain.target_domain)}" onclick="window.copyToClipboard(this.dataset.target)">\${displayContent}</span><small class="domain-cell" title="\${esc(domain.source_domain)}">\${esc(sourceDisplay)}</small></div>
-          <div class="card-col"><strong>当前解析</strong><div class="records-placeholder" data-domain-id="\${domain.id}"><i class="fa-solid fa-spinner fa-spin"></i> 正在查询...</div></div>
-          <div class="card-col"><strong>上次同步</strong><div>\${renderStatus(domain)}</div><small>\${formatBeijingTime(domain.last_synced_time)}</small></div>
+      <div class="domain-card row-grid \${systemClass}" id="domain-card-\${domain.id}">
+          <div class="card-col"><span class="col-label">我的域名 → 克隆源</span><span class="domain-cell" title="\${esc(domain.target_domain)}" data-target="\${esc(domain.target_domain)}" onclick="window.copyToClipboard(this.dataset.target)">\${displayContent}</span><small class="domain-cell" title="\${esc(domain.source_domain)}">\${esc(sourceDisplay)}</small></div>
+          <div class="card-col"><span class="col-label">当前解析</span><div class="records-placeholder" data-domain-id="\${domain.id}"><i class="fa-solid fa-spinner fa-spin"></i> 正在查询...</div></div>
+          <div class="card-col"><span class="col-label">上次同步</span><div>\${renderStatus(domain)}</div><small>\${formatBeijingTime(domain.last_synced_time)}</small></div>
           <div class="card-actions"><button class="outline" onclick="window.individualSync(\${domain.id})">同步</button><button class="secondary outline" onclick="window.openModal('domainModal', \${domain.id})" \${isSystem ? 'disabled' : ''}>编辑</button><button class="contrast outline" onclick="window.deleteDomain(\${domain.id})" \${isSystem ? 'disabled' : ''}>删除</button></div>
       </div>\`;
   }
   function renderDomainList() { 
       const container = document.getElementById('domain-list-container');
       if (currentDomains.length > 0) {
-        container.innerHTML = currentDomains.map(renderDomainCard).join(''); 
+        // 表头只在 ≥768 显示（与行共用 row-grid 列宽）；窄屏由行内 .col-label 承担
+        container.innerHTML = '<div class="domain-list-head row-grid"><span>我的域名 → 克隆源</span><span>当前解析</span><span>上次同步</span><span></span></div>' + currentDomains.map(renderDomainCard).join(''); 
       } else {
-        container.innerHTML = '<div class="empty-state"><p>暂无域名克隆目标，请点击右上角按钮添加。</p></div>';
+        container.innerHTML = '<div class="empty-state"><p>暂无域名克隆目标，点右上角「添加克隆目标」新建一条。</p></div>';
       }
   }
 
@@ -621,19 +620,19 @@ function getDashboardScript(domains, ipSources, settings) { return `
       // github_path 是 admin 可控值：URL 属性用 encodeURIComponent 阻断 scheme/属性逃逸，展示文本用 esc
       const fileUrl = \`\${window.location.origin}/\${encodeURIComponent(source.github_path)}\`;
       return \`
-      <div class="domain-card" id="ip-source-card-\${source.id}">
-           <div class="card-col" style="flex-grow: 2;"><strong>GitHub 文件路径</strong><a href="\${esc(fileUrl)}" target="_blank" rel="noopener" class="domain-cell" onclick="event.stopPropagation();">\${esc(source.github_path)}</a><small class="domain-cell" title="\${esc(source.url)}">源: \${esc(source.url)}</small></div>
-           <div class="card-col"><strong>抓取策略</strong><span>\${esc(source.fetch_strategy || '尚未探测')}</span></div>
-          <div class="card-col"><strong>上次同步</strong><small>\${renderStatus(source)} @ \${formatBeijingTime(source.last_synced_time)}</small></div>
+      <div class="domain-card row-grid" id="ip-source-card-\${source.id}">
+           <div class="card-col"><span class="col-label">GitHub 文件路径</span><a href="\${esc(fileUrl)}" target="_blank" rel="noopener" class="domain-cell" onclick="event.stopPropagation();">\${esc(source.github_path)}</a><small class="domain-cell" title="\${esc(source.url)}">源: \${esc(source.url)}</small></div>
+           <div class="card-col"><span class="col-label">抓取策略</span><span>\${esc(source.fetch_strategy || '尚未探测')}</span></div>
+          <div class="card-col"><span class="col-label">上次同步</span><div>\${renderStatus(source)}</div><small>\${formatBeijingTime(source.last_synced_time)}</small></div>
           <div class="card-actions"><button class="outline" onclick="window.syncSingleIpSource(\${source.id})">同步</button><button class="secondary outline" onclick="window.openModal('ipSourceModal', \${source.id})">编辑</button><button class="contrast outline" onclick="window.deleteIpSource(\${source.id})">删除</button></div>
       </div>\`;
   }
   function renderIpSourceList() { 
       const container = document.getElementById('ip-source-list-container');
       if (currentIpSources.length > 0) {
-        container.innerHTML = currentIpSources.map(renderIpSourceCard).join('');
+        container.innerHTML = '<div class="domain-list-head row-grid"><span>GitHub 文件路径</span><span>抓取策略</span><span>上次同步</span><span></span></div>' + currentIpSources.map(renderIpSourceCard).join('');
       } else {
-        container.innerHTML = '<div class="empty-state"><p>暂无IP源，请点击右上角按钮添加。</p></div>';
+        container.innerHTML = '<div class="empty-state"><p>暂无 IP 源，点右上角「添加IP源」新建一条（需先在「系统设置」填好 GitHub Token / 用户名 / 仓库）。</p></div>';
       }
   }
 
