@@ -298,6 +298,12 @@ dialog article footer button.secondary:hover { background: var(--surface-2); bor
     .row-grid { grid-template-columns: 1fr; gap: var(--space-3); align-items: start; }
     .domain-list-head { display: none; }
 }
+/* 768–1023：卡片内部已是单列堆叠，容器再并两列换回一半首屏密度（每列约 380px，动作按钮仍能一行放下） */
+@media (min-width: 768px) and (max-width: 1023px) {
+    #domain-list-container, #ip-source-list-container { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); align-items: start; }
+    #domain-list-container .domain-card, #ip-source-list-container .domain-card { margin-bottom: 0; }
+    #domain-list-container .empty-state, #ip-source-list-container .empty-state { grid-column: 1 / -1; }
+}
 /* ≤767：后台侧栏折叠为顶栏 */
 @media (max-width: 767px) {
     .public-nav { top: 0; left: 0; right: 0; border-radius: 0; width: 100%; }
@@ -600,7 +606,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
 
       return \`
       <div class="domain-card row-grid \${systemClass}" id="domain-card-\${domain.id}">
-          <div class="card-col"><span class="col-label">我的域名 → 克隆源</span><span class="domain-cell" title="\${esc(domain.target_domain)}" data-target="\${esc(domain.target_domain)}" onclick="window.copyToClipboard(this.dataset.target)">\${displayContent}</span><small class="domain-cell" title="\${esc(domain.source_domain)}">\${esc(sourceDisplay)}</small></div>
+          <div class="card-col"><span class="col-label">克隆目标</span><span class="domain-cell" title="\${esc(domain.target_domain)}" data-target="\${esc(domain.target_domain)}" onclick="window.copyToClipboard(this.dataset.target)">\${displayContent}</span><small class="domain-cell" title="\${esc(domain.source_domain)}">\${esc(sourceDisplay)}</small></div>
           <div class="card-col"><span class="col-label">当前解析</span><div class="records-placeholder" data-domain-id="\${domain.id}"><i class="fa-solid fa-spinner fa-spin"></i> 正在查询...</div></div>
           <div class="card-col"><span class="col-label">上次同步</span><div>\${renderStatus(domain)}</div><small>\${formatBeijingTime(domain.last_synced_time)}</small></div>
           <div class="card-actions"><button class="outline" onclick="window.individualSync(\${domain.id})">同步</button><button class="secondary outline" onclick="window.openModal('domainModal', \${domain.id})" \${isSystem ? 'disabled' : ''}>编辑</button><button class="contrast outline" onclick="window.deleteDomain(\${domain.id})" \${isSystem ? 'disabled' : ''}>删除</button></div>
