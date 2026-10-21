@@ -4,23 +4,32 @@
 // HTML 实体转义：所有插值到模板字符串的用户控制字段必须经过 escapeHtml
 // 防止存储型 XSS（攻击者写入恶意 notes/target_domain 等字段即可在所有访客浏览器执行）
 function escapeHtml(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    }[c]));
+    return String(s == null ? "" : s).replace(
+        /[&<>"']/g,
+        (c) =>
+            ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#39;",
+            })[c]
+    );
 }
 
 // 脚本上下文 JSON 安全化（I2）：JSON.stringify 不转义 <，
 // 值里含 </script> 会提前闭合 <script> 标签造成注入；把 < 序列化为 \u003c，
 // 解析后仍是原字符，仅阻断标签逃逸
 function safeJsonForScript(value) {
-    return JSON.stringify(value).replace(/</g, '\\u003c');
+    return JSON.stringify(value).replace(/</g, "\\u003c");
 }
 
 /**
  * 渲染公共 HTML 骨架（DOCTYPE + PicoCSS + FontAwesome + 全局 CSS 变量）
  * 所有动态值在调用方传入前已经过 escapeHtml；本函数只做字符串拼接。
  */
-export function getHtmlLayout(title, content) { return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${title}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"><style>
+export function getHtmlLayout(title, content) {
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${title}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"><style>
 /* Pico v2 的浅色令牌定义在 :root:not([data-theme=dark])（特异性 0,2,0），
    单纯 :root（0,1,0）会被压过；故浅色块也用 0,2,0 的 [data-theme="light"]，
    暗色块同样用 0,2,0 并排在后面，靠先后顺序胜出。两面都用属性选择器，避免 :not() 互相冲突。 */
@@ -342,9 +351,12 @@ dialog article footer button.secondary:hover { background: var(--surface-2); bor
 }
 </style><script>/* 首帧即应用已保存主题：避免暗色闪白，也让没有切换按钮的后台页跟随主题 *//* FIX-24 主题：首帧按"已保存值 → 系统偏好"决定，避免暗色闪白；用户没显式选过就一直跟着系统变。
    切换按钮由各页自行放置（首页导航、后台侧栏），逻辑只在这里定义一次，避免两处实现漂移。 */
-(function(){var mq=window.matchMedia('(prefers-color-scheme: dark)');function stored(){try{return localStorage.getItem('theme')}catch(e){return null}}function applyTheme(t){var dark=t==='dark';document.documentElement.classList.toggle('dark',dark);document.documentElement.dataset.theme=dark?'dark':'light';var btn=document.getElementById('theme-toggle');if(!btn)return;btn.innerHTML=dark?'<i class="fa-solid fa-sun" aria-hidden="true"></i>':'<i class="fa-solid fa-moon" aria-hidden="true"></i>';btn.setAttribute('aria-label',dark?'切换到浅色主题':'切换到深色主题')}function preferred(){return stored()||(mq.matches?'dark':'light')}applyTheme(preferred());document.addEventListener('DOMContentLoaded',function(){var btn=document.getElementById('theme-toggle');if(!btn)return;btn.addEventListener('click',function(){var next=document.documentElement.classList.contains('dark')?'light':'dark';try{localStorage.setItem('theme',next)}catch(e){}applyTheme(next)})});mq.addEventListener('change',function(e){if(!stored())applyTheme(e.matches?'dark':'light')})})()</script></head><body><main class="container">${content}</main><div id="notifications" class="notifications" role="status" aria-live="polite"></div></body></html>`; }
+(function(){var mq=window.matchMedia('(prefers-color-scheme: dark)');function stored(){try{return localStorage.getItem('theme')}catch(e){return null}}function applyTheme(t){var dark=t==='dark';document.documentElement.classList.toggle('dark',dark);document.documentElement.dataset.theme=dark?'dark':'light';var btn=document.getElementById('theme-toggle');if(!btn)return;btn.innerHTML=dark?'<i class="fa-solid fa-sun" aria-hidden="true"></i>':'<i class="fa-solid fa-moon" aria-hidden="true"></i>';btn.setAttribute('aria-label',dark?'切换到浅色主题':'切换到深色主题')}function preferred(){return stored()||(mq.matches?'dark':'light')}applyTheme(preferred());document.addEventListener('DOMContentLoaded',function(){var btn=document.getElementById('theme-toggle');if(!btn)return;btn.addEventListener('click',function(){var next=document.documentElement.classList.contains('dark')?'light':'dark';try{localStorage.setItem('theme',next)}catch(e){}applyTheme(next)})});mq.addEventListener('change',function(e){if(!stored())applyTheme(e.matches?'dark':'light')})})()</script></head><body><main class="container">${content}</main><div id="notifications" class="notifications" role="status" aria-live="polite"></div></body></html>`;
+}
 
-export function getSetupPage() { return `<div class="auth-container"><article id="setupForm"><h1>系统初始化</h1><p>请设置一个安全的管理员密码以保护您的应用。</p><form><label for="password">管理员密码 (最少8位)</label><input type="password" id="password" required minlength="8"><button type="submit">设置密码</button></form><p id="error-msg" style="color:red"></p></article></div><script>document.querySelector('#setupForm form').addEventListener('submit',async function(e){e.preventDefault();const password=document.getElementById('password').value;document.getElementById('error-msg').textContent='';try{const res=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})});if(!res.ok){const err=await res.json();throw new Error(err.error||'设置失败')}alert('设置成功，页面即将刷新...');setTimeout(()=>window.location.reload(),1000)}catch(e){document.getElementById('error-msg').textContent=e.message}});</script>`;}
+export function getSetupPage() {
+    return `<div class="auth-container"><article id="setupForm"><h1>系统初始化</h1><p>请设置一个安全的管理员密码以保护您的应用。</p><form><label for="password">管理员密码 (最少8位)</label><input type="password" id="password" required minlength="8"><button type="submit">设置密码</button></form><p id="error-msg" style="color:red"></p></article></div><script>document.querySelector('#setupForm form').addEventListener('submit',async function(e){e.preventDefault();const password=document.getElementById('password').value;document.getElementById('error-msg').textContent='';try{const res=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})});if(!res.ok){const err=await res.json();throw new Error(err.error||'设置失败')}alert('设置成功，页面即将刷新...');setTimeout(()=>window.location.reload(),1000)}catch(e){document.getElementById('error-msg').textContent=e.message}});</script>`;
+}
 
 /**
  * 渲染公开首页（无需鉴权）：仅展示启用且同步成功的域名/IP 源卡片
@@ -353,33 +365,34 @@ export function getSetupPage() { return `<div class="auth-container"><article id
 export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSourceName, loggedIn) {
     const origin = new URL(requestUrl).origin;
     const formatTime = (isoStr) => {
-        if (!isoStr) return 'N/A';
+        if (!isoStr) return "N/A";
         const date = new Date(isoStr);
         const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
         return `${year}-${month}-${day}`;
     };
 
-    const domainCards = domains.map(d => {
-        let sourceHost;
-        if (d.is_system) {
-            sourceHost = threeNetworkSourceName;
-        } else {
-            try {
-                let urlCompatibleSource = d.source_domain;
-                if (!urlCompatibleSource.startsWith('http://') && !urlCompatibleSource.startsWith('https://')) {
-                    urlCompatibleSource = 'https://' + urlCompatibleSource;
+    const domainCards = domains
+        .map((d) => {
+            let sourceHost;
+            if (d.is_system) {
+                sourceHost = threeNetworkSourceName;
+            } else {
+                try {
+                    let urlCompatibleSource = d.source_domain;
+                    if (!urlCompatibleSource.startsWith("http://") && !urlCompatibleSource.startsWith("https://")) {
+                        urlCompatibleSource = "https://" + urlCompatibleSource;
+                    }
+                    sourceHost = new URL(urlCompatibleSource).hostname;
+                } catch (e) {
+                    sourceHost = d.source_domain || "解析错误";
                 }
-                sourceHost = new URL(urlCompatibleSource).hostname;
-            } catch (e) {
-                sourceHost = d.source_domain || '解析错误';
             }
-        }
-        return `
+            return `
         <div class="public-card" data-copy-content="${escapeHtml(d.target_domain)}">
             <div class="public-card-header">
-                <h3 class="public-card-title">${escapeHtml(d.notes || '未知线路')}</h3>
+                <h3 class="public-card-title">${escapeHtml(d.notes || "未知线路")}</h3>
                 <span class="public-card-meta">${escapeHtml(formatTime(d.last_synced_time))}</span>
             </div>
             <div class="public-card-content">${escapeHtml(d.target_domain)}</div>
@@ -387,18 +400,20 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
                 <span>来源: ${escapeHtml(sourceHost)}</span>
             </div>
         </div>`;
-    }).join('');
+        })
+        .join("");
 
-    const ipSourceCards = ipSources.map(s => {
-        const fullUrl = `${origin}/${s.github_path}`;
-        // Suggestion ⑧: 坏 url 行不得让整页抛错（域名卡片已有同样兜底）
-        let sourceHost;
-        try {
-            sourceHost = new URL(s.url).hostname;
-        } catch (e) {
-            sourceHost = s.url || '解析错误';
-        }
-        return `
+    const ipSourceCards = ipSources
+        .map((s) => {
+            const fullUrl = `${origin}/${s.github_path}`;
+            // Suggestion ⑧: 坏 url 行不得让整页抛错（域名卡片已有同样兜底）
+            let sourceHost;
+            try {
+                sourceHost = new URL(s.url).hostname;
+            } catch (e) {
+                sourceHost = s.url || "解析错误";
+            }
+            return `
         <div class="public-card" data-copy-content="${escapeHtml(fullUrl)}">
             <div class="public-card-header">
                 <h3 class="public-card-title">${escapeHtml(s.github_path)}</h3>
@@ -409,7 +424,8 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
                 <span>来源: ${escapeHtml(sourceHost)}</span>
             </div>
         </div>`;
-    }).join('');
+        })
+        .join("");
 
     const authButton = loggedIn
         ? `<a href="/admin" role="button">进入后台</a>`
@@ -429,11 +445,11 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
         <div class="public-container">
             <section class="public-section">
                 <h2>优选域名</h2>
-                <div class="public-grid">${domainCards || '<p>暂无可用数据</p>'}</div>
+                <div class="public-grid">${domainCards || "<p>暂无可用数据</p>"}</div>
             </section>
             <section class="public-section">
                 <h2>优选API</h2>
-                <div class="public-grid">${ipSourceCards || '<p>暂无可用数据</p>'}</div>
+                <div class="public-grid">${ipSourceCards || "<p>暂无可用数据</p>"}</div>
             </section>
         </div>
     </div>
@@ -517,24 +533,24 @@ export function getDashboardPage(domains, ipSources, settings) {
     return `<aside class="sidebar"><div class="sidebar-header"><h3>DNS Clone</h3><button id="theme-toggle" type="button" aria-label="切换到深色主题"><i class="fa-solid fa-moon" aria-hidden="true"></i></button></div><nav class="sidebar-nav"><a href="#page-dns-clone" class="nav-link active" data-target="page-dns-clone"><i class="fa-solid fa-clone fa-fw"></i> 域名克隆</a><a href="#page-github-upload" class="nav-link" data-target="page-github-upload"><i class="fa-brands fa-github fa-fw"></i> GitHub 上传</a><a href="#page-settings" class="nav-link" data-target="page-settings"><i class="fa-solid fa-gear fa-fw"></i> 系统设置</a></nav></aside>
     <div class="main-content">
         <div id="page-dns-clone" class="page active">
-            <div class="page-header"><h2>域名克隆列表</h2><button id="addDomainBtn" ${settings.CF_ZONE_ID ? '' : 'disabled'}>＋ 添加克隆目标</button></div>
+            <div class="page-header"><h2>域名克隆列表</h2><button id="addDomainBtn" ${settings.CF_ZONE_ID ? "" : "disabled"}>＋ 添加克隆目标</button></div>
             <div id="domain-list-container"></div>
             <article><h3>手动操作</h3><p>点击下方按钮，可以立即为所有已启用的目标执行一次同步任务。</p><button id="manualSyncBtn">手动同步所有目标</button><pre id="logOutput" class="sync-log" style="display:none;"></pre></article>
         </div>
         <div id="page-github-upload" class="page">
-            <div class="page-header"><h2>GitHub IP源列表</h2><button id="addIpSourceBtn" ${githubSettingsComplete ? '' : 'disabled'}>＋ 添加IP源</button></div>
+            <div class="page-header"><h2>GitHub IP源列表</h2><button id="addIpSourceBtn" ${githubSettingsComplete ? "" : "disabled"}>＋ 添加IP源</button></div>
              <div id="ip-source-list-container"></div>
             <article><h3>手动操作</h3><p>点击下方按钮，可以立即为所有已启用的IP源执行一次同步并上传到GitHub。</p><button id="manualSyncIpSourcesBtn">同步所有IP源</button><pre id="ipLogOutput" class="sync-log" style="display:none;"></pre></article>
         </div>
         <div id="page-settings" class="page">
             <div class="page-header"><h2>系统设置</h2></div>
             <form id="settingsForm">
-                <fieldset><legend><i class="fa-brands fa-cloudflare"></i> Cloudflare API 设置</legend><label for="cfToken">API 令牌 (Token)</label><input type="password" id="cfToken" value="${escapeHtml(settings.CF_API_TOKEN||'')}"><label for="cfZoneId">区域 (Zone) ID</label><input type="text" id="cfZoneId" value="${escapeHtml(settings.CF_ZONE_ID||'')}">
+                <fieldset><legend><i class="fa-brands fa-cloudflare"></i> Cloudflare API 设置</legend><label for="cfToken">API 令牌 (Token)</label><input type="password" id="cfToken" value="${escapeHtml(settings.CF_API_TOKEN || "")}"><label for="cfZoneId">区域 (Zone) ID</label><input type="text" id="cfZoneId" value="${escapeHtml(settings.CF_ZONE_ID || "")}">
                     <details class="tutorial-details"><summary>如何获取 API 令牌和区域 ID？</summary><div class="tutorial-content"><ol><li><strong>获取 API 令牌 (Token):</strong><ol type="a"><li>登录 <a href="https://dash.cloudflare.com/" target="_blank">Cloudflare</a>，进入 <strong>“我的个人资料”</strong> &rarr; <strong>“API 令牌”</strong>。</li><li>点击 <strong>“创建令牌”</strong>，然后选择 <strong>“编辑区域 DNS”</strong> 模板并点击“使用模板”。</li><li>在 <strong>“区域资源”</strong> 部分，选择您需要操作的具体域名区域。</li><li>点击“继续以显示摘要”和“创建令牌”，复制生成的令牌。<strong>注意：令牌仅显示一次，请妥善保管。</strong></li></ol></li><li><strong>获取区域 ID (Zone ID):</strong><ol type="a"><li>在 Cloudflare 仪表板主页，点击您需要操作的域名。</li><li>在域名的“概述”页面，您可以在右下角找到 <strong>“区域 ID”</strong>，点击即可复制。</li></ol></li></ol></div></details>
                 </fieldset>
-                 <fieldset><legend><i class="fa-solid fa-network-wired"></i> 三网优选IP源设置</legend><label for="threeNetworkSource">三网采集源</label><select id="threeNetworkSource"><option value="CloudFlareYes" ${settings.THREE_NETWORK_SOURCE === 'CloudFlareYes' ? 'selected' : ''}>CloudFlareYes</option><option value="api.uouin.com" ${settings.THREE_NETWORK_SOURCE === 'api.uouin.com' ? 'selected' : ''}>api.uouin.com</option><option value="wetest.vip" ${settings.THREE_NETWORK_SOURCE === 'wetest.vip' ? 'selected' : ''}>wetest.vip</option></select><small>为系统预设的电信/移动/联通域名选择IP来源。更改后保存设置将自动同步一次系统域名。</small>
+                 <fieldset><legend><i class="fa-solid fa-network-wired"></i> 三网优选IP源设置</legend><label for="threeNetworkSource">三网采集源</label><select id="threeNetworkSource"><option value="CloudFlareYes" ${settings.THREE_NETWORK_SOURCE === "CloudFlareYes" ? "selected" : ""}>CloudFlareYes</option><option value="api.uouin.com" ${settings.THREE_NETWORK_SOURCE === "api.uouin.com" ? "selected" : ""}>api.uouin.com</option><option value="wetest.vip" ${settings.THREE_NETWORK_SOURCE === "wetest.vip" ? "selected" : ""}>wetest.vip</option></select><small>为系统预设的电信/移动/联通域名选择IP来源。更改后保存设置将自动同步一次系统域名。</small>
                 </fieldset>
-                <fieldset><legend><i class="fa-brands fa-github"></i> GitHub API 设置</legend><label for="githubToken">GitHub Token</label><input type="password" id="githubToken" value="${escapeHtml(settings.GITHUB_TOKEN||'')}" placeholder="具有 repo 权限的 Personal Access Token"><label for="githubOwner">GitHub 用户名/组织名</label><input type="text" id="githubOwner" value="${escapeHtml(settings.GITHUB_OWNER||'')}" placeholder="例如: my-username"><label for="githubRepo">仓库名称</label><input type="text" id="githubRepo" value="${escapeHtml(settings.GITHUB_REPO||'')}" placeholder="例如: my-dns-records">
+                <fieldset><legend><i class="fa-brands fa-github"></i> GitHub API 设置</legend><label for="githubToken">GitHub Token</label><input type="password" id="githubToken" value="${escapeHtml(settings.GITHUB_TOKEN || "")}" placeholder="具有 repo 权限的 Personal Access Token"><label for="githubOwner">GitHub 用户名/组织名</label><input type="text" id="githubOwner" value="${escapeHtml(settings.GITHUB_OWNER || "")}" placeholder="例如: my-username"><label for="githubRepo">仓库名称</label><input type="text" id="githubRepo" value="${escapeHtml(settings.GITHUB_REPO || "")}" placeholder="例如: my-dns-records">
                     <details class="tutorial-details"><summary>如何获取 GitHub API 信息？</summary><div class="tutorial-content"><ol><li><strong>获取 GitHub Token:</strong><ol type="a"><li>登录 <a href="https://github.com/" target="_blank">GitHub</a>，点击右上角头像，进入 <strong>“Settings”</strong>。</li><li>在左侧菜单中，选择 <strong>“Developer settings”</strong> &rarr; <strong>“Personal access tokens”</strong> &rarr; <strong>“Tokens (classic)”</strong>。</li><li>点击 <strong>“Generate new token”</strong>，并选择 <strong>“Generate new token (classic)”</strong>。</li><li>为令牌添加描述（Note），设置合适的过期时间（Expiration）。</li><li>在 <strong>“Select scopes”</strong> 部分，勾选 <code>repo</code> 权限。</li><li>点击页面底部的 <strong>“Generate token”</strong>，并复制生成的令牌。<strong>注意：令牌仅显示一次，请妥善保管。</strong></li></ol></li><li><strong>获取用户名/组织名 和 仓库名称:</strong><ol type="a"><li><strong>用户名/组织名</strong> 就是您的GitHub个人主页URL中，github.com后面的那部分，或者您组织的主页URL。</li><li><strong>仓库名称</strong> 是您在GitHub上创建的，用来存储IP文件的仓库的名字。如果仓库不存在，系统将在第一次同步时自动为您创建为私有仓库。</li></ol></li></ol></div></details>
                 </fieldset>
                 <button type="submit">保存设置</button>
@@ -549,7 +565,8 @@ export function getDashboardPage(domains, ipSources, settings) {
  * 渲染仪表盘浏览器端脚本（API 调用 / 流式同步 / 主题切换等）
  * 模板字符串中的 settings 仅渲染为可读视图，敏感字段已被剔除
  */
-function getDashboardScript(domains, ipSources, settings) { return `
+function getDashboardScript(domains, ipSources, settings) {
+    return `
   function showNotification(message, type = 'info', duration = 5000) {
       const container = document.getElementById('notifications');
       const toast = document.createElement('div');
@@ -867,7 +884,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
           }
       });
   });
-`;}
+`;
+}
 
 // fetchThreeNetworkIps 已移至 ./sync/ip-sources.ts
-

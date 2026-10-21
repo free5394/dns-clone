@@ -5,8 +5,11 @@
  * 调用方通过 instanceof + status 字段判断，避免依赖底层错误文案（平台升级可能变更）。
  */
 export class HttpError extends Error {
-    constructor(public status: number, message: string) {
+    constructor(
+        public status: number,
+        message: string
+    ) {
         super(message);
-        this.name = 'HttpError';
+        this.name = "HttpError";
     }
 }

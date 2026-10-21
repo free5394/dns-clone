@@ -17,7 +17,7 @@ const KEY_TOKEN = "CLOUDFLARE_API_TOKEN";
 // 朴素的 .env 解析：KEY=VALUE，忽略空行与 # 注释，去掉两端成对引号
 // 不支持 export 前缀 / \\ 转义 / 多行值 —— 本项目 token 不含特殊字符，足够
 function loadDotenv(filePath) {
-    if (!fs.existsSync(filePath)) return;                  // 无 .env 不报错，由 token 检查统一处理
+    if (!fs.existsSync(filePath)) return; // 无 .env 不报错，由 token 检查统一处理
     const lines = fs.readFileSync(filePath, "utf-8").split(/\r?\n/);
     for (const raw of lines) {
         const line = raw.trim();
@@ -54,7 +54,9 @@ const result = spawnSync(NODE_BIN, [WRANGLER_ENTRY, "deploy"], {
 if (result.error) {
     console.error(`❌ 无法执行 ${NODE_BIN} ${WRANGLER_ENTRY}：${result.error.message}`);
     if (result.error.code === "ENOENT") {
-        console.error("   请先运行 pnpm install 生成 wrangler 安装（scripts/load-deploy-env.cjs 依赖 require.resolve('wrangler')）。");
+        console.error(
+            "   请先运行 pnpm install 生成 wrangler 安装（scripts/load-deploy-env.cjs 依赖 require.resolve('wrangler')）。"
+        );
     }
     process.exit(1);
 }

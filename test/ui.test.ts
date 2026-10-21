@@ -16,7 +16,9 @@ beforeEach(async () => {
     // 恢复"已初始化"状态（个别用例会删除该项）
     await env.WUYA.prepare(
         "INSERT INTO settings (key, value) VALUES ('ADMIN_PASSWORD_HASH', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-    ).bind("pbkdf2$100000$test-salt$deadbeef").run();
+    )
+        .bind("pbkdf2$100000$test-salt$deadbeef")
+        .run();
 });
 
 afterEach(() => {
@@ -58,12 +60,21 @@ describe("handleUiRequest /admin 鉴权", () => {
 
     it("CF 凭据存在但 getZoneName 失败时不影响仪表盘渲染", async () => {
         await env.WUYA.batch([
-            env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('CF_API_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind("test-token"),
-            env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind("test-zone"),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('CF_API_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).bind("test-token"),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).bind("test-zone"),
         ]);
         // getZoneName 内部 fetch 抛错 → 应被 catch 吞掉并 console.warn
         const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-        vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network down"); }));
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => {
+                throw new Error("network down");
+            })
+        );
 
         const req = await loggedInRequest("https://example.com/admin");
         const res = await handleUiRequest(req, env);
@@ -80,14 +91,30 @@ describe("handleUiRequest /admin 鉴权", () => {
         const saltLeak = "SALT_LITERAL_LEAK_789";
         const hashLeak = "pbkdf2$999999$" + saltLeak + "$deadbeefcafebabe";
         await env.WUYA.batch([
-            env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('CF_API_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(tokenLeak),
-            env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('GITHUB_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(githubLeak),
-            env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('PASSWORD_SALT', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(saltLeak),
-            env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('ADMIN_PASSWORD_HASH', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(hashLeak),
-            env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', 'zone') ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('CF_API_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).bind(tokenLeak),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('GITHUB_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).bind(githubLeak),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('PASSWORD_SALT', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).bind(saltLeak),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('ADMIN_PASSWORD_HASH', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).bind(hashLeak),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', 'zone') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ),
         ]);
         // getZoneName 会触发外部 fetch，stub 掉避免超时
-        vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ success: true, result: { name: "example.com" } }), { status: 200 })));
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(
+                async () =>
+                    new Response(JSON.stringify({ success: true, result: { name: "example.com" } }), { status: 200 })
+            )
+        );
 
         const req = await loggedInRequest("https://example.com/admin");
         const res = await handleUiRequest(req, env);
@@ -140,7 +167,9 @@ describe("handleUiRequest 公开首页", () => {
         const sysDomain = `sys-${crypto.randomUUID()}.example.com`;
         await env.WUYA.prepare(
             "INSERT INTO domains (source_domain, target_domain, zone_id, notes, is_enabled, is_system, last_sync_status) VALUES (?, ?, 'z', 'note-sys', 1, 1, 'success')"
-        ).bind("internal:hostmonit:CM", sysDomain).run();
+        )
+            .bind("internal:hostmonit:CM", sysDomain)
+            .run();
 
         const res = await handleUiRequest(new Request("https://example.com/"), env);
 

@@ -2,17 +2,17 @@
 // 从 index.legacy.js 提取（原 1237-1310 行）
 // C4：全仓对 GitHub 的访问只走 githubApiRequest 一个出口（认证、User-Agent、Accept、超时、重试）
 
-import { fetchWithRetry } from '../util/fetch.ts';
-import { HttpError } from '../util/http-error.ts';
+import { fetchWithRetry } from "../util/fetch.ts";
+import { HttpError } from "../util/http-error.ts";
 
 /** 订阅器读的边缘缓存命名空间：合成键，不暴露真实请求 URL，也不与上游 URL 互相污染 */
-const SUBSCRIBER_CACHE_NAMESPACE = 'https://github-proxy.cache';
+const SUBSCRIBER_CACHE_NAMESPACE = "https://github-proxy.cache";
 
 /** 订阅器读的缓存响应头（TTL 归属本模块：5 分钟边缘缓存） */
-const SUBSCRIBER_CACHE_CONTROL = 'public, max-age=60, s-maxage=300';
+const SUBSCRIBER_CACHE_CONTROL = "public, max-age=60, s-maxage=300";
 
 /** 上游非 2xx 时给订阅器的固定文案：不透传上游 JSON 错误体 */
-const SUBSCRIBER_FETCH_ERROR = '无法获取对应文件，请稍后重试。';
+const SUBSCRIBER_FETCH_ERROR = "无法获取对应文件，请稍后重试。";
 
 /** 延迟写回调（路由传入 ExecutionContext.waitUntil）；缺省不等待、但吞掉写失败 */
 type WaitUntil = (promise: Promise<unknown>) => void;
@@ -20,16 +20,21 @@ type WaitUntil = (promise: Promise<unknown>) => void;
 /** GitHub API 请求统一封装（非 2xx 由 fetchWithRetry 抛出 HttpError） */
 async function githubApiRequest(url: string, token: string, options: RequestInit = {}): Promise<Response> {
     const headers = {
-        'Authorization': `Bearer ${token}`,
-        'User-Agent': 'DNS-Clone-Worker',
-        'Accept': 'application/vnd.github.v3+json',
+        Authorization: `Bearer ${token}`,
+        "User-Agent": "DNS-Clone-Worker",
+        Accept: "application/vnd.github.v3+json",
         ...(options.headers as Record<string, string> | undefined),
     };
     return await fetchWithRetry(url, { ...options, headers }, 1, 15000);
 }
 
 /** 确保仓库存在，不存在则创建私有仓库 */
-export async function ensureRepoExists(token: string, owner: string, repo: string, log: (msg: string) => void): Promise<void> {
+export async function ensureRepoExists(
+    token: string,
+    owner: string,
+    repo: string,
+    log: (msg: string) => void
+): Promise<void> {
     const repoUrl = `https://api.github.com/repos/${owner}/${repo}`;
     try {
         await githubApiRequest(repoUrl, token);
@@ -41,9 +46,9 @@ export async function ensureRepoExists(token: string, owner: string, repo: strin
             const body = JSON.stringify({
                 name: repo,
                 private: true,
-                description: 'Auto-generated repository for IP source files by DNS Clone Worker.'
+                description: "Auto-generated repository for IP source files by DNS Clone Worker.",
             });
-            await githubApiRequest(createUrl, token, { method: 'POST', body });
+            await githubApiRequest(createUrl, token, { method: "POST", body });
             log(`✔ 成功创建私有仓库 '${owner}/${repo}'。`);
         } else {
             throw e;
@@ -52,7 +57,13 @@ export async function ensureRepoExists(token: string, owner: string, repo: strin
 }
 
 /** 获取 GitHub 文件当前内容；404 返回 null（表示需创建） */
-export async function getCurrentGitHubContent({ token, owner, repo, path, log }: {
+export async function getCurrentGitHubContent({
+    token,
+    owner,
+    repo,
+    path,
+    log,
+}: {
     token: string;
     owner: string;
     repo: string;
@@ -62,7 +73,7 @@ export async function getCurrentGitHubContent({ token, owner, repo, path, log }:
     const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
     try {
         const response = await githubApiRequest(apiUrl, token, {
-            headers: { 'Accept': 'application/vnd.github.v3.raw' }
+            headers: { Accept: "application/vnd.github.v3.raw" },
         });
         return await response.text();
     } catch (e) {
@@ -81,7 +92,7 @@ export async function getCurrentGitHubContent({ token, owner, repo, path, log }:
  */
 function encodeBase64Utf8(content: string): string {
     const bytes = new TextEncoder().encode(content);
-    let binary = '';
+    let binary = "";
     const CHUNK_SIZE = 0x8000;
     for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
         binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK_SIZE));
@@ -90,7 +101,15 @@ function encodeBase64Utf8(content: string): string {
 }
 
 /** 更新/创建 GitHub 文件（内容 base64 编码，UTF-8 安全） */
-export async function updateFileOnGitHub({ token, owner, repo, path, content, message, log }: {
+export async function updateFileOnGitHub({
+    token,
+    owner,
+    repo,
+    path,
+    content,
+    message,
+    log,
+}: {
     token: string;
     owner: string;
     repo: string;
@@ -105,7 +124,7 @@ export async function updateFileOnGitHub({ token, owner, repo, path, content, me
     let sha: string | undefined;
     try {
         const getFileResponse = await githubApiRequest(apiUrl, token);
-        const fileData = await getFileResponse.json() as { sha: string };
+        const fileData = (await getFileResponse.json()) as { sha: string };
         sha = fileData.sha;
     } catch (e) {
         if (!(e instanceof HttpError && e.status === 404)) throw e;
@@ -114,10 +133,10 @@ export async function updateFileOnGitHub({ token, owner, repo, path, content, me
     const body = JSON.stringify({
         message,
         content: encodeBase64Utf8(content),
-        sha
+        sha,
     });
 
-    await githubApiRequest(apiUrl, token, { method: 'PUT', body });
+    await githubApiRequest(apiUrl, token, { method: "PUT", body });
 }
 
 /** 订阅器读的合成边缘缓存键（键格式归本模块，路由不再知道缓存怎么拼） */
@@ -133,7 +152,7 @@ function subscriberCacheKey(path: string): Request {
 export async function readFileForSubscriber(
     { token, owner, repo }: { token: string; owner: string; repo: string },
     path: string,
-    waitUntil?: WaitUntil,
+    waitUntil?: WaitUntil
 ): Promise<Response> {
     // Cloudflare Workers 运行时的 caches.default（标准 DOM 的 CacheStorage 接口不含此字段）。
     const cache = (caches as unknown as { default: Cache }).default;
@@ -145,7 +164,7 @@ export async function readFileForSubscriber(
     let upstream: Response;
     try {
         upstream = await githubApiRequest(apiUrl, token, {
-            headers: { 'Accept': 'application/vnd.github.v3.raw' }
+            headers: { Accept: "application/vnd.github.v3.raw" },
         });
     } catch (e) {
         // 上游非 2xx 被统一 fetch 归一成 HttpError：状态码原样透传（含 404 / 403），正文换成固定文案；
@@ -158,9 +177,9 @@ export async function readFileForSubscriber(
 
     const response = new Response(upstream.body, {
         headers: {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Cache-Control': SUBSCRIBER_CACHE_CONTROL
-        }
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": SUBSCRIBER_CACHE_CONTROL,
+        },
     });
 
     // 写缓存不阻塞订阅器响应；缺省也不等待，写失败不影响本次响应

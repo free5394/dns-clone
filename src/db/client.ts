@@ -3,7 +3,10 @@
 
 /** 查询全部结果（泛型版） */
 export async function queryAll<T = unknown>(db: D1Database, sql: string, ...bind: unknown[]): Promise<T[]> {
-    const { results } = await db.prepare(sql).bind(...bind).all<T>();
+    const { results } = await db
+        .prepare(sql)
+        .bind(...bind)
+        .all<T>();
     return results as T[];
 }
 
@@ -33,10 +36,10 @@ export async function getFullSettings(db: D1Database) {
 
 /** 敏感字段：序列化到前端前过滤（Token、密码哈希等） */
 export const SENSITIVE_SETTINGS_KEYS = new Set([
-    'ADMIN_PASSWORD_HASH',
-    'PASSWORD_SALT',
-    'CF_API_TOKEN',
-    'GITHUB_TOKEN',
+    "ADMIN_PASSWORD_HASH",
+    "PASSWORD_SALT",
+    "CF_API_TOKEN",
+    "GITHUB_TOKEN",
 ]);
 
 /** 读取安全的 settings（前端可见，已剔除敏感字段） */
@@ -48,19 +51,16 @@ export async function getSafeSettings(db: D1Database): Promise<Record<string, st
 
 /** 读取 Cloudflare API 设置（token + zoneId） */
 export async function getCfApiSettings(db: D1Database) {
-    const [token, zoneId] = await Promise.all([
-        getSetting(db, 'CF_API_TOKEN'),
-        getSetting(db, 'CF_ZONE_ID'),
-    ]);
-    return { token: token || '', zoneId: zoneId || '' };
+    const [token, zoneId] = await Promise.all([getSetting(db, "CF_API_TOKEN"), getSetting(db, "CF_ZONE_ID")]);
+    return { token: token || "", zoneId: zoneId || "" };
 }
 
 /** 读取 GitHub 设置（token + owner + repo） */
 export async function getGitHubSettings(db: D1Database) {
     const [token, owner, repo] = await Promise.all([
-        getSetting(db, 'GITHUB_TOKEN'),
-        getSetting(db, 'GITHUB_OWNER'),
-        getSetting(db, 'GITHUB_REPO'),
+        getSetting(db, "GITHUB_TOKEN"),
+        getSetting(db, "GITHUB_OWNER"),
+        getSetting(db, "GITHUB_REPO"),
     ]);
     return { token, owner, repo };
 }

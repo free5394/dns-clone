@@ -61,7 +61,11 @@ describe("getCurrentGitHubContent", () => {
         mockFetch(() => new Response("1.1.1.1\n2.2.2.2", { status: 200 }));
 
         const content = await getCurrentGitHubContent({
-            token: "token", owner: "owner", repo: "repo", path: "ips.txt", log: () => {},
+            token: "token",
+            owner: "owner",
+            repo: "repo",
+            path: "ips.txt",
+            log: () => {},
         });
 
         expect(content).toBe("1.1.1.1\n2.2.2.2");
@@ -72,7 +76,11 @@ describe("getCurrentGitHubContent", () => {
         const logs: string[] = [];
 
         const content = await getCurrentGitHubContent({
-            token: "token", owner: "owner", repo: "repo", path: "missing.txt", log: (m) => logs.push(m),
+            token: "token",
+            owner: "owner",
+            repo: "repo",
+            path: "missing.txt",
+            log: (m) => logs.push(m),
         });
 
         expect(content).toBeNull();
@@ -82,9 +90,15 @@ describe("getCurrentGitHubContent", () => {
     it("non-404 errors like 403 rethrow", async () => {
         mockFetch(() => json({ message: "Forbidden" }, 403));
 
-        await expect(getCurrentGitHubContent({
-            token: "token", owner: "owner", repo: "repo", path: "x.txt", log: () => {},
-        })).rejects.toThrow(/403/);
+        await expect(
+            getCurrentGitHubContent({
+                token: "token",
+                owner: "owner",
+                repo: "repo",
+                path: "x.txt",
+                log: () => {},
+            })
+        ).rejects.toThrow(/403/);
     });
 });
 
@@ -97,8 +111,13 @@ describe("updateFileOnGitHub", () => {
         });
 
         await updateFileOnGitHub({
-            token: "token", owner: "owner", repo: "repo", path: "ips.txt",
-            content: "1.1.1.1", message: "update ips", log: () => {},
+            token: "token",
+            owner: "owner",
+            repo: "repo",
+            path: "ips.txt",
+            content: "1.1.1.1",
+            message: "update ips",
+            log: () => {},
         });
 
         const putCall = spy.mock.calls.find((c) => c[1]?.method === "PUT");
@@ -117,8 +136,13 @@ describe("updateFileOnGitHub", () => {
         });
 
         await updateFileOnGitHub({
-            token: "token", owner: "owner", repo: "repo", path: "brand-new.txt",
-            content: "1.1.1.1", message: "create", log: () => {},
+            token: "token",
+            owner: "owner",
+            repo: "repo",
+            path: "brand-new.txt",
+            content: "1.1.1.1",
+            message: "create",
+            log: () => {},
         });
 
         // 关键断言：404 未冒泡，PUT 正常发出且 sha 为 undefined（此前该路径直接抛错）
@@ -135,8 +159,13 @@ describe("updateFileOnGitHub", () => {
         });
 
         await updateFileOnGitHub({
-            token: "token", owner: "owner", repo: "repo", path: "notes.txt",
-            content: "优选 IP 列表", message: "msg", log: () => {},
+            token: "token",
+            owner: "owner",
+            repo: "repo",
+            path: "notes.txt",
+            content: "优选 IP 列表",
+            message: "msg",
+            log: () => {},
         });
 
         const putCall = spy.mock.calls.find((c) => c[1]?.method === "PUT");
@@ -154,8 +183,13 @@ describe("updateFileOnGitHub", () => {
         // 200,000 字节远超 V8 spread 实参上限（约 65k）：旧实现 String.fromCharCode(...bytes) 必抛 RangeError
         const largeContent = "1.2.3.4\n".repeat(25000);
         await updateFileOnGitHub({
-            token: "token", owner: "owner", repo: "repo", path: "big.txt",
-            content: largeContent, message: "big", log: () => {},
+            token: "token",
+            owner: "owner",
+            repo: "repo",
+            path: "big.txt",
+            content: largeContent,
+            message: "big",
+            log: () => {},
         });
 
         const putCall = spy.mock.calls.find((c) => c[1]?.method === "PUT");

@@ -3,4 +3,4 @@
 
 /** 给消息加 [北京时区时间戳] 前缀 */
 export const beijingTimeLog = (message: string): string =>
-    `[${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}] ${message}`;
+    `[${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}] ${message}`;

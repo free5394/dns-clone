@@ -1,6 +1,6 @@
 // run-with-log.ts — 统一 sync 函数的"返回 SSE 流 / 直接执行"二选一逻辑包装器
-import { createLogStreamResponse } from './sse.ts';
-import { beijingTimeLog } from './log.ts';
+import { createLogStreamResponse } from "./sse.ts";
+import { beijingTimeLog } from "./log.ts";
 
 type LogFn = (msg: string) => void;
 
@@ -12,7 +12,7 @@ type LogFn = (msg: string) => void;
 export function runWithOptionalLog(
     logic: (log: LogFn) => Promise<void>,
     returnLogs: boolean,
-    signal?: AbortSignal,
+    signal?: AbortSignal
 ): Response | Promise<void> {
     if (returnLogs) return createLogStreamResponse(logic, signal);
     return logic((msg) => console.log(beijingTimeLog(msg)));

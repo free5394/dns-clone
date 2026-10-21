@@ -14,7 +14,10 @@ async function drain(res: Response): Promise<string> {
 
 /** 从 SSE 文本中提取 data: 行的负载 */
 function dataLines(text: string): string[] {
-    return text.split("\n\n").filter(Boolean).map((chunk) => chunk.replace(/^data: /, ""));
+    return text
+        .split("\n\n")
+        .filter(Boolean)
+        .map((chunk) => chunk.replace(/^data: /, ""));
 }
 
 describe("createLogStreamResponse", () => {
@@ -72,12 +75,14 @@ describe("createLogStreamResponse", () => {
 
         // 用 deferred 精确控制：abort 发生在 logFunction 执行中途
         let release!: () => void;
-        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
 
         const res = createLogStreamResponse(async (log) => {
             log("abort 前");
             await gate;
-            log("abort 后");  // 应被 aborted 守卫丢弃
+            log("abort 后"); // 应被 aborted 守卫丢弃
         }, controller.signal);
 
         controller.abort();
@@ -87,8 +92,8 @@ describe("createLogStreamResponse", () => {
         // abort 后的日志不应出现
         expect(text).not.toContain("abort 后");
         // 关键：finally 中的 safeClose 不得因流已关闭而抛 TypeError
-        const closeErrors = errorSpy.mock.calls.filter((c) =>
-            String(c[0]).includes("TypeError") || c[1] instanceof TypeError
+        const closeErrors = errorSpy.mock.calls.filter(
+            (c) => String(c[0]).includes("TypeError") || c[1] instanceof TypeError
         );
         expect(closeErrors).toHaveLength(0);
     });

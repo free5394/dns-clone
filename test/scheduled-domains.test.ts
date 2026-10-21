@@ -12,18 +12,22 @@ import { syncScheduledDomains } from "../src/sync/domains.ts";
 
 /** 造 n 条启用域名 */
 async function seedDomains(specs: { target: string; status?: string; syncedAt?: string | null }[]): Promise<void> {
-    await env.WUYA.batch(specs.map(({ target, status = "pending", syncedAt = null }) =>
-        env.WUYA.prepare(
-            "INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, is_enabled, last_sync_status, last_synced_time) VALUES (?, ?, 'test-zone-id', 0, 60, 1, ?, ?)"
-        ).bind(`src-${target}`, target, status, syncedAt)
-    ));
+    await env.WUYA.batch(
+        specs.map(({ target, status = "pending", syncedAt = null }) =>
+            env.WUYA.prepare(
+                "INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, is_enabled, last_sync_status, last_synced_time) VALUES (?, ?, 'test-zone-id', 0, 60, 1, ?, ?)"
+            ).bind(`src-${target}`, target, status, syncedAt)
+        )
+    );
 }
 
 /** 让 DoH 返回一条 CNAME、CF API 返回空列表：同步可完整走通 */
 function stubHappyPathFetch() {
     const spy = vi.fn(async (url: string) => {
         if (url.includes("dns-query") || url.includes("cloudflare-dns.com")) {
-            return new Response(JSON.stringify({ Status: 0, Answer: [{ data: "cname-target.example.com." }] }), { status: 200 });
+            return new Response(JSON.stringify({ Status: 0, Answer: [{ data: "cname-target.example.com." }] }), {
+                status: 200,
+            });
         }
         if (url.includes("api.cloudflare.com")) {
             return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
@@ -38,8 +42,12 @@ beforeEach(async () => {
     // 每个用例独占一套干净的 domains + CF 凭据
     await env.WUYA.prepare("DELETE FROM domains").run();
     await env.WUYA.batch([
-        env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('CF_API_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind("test-cf-token"),
-        env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind("test-zone-id"),
+        env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('CF_API_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).bind("test-cf-token"),
+        env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).bind("test-zone-id"),
     ]);
     vi.spyOn(console, "log").mockImplementation(() => {});
 });
@@ -59,9 +67,9 @@ describe("syncScheduledDomains batch execution", () => {
         // 此前这行必抛 ReferenceError: Cannot access 'db' before initialization
         await expect(syncScheduledDomains(env)).resolves.toBeUndefined();
 
-        const row = await env.WUYA.prepare(
+        const row = (await env.WUYA.prepare(
             "SELECT last_sync_status FROM domains WHERE target_domain = 'a.example.com'"
-        ).first() as { last_sync_status: string };
+        ).first()) as { last_sync_status: string };
         // 关键：状态被改写，证明同步真正跑到了（而非静默抛错被吞）
         expect(row.last_sync_status).toBe("success");
     });
@@ -71,16 +79,18 @@ describe("syncScheduledDomains batch execution", () => {
             "INSERT INTO settings (key, value) VALUES ('BATCH_SIZE', '2') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
         ).run();
         await seedDomains([
-            { target: "b1.example.com" }, { target: "b2.example.com" },
-            { target: "b3.example.com" }, { target: "b4.example.com" },
+            { target: "b1.example.com" },
+            { target: "b2.example.com" },
+            { target: "b3.example.com" },
+            { target: "b4.example.com" },
         ]);
         stubHappyPathFetch();
 
         await syncScheduledDomains(env);
 
-        const { results } = await env.WUYA.prepare(
+        const { results } = (await env.WUYA.prepare(
             "SELECT last_sync_status, COUNT(*) as n FROM domains GROUP BY last_sync_status"
-        ).all() as { results: { last_sync_status: string; n: number }[] };
+        ).all()) as { results: { last_sync_status: string; n: number }[] };
         const byStatus = Object.fromEntries(results.map((r) => [r.last_sync_status, r.n]));
 
         // 关键：BATCH_SIZE 真的限制了取数条数，而非"没抛错"就算过
@@ -98,9 +108,9 @@ describe("syncScheduledDomains batch execution", () => {
 
         await syncScheduledDomains(env);
 
-        const row = await env.WUYA.prepare(
+        const row = (await env.WUYA.prepare(
             "SELECT COUNT(*) as n FROM domains WHERE last_sync_status = 'success'"
-        ).first() as { n: number };
+        ).first()) as { n: number };
         expect(row.n).toBe(10);
     });
 
@@ -115,9 +125,9 @@ describe("syncScheduledDomains batch execution", () => {
 
         await syncScheduledDomains(env);
 
-        const { results } = await env.WUYA.prepare(
+        const { results } = (await env.WUYA.prepare(
             "SELECT last_sync_status, COUNT(*) as n FROM domains GROUP BY last_sync_status"
-        ).all() as { results: { last_sync_status: string; n: number }[] };
+        ).all()) as { results: { last_sync_status: string; n: number }[] };
         const byStatus = Object.fromEntries(results.map((r) => [r.last_sync_status, r.n]));
         expect(byStatus.success).toBe(10);
         expect(byStatus.pending).toBe(2);
@@ -136,33 +146,38 @@ describe("syncScheduledDomains batch execution", () => {
 
         await syncScheduledDomains(env);
 
-        const failed = await env.WUYA.prepare(
+        const failed = (await env.WUYA.prepare(
             "SELECT last_sync_status FROM domains WHERE target_domain = 'prior-failed.example.com'"
-        ).first() as { last_sync_status: string };
-        const pending = await env.WUYA.prepare(
+        ).first()) as { last_sync_status: string };
+        const pending = (await env.WUYA.prepare(
             "SELECT last_sync_status FROM domains WHERE target_domain = 'old-pending.example.com'"
-        ).first() as { last_sync_status: string };
+        ).first()) as { last_sync_status: string };
 
-        expect(failed.last_sync_status).toBe("success");   // 失败的被优先重试
-        expect(pending.last_sync_status).toBe("pending");  // 未轮到
+        expect(failed.last_sync_status).toBe("success"); // 失败的被优先重试
+        expect(pending.last_sync_status).toBe("pending"); // 未轮到
     });
 
     it("single domain failure does not abort the batch", async () => {
         await seedDomains([{ target: "d1.example.com" }, { target: "d2.example.com" }]);
         // d1 的 DoH 查询失败，d2 正常
-        vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-            if (url.includes("d1.example.com")) throw new Error("boom");
-            if (url.includes("dns-query") || url.includes("cloudflare-dns.com")) {
-                return new Response(JSON.stringify({ Status: 0, Answer: [{ data: "t.example.com." }] }), { status: 200 });
-            }
-            return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
-        }));
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                if (url.includes("d1.example.com")) throw new Error("boom");
+                if (url.includes("dns-query") || url.includes("cloudflare-dns.com")) {
+                    return new Response(JSON.stringify({ Status: 0, Answer: [{ data: "t.example.com." }] }), {
+                        status: 200,
+                    });
+                }
+                return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
+            })
+        );
 
         await expect(syncScheduledDomains(env)).resolves.toBeUndefined();
 
-        const d2 = await env.WUYA.prepare(
+        const d2 = (await env.WUYA.prepare(
             "SELECT last_sync_status FROM domains WHERE target_domain = 'd2.example.com'"
-        ).first() as { last_sync_status: string };
+        ).first()) as { last_sync_status: string };
         // d1 失败不应阻断 d2
         expect(d2.last_sync_status).toBe("success");
     });
@@ -173,9 +188,9 @@ describe("syncScheduledDomains batch execution", () => {
 
         await expect(syncScheduledDomains(env)).resolves.toBeUndefined();
 
-        const row = await env.WUYA.prepare(
+        const row = (await env.WUYA.prepare(
             "SELECT last_sync_status FROM domains WHERE target_domain = 'e1.example.com'"
-        ).first() as { last_sync_status: string };
+        ).first()) as { last_sync_status: string };
         expect(row.last_sync_status).toBe("pending");
     });
 });

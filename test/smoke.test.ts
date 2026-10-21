@@ -13,16 +13,14 @@ describe("smoke", () => {
     });
 
     it("seeded ADMIN_PASSWORD_HASH setting exists", async () => {
-        const row = await env.WUYA.prepare(
-            "SELECT value FROM settings WHERE key = 'ADMIN_PASSWORD_HASH'"
-        ).first();
+        const row = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'ADMIN_PASSWORD_HASH'").first();
         expect(row).not.toBeNull();
     });
 
     it("SELF serves /api/status as unauthenticated 200", async () => {
         const res = await SELF.fetch("https://example.com/api/status");
         expect(res.status).toBe(200);
-        const body = await res.json() as { isInitialized: boolean };
+        const body = (await res.json()) as { isInitialized: boolean };
         expect(body.isInitialized).toBe(true);
     });
 });

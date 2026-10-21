@@ -7,8 +7,10 @@ import { hashPassword, isAuthenticated, verifyPassword } from "../src/util/auth.
 /** 自构造 legacy `raw$<hex>` 哈希（auth.ts 不再导出 legacyHashPassword） */
 async function makeLegacyHash(password: string, salt: string): Promise<string> {
     const data = new TextEncoder().encode(password + salt);
-    const buf = await crypto.subtle.digest('SHA-256', data);
-    const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+    const buf = await crypto.subtle.digest("SHA-256", data);
+    const hex = Array.from(new Uint8Array(buf))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
     return `raw$${hex}`;
 }
 

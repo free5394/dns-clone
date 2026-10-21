@@ -1,0 +1,10 @@
+dist/
+coverage/
+.wrangler/
+.scratch/
+.archify/
+.claude/
+.e2e-run/
+node_modules/
+worker-configuration.d.ts
+pnpm-lock.yaml

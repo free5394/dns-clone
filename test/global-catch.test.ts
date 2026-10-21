@@ -23,7 +23,9 @@ describe("global catch — FIX-01 defensive regression", () => {
         // → 全局 catch 拦截 → 返回固定文案 "服务器内部错误，请稍后重试。"
         await env.WUYA.prepare(
             "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?) ON CONFLICT(url) DO NOTHING"
-        ).bind("https://example.com/catch-test", "catch-test.txt", "test commit", "direct_regex").run();
+        )
+            .bind("https://example.com/catch-test", "catch-test.txt", "test commit", "direct_regex")
+            .run();
         // 设置 GitHub 设置（required by handleGitHubFileProxy）
         await env.WUYA.batch([
             env.WUYA.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('GITHUB_TOKEN', 'fake-token')"),
@@ -32,9 +34,12 @@ describe("global catch — FIX-01 defensive regression", () => {
         ]);
 
         // 让 fetch 抛网络错
-        vi.stubGlobal("fetch", vi.fn(async () => {
-            throw new Error("simulated network failure with sensitive bearer token=ghp_xxx");
-        }));
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => {
+                throw new Error("simulated network failure with sensitive bearer token=ghp_xxx");
+            })
+        );
 
         const res = await SELF.fetch("https://example.com/catch-test.txt");
         expect(res.status).toBe(500);

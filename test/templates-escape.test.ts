@@ -7,14 +7,16 @@ const requestUrl = "https://example.com/";
 
 describe("getPublicHomepage HTML 转义 (P0-2)", () => {
     it("转义 notes 中的 <img onerror> payload", () => {
-        const domains = [{
-            target_domain: "safe.example.com",
-            source_domain: "src.example.com",
-            notes: '<img src=x onerror=alert(1)>',
-            last_synced_time: "2026-01-01T00:00:00Z",
-            is_enabled: 1,
-            last_sync_status: "success",
-        }];
+        const domains = [
+            {
+                target_domain: "safe.example.com",
+                source_domain: "src.example.com",
+                notes: "<img src=x onerror=alert(1)>",
+                last_synced_time: "2026-01-01T00:00:00Z",
+                is_enabled: 1,
+                last_sync_status: "success",
+            },
+        ];
         const html = getPublicHomepage(requestUrl, domains, [], "三网聚合", false);
         // 未转义的 <img 标签不应出现
         expect(html).not.toMatch(/<img src=x onerror=alert\(1\)>/);
@@ -23,14 +25,16 @@ describe("getPublicHomepage HTML 转义 (P0-2)", () => {
     });
 
     it("转义 target_domain 中的属性逃逸 payload", () => {
-        const domains = [{
-            target_domain: '" onmouseover="alert(1)',
-            source_domain: "src.example.com",
-            notes: "正常备注",
-            last_synced_time: "2026-01-01T00:00:00Z",
-            is_enabled: 1,
-            last_sync_status: "success",
-        }];
+        const domains = [
+            {
+                target_domain: '" onmouseover="alert(1)',
+                source_domain: "src.example.com",
+                notes: "正常备注",
+                last_synced_time: "2026-01-01T00:00:00Z",
+                is_enabled: 1,
+                last_sync_status: "success",
+            },
+        ];
         const html = getPublicHomepage(requestUrl, domains, [], "三网聚合", false);
         // 未转义的 onmouseover 属性不应出现
         expect(html).not.toMatch(/onmouseover="alert\(1\)"/);
@@ -39,22 +43,26 @@ describe("getPublicHomepage HTML 转义 (P0-2)", () => {
     });
 
     it("转义 ipSource 的 github_path 中的 HTML payload", () => {
-        const ipSources = [{
-            url: "https://raw.githubusercontent.com/u/r/main/file.txt",
-            github_path: '<script>alert(1)</script>/path.txt',
-            last_synced_time: "2026-01-01T00:00:00Z",
-        }];
+        const ipSources = [
+            {
+                url: "https://raw.githubusercontent.com/u/r/main/file.txt",
+                github_path: "<script>alert(1)</script>/path.txt",
+                last_synced_time: "2026-01-01T00:00:00Z",
+            },
+        ];
         const html = getPublicHomepage(requestUrl, [], ipSources, "三网聚合", false);
         expect(html).not.toMatch(/<script>alert\(1\)<\/script>/);
         expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     });
 
     it("转义 github_path 中的双引号属性逃逸", () => {
-        const ipSources = [{
-            url: "https://example.com/raw/file.txt",
-            github_path: '" onmouseover="alert(1)/x.txt',
-            last_synced_time: "2026-01-01T00:00:00Z",
-        }];
+        const ipSources = [
+            {
+                url: "https://example.com/raw/file.txt",
+                github_path: '" onmouseover="alert(1)/x.txt',
+                last_synced_time: "2026-01-01T00:00:00Z",
+            },
+        ];
         const html = getPublicHomepage(requestUrl, [], ipSources, "三网聚合", false);
         // 未转义的双引号应被替换为 &quot;，属性逃逸不成立
         expect(html).not.toMatch(/onmouseover="alert\(1\)"/);
@@ -62,25 +70,29 @@ describe("getPublicHomepage HTML 转义 (P0-2)", () => {
     });
 
     it("对 null/undefined 值安全降级为空串", () => {
-        const domains = [{
-            target_domain: "safe.example.com",
-            source_domain: "src.example.com",
-            notes: null,
-            last_synced_time: null,
-            is_enabled: 1,
-            last_sync_status: "success",
-        }];
+        const domains = [
+            {
+                target_domain: "safe.example.com",
+                source_domain: "src.example.com",
+                notes: null,
+                last_synced_time: null,
+                is_enabled: 1,
+                last_sync_status: "success",
+            },
+        ];
         const html = getPublicHomepage(requestUrl, domains, [], "三网聚合", false);
         // 不应抛错，且应包含兜底文案
         expect(html).toContain("未知线路");
         expect(html).toContain("N/A");
     });
     it("ipSource.url 非法时安全降级不抛错 (Suggestion ⑧)", () => {
-        const ipSources = [{
-            url: "not a valid url",
-            github_path: "ok.txt",
-            last_synced_time: "2026-01-01T00:00:00Z",
-        }];
+        const ipSources = [
+            {
+                url: "not a valid url",
+                github_path: "ok.txt",
+                last_synced_time: "2026-01-01T00:00:00Z",
+            },
+        ];
         // 旧实现 new URL(s.url).hostname 直接抛 TypeError → 整个公开首页 500
         const html = getPublicHomepage(requestUrl, [], ipSources, "三网聚合", false);
         expect(html).toContain("ok.txt");
@@ -113,27 +125,29 @@ describe("getDashboardPage 仪表盘转义 (I2)", () => {
     };
 
     it("脚本上下文：notes 含 </script> 不能逃逸 <script> 标签 (I2)", () => {
-        const payload = '</script><img src=x onerror=alert(1)>';
+        const payload = "</script><img src=x onerror=alert(1)>";
         const html = getDashboardPage([{ ...baseDomain, notes: payload }], [], baseSettings);
         // 原始 payload 不得原样出现在 HTML 中（否则 <script> 提前闭合）
-        expect(html).not.toContain('</script><img src=x');
+        expect(html).not.toContain("</script><img src=x");
         // 所有 < 均以 \u003c 形式进入脚本上下文（解析后仍是原字符，仅阻断标签逃逸）
         expect(html).toContain("\\u003c/script>\\u003cimg");
     });
 
     it("脚本上下文：ipSources/settings 同样安全化 (I2)", () => {
-        const ipSources = [{
-            id: 1,
-            url: '</script><img src=x onerror=alert(1)>',
-            github_path: "IP/a.txt",
-            commit_message: "m",
-            fetch_strategy: "direct_regex",
-            last_synced_time: "2026-01-01T00:00:00Z",
-            last_sync_status: "success",
-            last_sync_error: null as string | null,
-            is_enabled: 1,
-        }];
-        const html = getDashboardPage([], ipSources, { ...baseSettings, GITHUB_OWNER: '</script>x' });
+        const ipSources = [
+            {
+                id: 1,
+                url: "</script><img src=x onerror=alert(1)>",
+                github_path: "IP/a.txt",
+                commit_message: "m",
+                fetch_strategy: "direct_regex",
+                last_synced_time: "2026-01-01T00:00:00Z",
+                last_sync_status: "success",
+                last_sync_error: null as string | null,
+                is_enabled: 1,
+            },
+        ];
+        const html = getDashboardPage([], ipSources, { ...baseSettings, GITHUB_OWNER: "</script>x" });
         expect(html).not.toMatch(/<\/script><img src=x/);
     });
 

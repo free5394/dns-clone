@@ -21,8 +21,12 @@ async function loginAndGetCookie(): Promise<string> {
 /** 注入 CF 凭据，确保 handleDomainMutation 服务端拼装 target_domain 流程可走通 */
 async function seedCfSettings(): Promise<void> {
     await env.WUYA.batch([
-        env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('CF_API_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind("test-token"),
-        env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind("test-zone-id"),
+        env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('CF_API_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).bind("test-token"),
+        env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).bind("test-zone-id"),
     ]);
 }
 
@@ -60,19 +64,22 @@ describe("/api/setup 原子占用 (I4)", () => {
     function makeRacyDb(realDb: D1Database, expectedArrivals = 2) {
         let arrivals = 0;
         let release: () => void = () => {};
-        const gate = new Promise<void>((resolve) => { release = resolve; });
-        const wrapStmt = (stmt: D1PreparedStatement): D1PreparedStatement => ({
-            bind: (...vals: unknown[]) => wrapStmt(stmt.bind(...(vals as Parameters<D1PreparedStatement["bind"]>))),
-            first: async (...col: unknown[]) => {
-                arrivals += 1;
-                if (arrivals >= expectedArrivals) release();
-                await gate;
-                return await (stmt.first as (...a: unknown[]) => Promise<unknown>)(...col);
-            },
-            all: () => stmt.all(),
-            raw: () => stmt.raw(),
-            run: () => stmt.run(),
-        } as unknown as D1PreparedStatement);
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const wrapStmt = (stmt: D1PreparedStatement): D1PreparedStatement =>
+            ({
+                bind: (...vals: unknown[]) => wrapStmt(stmt.bind(...(vals as Parameters<D1PreparedStatement["bind"]>))),
+                first: async (...col: unknown[]) => {
+                    arrivals += 1;
+                    if (arrivals >= expectedArrivals) release();
+                    await gate;
+                    return await (stmt.first as (...a: unknown[]) => Promise<unknown>)(...col);
+                },
+                all: () => stmt.all(),
+                raw: () => stmt.raw(),
+                run: () => stmt.run(),
+            }) as unknown as D1PreparedStatement;
         return new Proxy(realDb, {
             get(target, prop) {
                 if (prop === "prepare") {
@@ -88,7 +95,9 @@ describe("/api/setup 原子占用 (I4)", () => {
     }
 
     it("concurrent setup: exactly one 200, the other 403, never 500", async () => {
-        const originalHash = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'ADMIN_PASSWORD_HASH'").first() as { value: string };
+        const originalHash = (await env.WUYA.prepare(
+            "SELECT value FROM settings WHERE key = 'ADMIN_PASSWORD_HASH'"
+        ).first()) as { value: string };
         await env.WUYA.prepare("DELETE FROM settings WHERE key IN ('ADMIN_PASSWORD_HASH', 'PASSWORD_SALT')").run();
 
         const racyEnv = { WUYA: makeRacyDb(env.WUYA) };
@@ -109,20 +118,26 @@ describe("/api/setup 原子占用 (I4)", () => {
             // 契约：恰一成功 + 一明确拒绝；旧实现（check-then-act）下 loser 是 500（主键冲突冒泡）
             expect(statuses).toEqual([200, 403]);
 
-            const rows = await env.WUYA.prepare("SELECT COUNT(*) as n FROM settings WHERE key = 'ADMIN_PASSWORD_HASH'").first() as { n: number };
+            const rows = (await env.WUYA.prepare(
+                "SELECT COUNT(*) as n FROM settings WHERE key = 'ADMIN_PASSWORD_HASH'"
+            ).first()) as { n: number };
             expect(rows.n).toBe(1);
         } finally {
             await env.WUYA.batch([
-                env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('ADMIN_PASSWORD_HASH', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(originalHash.value),
-                env.WUYA.prepare("INSERT INTO settings (key, value) VALUES ('PASSWORD_SALT', 'test-salt') ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
+                env.WUYA.prepare(
+                    "INSERT INTO settings (key, value) VALUES ('ADMIN_PASSWORD_HASH', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+                ).bind(originalHash.value),
+                env.WUYA.prepare(
+                    "INSERT INTO settings (key, value) VALUES ('PASSWORD_SALT', 'test-salt') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+                ),
             ]);
         }
     });
 });
 
-
 describe("请求体容错 (Suggestion ①)", () => {
-    it("POST /api/login with malformed JSON body returns 400 not 500", async () => {        const res = await SELF.fetch("https://example.com/api/login", {
+    it("POST /api/login with malformed JSON body returns 400 not 500", async () => {
+        const res = await SELF.fetch("https://example.com/api/login", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: "{not-json",
@@ -146,16 +161,25 @@ describe("请求体容错 (Suggestion ①)", () => {
         const weird = `" onmouseover="alert(1)/x.example.com`;
         await env.WUYA.prepare(
             "INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, is_enabled) VALUES (?, ?, 'test-zone-id', 0, 60, 1)"
-        ).bind("src.example.com", weird).run();
-        const row = await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?").bind(weird).first() as { id: number };
+        )
+            .bind("src.example.com", weird)
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?").bind(weird).first()) as {
+            id: number;
+        };
 
         const calls: string[] = [];
-        vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-            calls.push(String(url));
-            return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
-        }));
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                calls.push(String(url));
+                return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
+            })
+        );
         try {
-            const res = await SELF.fetch(`https://example.com/api/domains/${row.id}/records`, { headers: { Cookie: cookie } });
+            const res = await SELF.fetch(`https://example.com/api/domains/${row.id}/records`, {
+                headers: { Cookie: cookie },
+            });
             expect(res.status).toBe(200);
             const cfCall = calls.find((u) => u.includes("api.cloudflare.com"));
             expect(cfCall).toBeDefined();
@@ -170,7 +194,6 @@ describe("请求体容错 (Suggestion ①)", () => {
         }
     });
 });
-
 
 describe("/api/login 限流 (FIX-05)", () => {
     // 每个测试前清空 login_attempts 与 sessions，避免累计状态污染
@@ -204,13 +227,13 @@ describe("/api/login 限流 (FIX-05)", () => {
         // 第 6 次：被限流 → 429
         const res = await SELF.fetch("https://example.com/api/login", opts);
         expect(res.status).toBe(429);
-        const body = await res.json() as { error: string };
+        const body = (await res.json()) as { error: string };
         expect(body.error).toMatch(/过于频繁/);
 
         // 验证 login_attempts 表中只有 5 条失败记录（限流预检阻止第 6 次写入）
-        const cnt = await env.WUYA.prepare(
-            "SELECT COUNT(*) as n FROM login_attempts WHERE success = 0"
-        ).first() as { n: number };
+        const cnt = (await env.WUYA.prepare("SELECT COUNT(*) as n FROM login_attempts WHERE success = 0").first()) as {
+            n: number;
+        };
         expect(cnt.n).toBe(5);
     });
 
@@ -235,9 +258,9 @@ describe("/api/login 限流 (FIX-05)", () => {
         expect(okRes.status).toBe(200);
 
         // 验证失败记录已被清理
-        const cnt = await env.WUYA.prepare(
-            "SELECT COUNT(*) as n FROM login_attempts WHERE success = 0"
-        ).first() as { n: number };
+        const cnt = (await env.WUYA.prepare("SELECT COUNT(*) as n FROM login_attempts WHERE success = 0").first()) as {
+            n: number;
+        };
         expect(cnt.n).toBe(0);
 
         // 再次错误 5 次后应再次被限流
@@ -262,7 +285,7 @@ describe("/api/domains routing", () => {
             headers: { Cookie: cookie },
         });
         expect(res.status).toBe(200);
-        const body = await res.json() as unknown[];
+        const body = (await res.json()) as unknown[];
         expect(Array.isArray(body)).toBe(true);
     });
 
@@ -283,7 +306,9 @@ describe("POST /api/domains (Task 1.1 API/UI 契约对齐)", () => {
         const origFetch = globalThis.fetch;
         globalThis.fetch = (async (url: string) => {
             if (url.includes("api.cloudflare.com")) {
-                return new Response(JSON.stringify({ success: true, result: { name: "example.com" } }), { status: 200 });
+                return new Response(JSON.stringify({ success: true, result: { name: "example.com" } }), {
+                    status: 200,
+                });
             }
             return origFetch(url);
         }) as typeof fetch;
@@ -301,7 +326,11 @@ describe("POST /api/domains (Task 1.1 API/UI 契约对齐)", () => {
             });
             expect(res.status).toBe(200);
             // 验证 target_domain 服务端拼装为 "clone.example.com"
-            const row = await env.WUYA.prepare("SELECT target_domain, source_domain FROM domains WHERE target_domain = ?").bind("clone.example.com").first() as { target_domain: string; source_domain: string };
+            const row = (await env.WUYA.prepare(
+                "SELECT target_domain, source_domain FROM domains WHERE target_domain = ?"
+            )
+                .bind("clone.example.com")
+                .first()) as { target_domain: string; source_domain: string };
             expect(row).not.toBeNull();
             expect(row.source_domain).toBe("origin.example.com");
         } finally {
@@ -326,15 +355,20 @@ describe("PUT /api/domains/:id (Task 1.3 系统域名守卫)", () => {
         const cookie = await loginAndGetCookie();
         await seedCfSettings();
         // 种子系统域名
-        await env.WUYA.prepare("INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system) VALUES (?, ?, ?, 1, 60, '系统', 1)")
-            .bind("internal:hostmonit:yd", "yd.example.com", "test-zone-id").run();
-        const sysRow = await env.WUYA.prepare("SELECT id FROM domains WHERE is_system = 1").first() as { id: number };
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system) VALUES (?, ?, ?, 1, 60, '系统', 1)"
+        )
+            .bind("internal:hostmonit:yd", "yd.example.com", "test-zone-id")
+            .run();
+        const sysRow = (await env.WUYA.prepare("SELECT id FROM domains WHERE is_system = 1").first()) as { id: number };
 
         // mock zone name
         const origFetch = globalThis.fetch;
         globalThis.fetch = (async (url: string) => {
             if (url.includes("api.cloudflare.com")) {
-                return new Response(JSON.stringify({ success: true, result: { name: "example.com" } }), { status: 200 });
+                return new Response(JSON.stringify({ success: true, result: { name: "example.com" } }), {
+                    status: 200,
+                });
             }
             return origFetch(url);
         }) as typeof fetch;
@@ -350,7 +384,9 @@ describe("PUT /api/domains/:id (Task 1.3 系统域名守卫)", () => {
             });
             expect(res.status).toBe(403);
             // 确认 source_domain 未被修改
-            const after = await env.WUYA.prepare("SELECT source_domain FROM domains WHERE id = ?").bind(sysRow.id).first() as { source_domain: string };
+            const after = (await env.WUYA.prepare("SELECT source_domain FROM domains WHERE id = ?")
+                .bind(sysRow.id)
+                .first()) as { source_domain: string };
             expect(after.source_domain).toBe("internal:hostmonit:yd");
         } finally {
             globalThis.fetch = origFetch;
@@ -402,7 +438,9 @@ describe("POST /api/settings (Task 2.6 白名单 + 配对验证)", () => {
         expect(res.status).toBe(200);
         const row = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'SECRET_INJECTION'").first();
         expect(row).toBeNull();
-        const legit = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'THREE_NETWORK_SOURCE'").first() as { value: string };
+        const legit = (await env.WUYA.prepare(
+            "SELECT value FROM settings WHERE key = 'THREE_NETWORK_SOURCE'"
+        ).first()) as { value: string };
         expect(legit.value).toBe("wetest.vip");
     });
 
@@ -432,7 +470,9 @@ describe("POST /api/settings (Task 2.6 白名单 + 配对验证)", () => {
             body: JSON.stringify({ BATCH_SIZE: 25 }),
         });
         expect(res.status).toBe(200);
-        const row = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'BATCH_SIZE'").first() as { value: string } | null;
+        const row = (await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'BATCH_SIZE'").first()) as {
+            value: string;
+        } | null;
         expect(row?.value).toBe("25");
     });
 
@@ -461,7 +501,7 @@ describe("GET /api/settings (Task 2.5 敏感字段过滤)", () => {
             headers: { Cookie: cookie },
         });
         expect(res.status).toBe(200);
-        const body = await res.json() as Record<string, string>;
+        const body = (await res.json()) as Record<string, string>;
         expect(body.ADMIN_PASSWORD_HASH).toBeUndefined();
         expect(body.PASSWORD_SALT).toBeUndefined();
         expect(body.CF_API_TOKEN).toBeUndefined();

@@ -2,7 +2,7 @@
 // 隐含修正 B4 的载体：引入 AbortController 超时，杜绝外部抓取无界等待
 // 阶段 C 新建；阶段 D 起 sync 层全面使用
 
-import { HttpError } from './http-error.ts';
+import { HttpError } from "./http-error.ts";
 
 /**
  * 带超时的 fetch（默认 10s）
@@ -31,7 +31,12 @@ export async function fetchWithTimeout(url: string, init: RequestInit = {}, time
  * @param retries 最大重试次数（默认 2）
  * @param timeoutMs 每次尝试的超时毫秒数
  */
-export async function fetchWithRetry(url: string, init: RequestInit = {}, retries = 2, timeoutMs = 10000): Promise<Response> {
+export async function fetchWithRetry(
+    url: string,
+    init: RequestInit = {},
+    retries = 2,
+    timeoutMs = 10000
+): Promise<Response> {
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
@@ -49,7 +54,7 @@ export async function fetchWithRetry(url: string, init: RequestInit = {}, retrie
         }
         if (attempt < retries) {
             // 指数退避：1s → 2s
-            await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** attempt));
+            await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
         }
     }
     throw lastError;

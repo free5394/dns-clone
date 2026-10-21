@@ -29,14 +29,11 @@ function readD1Entries(text) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith("#")) continue; // 整行注释不参与判断
 
-        const header = trimmed
-            .replace(/\s+#.*$/, "")
-            .match(/^\[\[?([^\]]+)\]\]?$/);
+        const header = trimmed.replace(/\s+#.*$/, "").match(/^\[\[?([^\]]+)\]\]?$/);
         if (header) {
             const table = header[1].trim();
             // 顶层 [[d1_databases]] 与 [[env.<name>.d1_databases]] 都要校验
-            const isD1 =
-                table === "d1_databases" || table.endsWith(".d1_databases");
+            const isD1 = table === "d1_databases" || table.endsWith(".d1_databases");
             entry = isD1 ? { binding: "", database_id: "" } : null;
             if (entry) entries.push(entry);
             continue;
@@ -57,9 +54,7 @@ function readD1Entries(text) {
 const entries = readD1Entries(raw);
 
 if (entries.length === 0) {
-    console.error(
-        "❌ wrangler.toml 中找不到 [[d1_databases]] 配置，无法校验 database_id。",
-    );
+    console.error("❌ wrangler.toml 中找不到 [[d1_databases]] 配置，无法校验 database_id。");
     process.exit(1);
 }
 
@@ -75,9 +70,7 @@ for (const [i, { database_id: id }] of entries.entries()) {
 if (unreplaced.length > 0 || missing.length > 0) {
     const problems = [];
     if (unreplaced.length > 0) {
-        problems.push(
-            `- ${unreplaced.join("、")}：database_id 仍是未替换的占位符。`,
-        );
+        problems.push(`- ${unreplaced.join("、")}：database_id 仍是未替换的占位符。`);
     }
     if (missing.length > 0) {
         problems.push(`- ${missing.join("、")}：database_id 缺失或为空。`);
@@ -86,7 +79,7 @@ if (unreplaced.length > 0 || missing.length > 0) {
         "❌ wrangler.toml 中的 database_id 未就绪：\n" +
             problems.join("\n") +
             "\n   请先运行 wrangler d1 create 获取真实 D1 ID，然后替换 database_id。\n" +
-            "   详见 README §CLI 部署指南。",
+            "   详见 README §CLI 部署指南。"
     );
     process.exit(1);
 }

@@ -51,8 +51,8 @@ export function parseHostToIpv4(host: string): string | null {
 }
 
 function isPrivateIpv4(ip: string): boolean {
-    const parts = ip.split('.').map(Number);
-    if (parts.length !== 4 || parts.some(p => !Number.isInteger(p) || p < 0 || p > 255)) {
+    const parts = ip.split(".").map(Number);
+    if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) {
         throw new Error("IPv4 格式无效。");
     }
     const privatePatterns = [
@@ -64,7 +64,7 @@ function isPrivateIpv4(ip: string): boolean {
         /^0\./,
         /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./,
     ];
-    return privatePatterns.some(re => re.test(ip));
+    return privatePatterns.some((re) => re.test(ip));
 }
 
 /**
@@ -106,7 +106,7 @@ export function assertSafeHttpUrl(raw: string): URL {
         /^f[cd][0-9a-f]{2}:/i,
         /^metadata\.google\.internal$/i,
     ];
-    if (privatePatterns.some(re => re.test(host))) {
+    if (privatePatterns.some((re) => re.test(host))) {
         throw new Error("不允许访问内网或元数据地址。");
     }
     return u;

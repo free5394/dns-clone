@@ -9,7 +9,9 @@ import { handleGitHubFileProxy } from "../src/routes/github-proxy.ts";
 async function seedWhitelistEntry(path: string, urlSuffix = ""): Promise<void> {
     await env.WUYA.prepare(
         "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?) ON CONFLICT(url) DO NOTHING"
-    ).bind(`https://example.com/whitelisted-${path}-${urlSuffix}`, path, "test commit", "direct_regex").run();
+    )
+        .bind(`https://example.com/whitelisted-${path}-${urlSuffix}`, path, "test commit", "direct_regex")
+        .run();
 }
 
 // 恢复 GitHub 设置（用例间可能被“未配置”用例删掉）
@@ -43,7 +45,10 @@ describe("handleGitHubFileProxy", () => {
     it("returns 200 with file content for whitelisted path", async () => {
         await seedWhitelistEntry("whitelisted.txt");
         // mock GitHub Contents API 响应
-        vi.stubGlobal("fetch", vi.fn(async () => new Response("1.1.1.1\n2.2.2.2", { status: 200 })));
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response("1.1.1.1\n2.2.2.2", { status: 200 }))
+        );
 
         const ctx = createExecutionContext();
         const res = await handleGitHubFileProxy("whitelisted.txt", env, ctx);
@@ -55,7 +60,9 @@ describe("handleGitHubFileProxy", () => {
     it("returns 500 when GitHub settings are missing", async () => {
         await seedWhitelistEntry("no-settings.txt");
         // 删除 GitHub 设置（模拟未配置）
-        await env.WUYA.prepare("DELETE FROM settings WHERE key IN ('GITHUB_TOKEN', 'GITHUB_OWNER', 'GITHUB_REPO')").run();
+        await env.WUYA.prepare(
+            "DELETE FROM settings WHERE key IN ('GITHUB_TOKEN', 'GITHUB_OWNER', 'GITHUB_REPO')"
+        ).run();
 
         const ctx = createExecutionContext();
         const res = await handleGitHubFileProxy("no-settings.txt", env, ctx);
@@ -79,7 +86,9 @@ describe("handleGitHubFileProxy — C4 订阅器读", () => {
 
     it("b. GitHub 设置缺失 → 500，且不发出上游请求", async () => {
         await seedWhitelistEntry("c4-no-settings.txt");
-        await env.WUYA.prepare("DELETE FROM settings WHERE key IN ('GITHUB_TOKEN', 'GITHUB_OWNER', 'GITHUB_REPO')").run();
+        await env.WUYA.prepare(
+            "DELETE FROM settings WHERE key IN ('GITHUB_TOKEN', 'GITHUB_OWNER', 'GITHUB_REPO')"
+        ).run();
         const spy = stubUpstreamSuccess();
 
         const ctx = createExecutionContext();
@@ -150,10 +159,16 @@ describe("handleGitHubFileProxy — C4 订阅器读", () => {
     it("f. 上游 404 → 404 与固定中文文案（不是上游原始错误体）", async () => {
         await seedGitHubSettings();
         await seedWhitelistEntry("c4-upstream-404.txt");
-        vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ message: "Not Found" }), {
-            status: 404,
-            headers: { "Content-Type": "application/json" },
-        })));
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(
+                async () =>
+                    new Response(JSON.stringify({ message: "Not Found" }), {
+                        status: 404,
+                        headers: { "Content-Type": "application/json" },
+                    })
+            )
+        );
 
         const ctx = createExecutionContext();
         const res = await handleGitHubFileProxy("c4-upstream-404.txt", env, ctx);
@@ -168,7 +183,9 @@ describe("handleGitHubFileProxy — C4 订阅器读", () => {
     it("g. 上游瞬时 5xx → 自动重试一次；仍失败则 500 与固定文案", async () => {
         await seedGitHubSettings();
         await seedWhitelistEntry("c4-upstream-5xx.txt");
-        const spy = vi.fn(async (_url: string, _init?: RequestInit) => new Response("upstream exploded", { status: 503 }));
+        const spy = vi.fn(
+            async (_url: string, _init?: RequestInit) => new Response("upstream exploded", { status: 503 })
+        );
         vi.stubGlobal("fetch", spy);
 
         const ctx = createExecutionContext();
