@@ -94,16 +94,13 @@ export function getHtmlLayout(title, content) { return `<!DOCTYPE html><html lan
     --c-primary: var(--pico-primary);
     --c-primary-hover: var(--pico-primary-hover);
     --c-bg: var(--surface-2);
-    --c-bg-blur: rgba(240, 242, 245, 0.85);
     --c-card-bg: var(--surface-1);
     --c-card-border: var(--border-subtle);
     --c-text: var(--text-strong);
     --c-text-muted: var(--text-muted);
-    --c-text-accent: var(--c-primary);
     --c-icon-bg: #e9ecef;
     --c-button-bg: var(--c-primary);
     --c-button-text: var(--pico-primary-inverse);
-    --noise-bg: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch"/></filter><rect width="100%" height="100%" filter="url(%23n)" opacity="0.1"/></svg>');
 }
 /* 暗色令牌：与浅色块同特异性（0,2,0）且排在其后，保证胜出 */
 :root[data-theme="dark"], :root.dark {
@@ -112,12 +109,10 @@ export function getHtmlLayout(title, content) { return `<!DOCTYPE html><html lan
     --c-primary: #4d9bff;
     --c-primary-hover: #74b1ff;
     --c-bg: #121212;
-    --c-bg-blur: rgba(28, 28, 30, 0.72);
     --c-card-bg: #1c1c1e;
     --c-card-border: #2c2c2e;
     --c-text: #e5e5e7;
     --c-text-muted: #a1a1a6;
-    --c-text-accent: var(--c-primary);
     --c-icon-bg: #2c2c2e;
     --c-button-bg: #0b64d8;
     --c-button-text: var(--pico-primary-inverse);
@@ -422,7 +417,7 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
         </div>`;
     }).join('');
 
-    const authButton = loggedIn 
+    const authButton = loggedIn
         ? `<a href="/admin" role="button">进入后台</a>`
         : `<button class="outline" onclick="document.getElementById('login-modal').showModal()">登录</button>`;
 
@@ -449,7 +444,7 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
         </div>
     </div>
     <div id="copy-toast" class="home-toast" role="status" aria-live="polite"></div>
-    
+
     <dialog id="login-modal">
       <article>
         <header>
@@ -490,7 +485,7 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
                 });
             }
         });
-        
+
         document.getElementById('modal-login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const password = document.getElementById('modal-password').value;
@@ -523,7 +518,7 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
  * 渲染已登录管理员的仪表盘页面骨架（含域名/IP 源表格 + 设置面板）
  * settings 必须是已过滤敏感字段的安全版本（getSafeSettings）
  */
-export function getDashboardPage(domains, ipSources, settings) { 
+export function getDashboardPage(domains, ipSources, settings) {
     const githubSettingsComplete = settings.GITHUB_TOKEN && settings.GITHUB_OWNER && settings.GITHUB_REPO;
     return `<aside class="sidebar"><div class="sidebar-header"><h3>DNS Clone</h3><button id="theme-toggle" type="button" aria-label="切换到深色主题"><i class="fa-solid fa-moon" aria-hidden="true"></i></button></div><nav class="sidebar-nav"><a href="#page-dns-clone" class="nav-link active" data-target="page-dns-clone"><i class="fa-solid fa-clone fa-fw"></i> 域名克隆</a><a href="#page-github-upload" class="nav-link" data-target="page-github-upload"><i class="fa-brands fa-github fa-fw"></i> GitHub 上传</a><a href="#page-settings" class="nav-link" data-target="page-settings"><i class="fa-solid fa-gear fa-fw"></i> 系统设置</a></nav></aside>
     <div class="main-content">
@@ -589,16 +584,16 @@ function getDashboardScript(domains, ipSources, settings) { return `
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
   const formatBeijingTime = (isoStr) => { if (!isoStr) return '从未'; const d = new Date(isoStr); return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(d).replace(/\\//g, '-'); };
-  
+
   function renderLiveRecords(records) {
       if (!records || records.length === 0) return '无记录';
       const first = records[0];
       if (records.length === 1) return \`<b>\${esc(first.type)}:</b> \${esc(first.content)}\`;
       return \`<details class="record-details"><summary><b>\${esc(first.type)}:</b> (共 \${records.length} 条)</summary><ul>\${records.map(r => \`<li><b>\${esc(r.type)}:</b> \${esc(r.content)}</li>\`).join('')}</ul></details>\`;
   }
-  
+
   function renderStatus(item) { switch (item.last_sync_status) { case 'success': return \`<span class="status-success">✔ 同步成功</span>\`; case 'failed': return \`<span class="status-failed" title="\${esc(item.last_sync_error || '未知错误')}">✖ 同步失败</span>\`; case 'no_change': return \`<span class="status-no_change">✔ 内容一致</span>\`; default: return '<span class="status-pending">○ 待定</span>'; } }
-  
+
   function renderDomainCard(domain) {
       let prefix = domain.target_domain;
       if (zoneName && domain.target_domain.endsWith('.' + zoneName)) {
@@ -619,11 +614,11 @@ function getDashboardScript(domains, ipSources, settings) { return `
           <div class="card-actions"><button class="outline" onclick="window.individualSync(\${domain.id})">同步</button><button class="secondary outline" onclick="window.openModal('domainModal', \${domain.id})" \${isSystem ? 'disabled' : ''}>编辑</button><button class="contrast outline" onclick="window.deleteDomain(\${domain.id})" \${isSystem ? 'disabled' : ''}>删除</button></div>
       </div>\`;
   }
-  function renderDomainList() { 
+  function renderDomainList() {
       const container = document.getElementById('domain-list-container');
       if (currentDomains.length > 0) {
         // 表头只在 ≥1024 显示（与行共用 row-grid 列宽）；窄屏由行内 .col-label 承担
-        container.innerHTML = '<div class="domain-list-head row-grid"><span>克隆目标</span><span>当前解析</span><span>上次同步</span><span></span></div>' + currentDomains.map(renderDomainCard).join(''); 
+        container.innerHTML = '<div class="domain-list-head row-grid"><span>克隆目标</span><span>当前解析</span><span>上次同步</span><span></span></div>' + currentDomains.map(renderDomainCard).join('');
       } else {
         container.innerHTML = '<div class="empty-state"><p>暂无域名克隆目标，点右上角「添加克隆目标」新建一条。</p></div>';
       }
@@ -640,7 +635,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
           <div class="card-actions"><button class="outline" onclick="window.syncSingleIpSource(\${source.id})">同步</button><button class="secondary outline" onclick="window.openModal('ipSourceModal', \${source.id})">编辑</button><button class="contrast outline" onclick="window.deleteIpSource(\${source.id})">删除</button></div>
       </div>\`;
   }
-  function renderIpSourceList() { 
+  function renderIpSourceList() {
       const container = document.getElementById('ip-source-list-container');
       if (currentIpSources.length > 0) {
         container.innerHTML = '<div class="domain-list-head row-grid"><span>GitHub 文件路径</span><span>抓取策略</span><span>上次同步</span><span></span></div>' + currentIpSources.map(renderIpSourceCard).join('');
@@ -650,7 +645,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
   }
 
   window.copyToClipboard = (text) => { navigator.clipboard.writeText(text).then(() => { showNotification(\`已复制: \${text}\`, 'success', 3000); }, () => { showNotification(\`复制失败，请检查浏览器权限。\`, 'error'); }); };
-  
+
   window.openModal = (modalId, id = null) => {
       const modal = document.getElementById(modalId);
       if (modalId === 'domainModal') {
@@ -710,7 +705,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
       try { const result = await apiFetch(url, { method, body: JSON.stringify(payload) }); showNotification(result.message, 'success'); closeModal('domainModal'); await refreshDomains(); } catch (e) { showNotification(\`保存失败: <code>\${e.message}</code>\`, 'error'); }
   }
   window.deleteDomain = async (id) => { if (!confirm('确定要删除这个目标吗？此操作不可逆转。')) return; try { const result = await apiFetch('/api/domains/' + id, { method: 'DELETE' }); showNotification(result.message, 'success'); await refreshDomains(); } catch (e) { showNotification(\`错误: <code>\${e.message}</code>\`, 'error'); } }
-  
+
   async function refreshDomains() {
     try {
         currentDomains = await apiFetch('/api/domains');
@@ -720,7 +715,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
         showNotification(\`更新列表失败: <code>\${e.message}</code>\`, 'error');
     }
   }
-  
+
   async function fetchLiveRecords() {
     const placeholders = document.querySelectorAll('.records-placeholder');
     for (const el of placeholders) {
@@ -748,25 +743,25 @@ function getDashboardScript(domains, ipSources, settings) { return `
       const allButtons = document.querySelectorAll('button'); allButtons.forEach(b => b.disabled = true); if (btn) btn.setAttribute('aria-busy', 'true'); // 进度只由日志面板呈现，按钮只禁用不改文案
       logOutputElem.style.display = 'block';
       logOutputElem.textContent = '开始同步任务...\\n';
-      try { 
+      try {
           const response = await fetch(url, { method: 'POST' });
           if (!response.ok || !response.body) throw new Error(\`服务器错误: \${response.status}\`);
-          const reader = response.body.getReader(); 
+          const reader = response.body.getReader();
           const decoder = new TextDecoder();
-          while (true) { 
-              const { done, value } = await reader.read(); 
-              if (done) break; 
-              const chunk = decoder.decode(value, { stream: true }); 
-              const lines = chunk.split('\\n\\n').filter(line => line.startsWith('data: ')); 
-              for (const line of lines) { logOutputElem.textContent += line.substring(6) + '\\n'; logOutputElem.scrollTop = logOutputElem.scrollHeight; } 
+          while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              const chunk = decoder.decode(value, { stream: true });
+              const lines = chunk.split('\\n\\n').filter(line => line.startsWith('data: '));
+              for (const line of lines) { logOutputElem.textContent += line.substring(6) + '\\n'; logOutputElem.scrollTop = logOutputElem.scrollHeight; }
           }
           logOutputElem.textContent += '\\n同步完成，正在更新列表。';
           if(logOutputElem.id === 'logOutput') await refreshDomains();
           if(logOutputElem.id === 'ipLogOutput') await refreshIpSources();
-      } catch (e) { 
-          logOutputElem.textContent += '\\n发生严重错误：\\n' + e.message; 
+      } catch (e) {
+          logOutputElem.textContent += '\\n发生严重错误：\\n' + e.message;
           showNotification('同步任务发生错误', 'error');
-      } finally { 
+      } finally {
           allButtons.forEach(b => { if (!b.closest('dialog')) b.disabled = false; });
           if (btn) btn.removeAttribute('aria-busy');
       }
@@ -785,7 +780,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
       event.preventDefault();
       const btn = event.target.querySelector('button');
       btn.disabled = true; btn.setAttribute('aria-busy', 'true');
-      
+
       const oldThreeNetworkSource = currentSettings.THREE_NETWORK_SOURCE;
       const newThreeNetworkSource = document.getElementById('threeNetworkSource').value;
 
@@ -800,7 +795,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
       try {
           const result = await apiFetch('/api/settings', { method: 'POST', body: JSON.stringify(settingsToSave) });
           showNotification(result.message || '设置已保存！', 'success');
-          
+
           if (oldThreeNetworkSource !== newThreeNetworkSource) {
               showNotification('三网优选源已更改，正在为您同步系统域名...', 'info');
               handleStreamingRequest('/api/domains/sync_system', null, document.getElementById('logOutput'));
@@ -824,7 +819,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
       renderDomainList();
       renderIpSourceList();
       fetchLiveRecords();
-      
+
       const navLinks = document.querySelectorAll('.nav-link');
       const pages = document.querySelectorAll('.page');
       navLinks.forEach(link => {
@@ -850,7 +845,7 @@ function getDashboardScript(domains, ipSources, settings) { return `
       document.getElementById('probeBtn').addEventListener('click', async (e) => {
           const url = document.getElementById('ip_source_url').value;
           if (!url) { showNotification('请输入IP源地址', 'warning'); return; }
-          
+
           const btn = e.target;
           const progress = document.getElementById('probeProgress');
           const resultElem = document.getElementById('probeResult');
