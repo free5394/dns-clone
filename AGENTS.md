@@ -152,6 +152,25 @@ pnpm deploy
 - `wrangler.toml` 是部署相关真相之源（cron 表达式、绑定名、compatibility_date）；改这些前先核对 README 同步。
 - `src/db/migrations.ts` 是表结构的真相之源；新增字段时**直接改 `expectedSchemas`**（idempotent DDL），不要手工 ALTER。
 - `vitest.config.ts` 是测试环境配置真相之源；改动需保持 `maxWorkers: 1`（D1 SQLite 锁约束）。
+- `docs/ui-redesign.md` 是界面层的真相之源（诊断 D1–D10 + 目标设计系统 + P1/P2/P3 实施记录）。**动 `src/ui/templates.js` 前先读它**，别重新做审美诊断。
+
+## 界面（UI）专项
+
+全部界面在**单文件** `src/ui/templates.js`（约 890 行，内联 `<style>`，无构建步骤、无独立 CSS；外链 Pico CSS v2 + Font Awesome 6.5.1）。`tsconfig.json` 排除它，**改它不会被 `pnpm typecheck` 覆盖**，必须靠测试 + 浏览器复验。
+
+四条改之前必须知道的事实（每条都实际踩过）：
+
+1. **Pico v2 的浅色令牌写在 `:root:not([data-theme="dark"])`（特异性 0,2,0）**，裸 `:root`（0,1,0）压不过它，无论源序。所以本项目浅色块用 `:root, :root[data-theme="light"]`，暗色块用 `:root[data-theme="dark"], :root.dark`（同为 0,2,0，暗色排后胜出）。**新增令牌必须放对块**，否则静默失效。
+2. **CSS 全在 `getHtmlLayout(title, content)` 里**（`src/ui/templates.js:31` 起）。`getPublicHomepage` / `getDashboardPage` / `getSetupPage` 只返回主体 HTML。写 CSS 断言必须自己拼：`getHtmlLayout("x", getPublicHomepage(...))`。
+3. **首帧主题脚本在 `getHtmlLayout` 的 `<head>` 内**（与 `</style>` 同一行，`src/ui/templates.js:352`），同时写 `class="dark"` 与 `data-theme` 防闪白。主题逻辑只在这里定义一次，各页只放按钮（`#theme-toggle`）；**不要在页面模板里再写一份 `applyTheme`**。
+4. **选择器契约**：单条同步靠 `#domain-card-${id} .card-actions button:first-child`（`src/ui/templates.js:782`）与 `#ip-source-card-${id} ...`（`:786`）命中，所以 `.card-actions` 里的**第一个按钮必须始终是「同步」**。改行结构时别动这个顺序。
+
+其它约定：
+
+- 主题语义：已保存的 `localStorage.theme` 优先；没有就跟随 `prefers-color-scheme` 并监听其 `change`（用户显式选过之后以保存值为准）。
+- 这些可见文案被测试断言，改站名/关键文案会挂 `test/ui.test.ts` 或 `test/templates-escape.test.ts`：`系统初始化`、`DNS Clone Dashboard`、`CF-DNS-Clon`、`未知线路`、`N/A`。
+- 不引 web font、不引图片资源（保住 `pnpm build:single` 单文件部署）。
+- 已知 house rules（已写进 `docs/ui-redesign.md`）：禁渐变、玻璃拟态、静止阴影、小号大写带字距标签、装饰性图标、hover 位移。
 
 ## 交接文档
 
