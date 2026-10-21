@@ -385,7 +385,7 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
                         urlCompatibleSource = "https://" + urlCompatibleSource;
                     }
                     sourceHost = new URL(urlCompatibleSource).hostname;
-                } catch (e) {
+                } catch {
                     sourceHost = d.source_domain || "解析错误";
                 }
             }
@@ -410,7 +410,7 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
             let sourceHost;
             try {
                 sourceHost = new URL(s.url).hostname;
-            } catch (e) {
+            } catch {
                 sourceHost = s.url || "解析错误";
             }
             return `

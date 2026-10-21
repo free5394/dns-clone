@@ -469,9 +469,9 @@ export async function updateCloudflareDns(
         );
     };
 
-    const deleteResponses = await processInChunks(recordsToDelete, API_CHUNK_SIZE, deleteFn, log);
-    const addResponses = await processInChunks(recordsToAdd, API_CHUNK_SIZE, addFn, log);
+    await processInChunks(recordsToDelete, API_CHUNK_SIZE, deleteFn, log);
+    await processInChunks(recordsToAdd, API_CHUNK_SIZE, addFn, log);
 
-    // processInChunks 已在内部对非 2xx 短路抛错；此处仅做防御性聚合
+    // processInChunks 已在内部对非 2xx 短路抛错；此处无需再检查响应
     return "success";
 }

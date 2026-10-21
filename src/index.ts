@@ -45,7 +45,7 @@ export default {
             return new Response("服务器内部错误，请稍后重试。", { status: 500 });
         }
     },
-    async scheduled(controller: ScheduledController, env: { WUYA: D1Database }, ctx: ExecutionContext): Promise<void> {
+    async scheduled(controller: ScheduledController, env: { WUYA: D1Database }, _ctx: ExecutionContext): Promise<void> {
         console.log("定时任务开始：正在初始化...");
         try {
             await initializeAndMigrateDatabase(env);

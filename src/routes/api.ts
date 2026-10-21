@@ -189,7 +189,7 @@ async function apiGetSettings(request: Request, db: D1Database): Promise<Respons
     if (token && zoneId) {
         try {
             settings.zoneName = await getZoneName(token, zoneId);
-        } catch (e) {
+        } catch {
             console.warn("Could not fetch zone name for settings endpoint");
         }
     }

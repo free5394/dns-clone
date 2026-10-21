@@ -3,7 +3,7 @@
 // 覆盖 fix-plan：#6 syncSingleIpSource 禁用源跳过
 import { env } from "cloudflare:test";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { fetchIpsFromSource, syncSingleIpSource, FETCH_STRATEGIES } from "../src/sync/ip-sources.ts";
+import { fetchIpsFromSource, syncSingleIpSource } from "../src/sync/ip-sources.ts";
 import { syncDomainLogic, syncSystemDomains, resolveRecordsForDomain, processInChunks } from "../src/sync/domains.ts";
 
 afterEach(() => {
@@ -109,6 +109,7 @@ describe("fetchIpsFromSource multi-source fallback", () => {
             .bind(row.id)
             .first()) as { fetch_strategy: string };
         expect(updated.fetch_strategy).toBe("direct_regex");
+        expect(callCount).toBeGreaterThan(1);
 
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(row.id).run();
     });
