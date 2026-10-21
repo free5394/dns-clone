@@ -19,10 +19,13 @@ Cloudflare Worker 项目：域名克隆（DNS 同步） + IP 聚合（推送到 
 ```bash
 pnpm install              # 安装依赖（首次）
 pnpm dev                  # wrangler dev 起本地 workerd（默认 8787 端口）
-pnpm test                 # 跑一次测试（vitest run，153 项 / 14 个文件，workerd 内执行，约 18 秒）
+pnpm test                 # 跑一次测试（vitest run，154 项 / 14 个文件，workerd 内执行，约 18 秒）
 pnpm test:watch           # 监听模式（改文件自动重跑）
 pnpm test:coverage        # 同上 + istanbul 插桩覆盖率（text/html/lcov）
 pnpm typecheck            # tsc --noEmit 严格模式检查
+pnpm lint                 # oxlint 静态检查（Rust 实现，约 0.4 秒）
+pnpm format               # prettier 全仓格式化
+pnpm format:check         # prettier 校验（CI 用）
 pnpm cf-typegen           # 重新生成 worker-configuration.d.ts（gitignore）
 pnpm build:single         # esbuild 打包 src/index.ts → dist/worker.bundle.js（Dashboard 部署用）
 pnpm predeploy            # 校验 wrangler.toml 中 database_id 已替换占位符
@@ -83,11 +86,13 @@ pnpm deploy
 ├── wrangler.toml         # Worker 配置（compatibility_date 2026-01-15，keep_vars，observability，cron）
 ├── tsconfig.json         # TypeScript strict（exclude src/ui/templates.js）
 ├── vitest.config.ts      # cloudflareTest + D1 迁移绑定 + maxWorkers=1
-├── package.json          # 脚本：dev / test / typecheck / deploy / cf-typegen / build:single / predeploy
+├── package.json          # 脚本：dev / test / typecheck / lint / format / deploy / cf-typegen / build:single / predeploy
 ├── .editorconfig         # 4 空格 / LF / UTF-8
+├── .prettierrc.json      # Prettier 配置（与 .editorconfig 对齐）
+├── .oxlintrc.json        # oxlint 配置（correctness=error，suspicious/perf=warn）
 ├── .gitignore            # 排除 .claude/、*.env、*.vars、.wrangler/、dist/、coverage/、worker-configuration.d.ts
 ├── .github/workflows/
-│   └── ci.yml            # push main / PR 上跑 pnpm typecheck + pnpm test
+│   └── ci.yml            # push main / PR 上跑 typecheck + lint + format:check + test
 ├── scripts/
 │   ├── build-single-file.mjs  # esbuild 打包 src/index.ts → dist/worker.bundle.js（Dashboard 部署入口）
 │   ├── predeploy.cjs          # 部署前校验 wrangler.toml 中 database_id 占位符已替换
