@@ -42,7 +42,6 @@ export function getHtmlLayout(title, content) { return `<!DOCTYPE html><html lan
     /* 圆角 */
     --radius-sm: 6px;
     --radius-md: 10px;
-    --radius-lg: 14px;
     --pico-border-radius: var(--radius-md);
     --pico-form-element-spacing-vertical: 1rem;
     --pico-form-element-spacing-horizontal: 1.25rem;
@@ -87,12 +86,9 @@ export function getHtmlLayout(title, content) { return `<!DOCTYPE html><html lan
     --text-muted: #5b6472;
     /* 语义色（白底均 ≥4.5:1） */
     --ok: #15803d;
-    --warn: #b45309;
     --danger: #b91c1c;
-    --info: #0b64d8;
     /* 首页自定义变量：全部指向令牌，不再手写色值 */
     --c-primary: var(--pico-primary);
-    --c-primary-hover: var(--pico-primary-hover);
     --c-bg: var(--surface-2);
     --c-card-bg: var(--surface-1);
     --c-card-border: var(--border-subtle);
@@ -107,7 +103,6 @@ export function getHtmlLayout(title, content) { return `<!DOCTYPE html><html lan
     /* 暗色下阴影要更重才看得见层次 */
     --shadow-overlay: 0 10px 30px rgba(0, 0, 0, 0.6);
     --c-primary: #4d9bff;
-    --c-primary-hover: #74b1ff;
     --c-bg: #121212;
     --c-card-bg: #1c1c1e;
     --c-card-border: #2c2c2e;
@@ -124,7 +119,6 @@ export function getHtmlLayout(title, content) { return `<!DOCTYPE html><html lan
     --text-body: #d4d4d8;
     --text-muted: #a1a1a6;
     --ok: #4ade80;
-    --warn: #fbbf24;
     --danger: #f87171;
     /* Pico 主色在暗色下必须一起换，否则链接/按钮/标题仍是浅色主题的深蓝，压深底不可读 */
     --pico-primary: #4d9bff;

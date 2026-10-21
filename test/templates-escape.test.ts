@@ -259,3 +259,22 @@ describe("设置页铺满 (FIX-26)", () => {
         );
     });
 });
+
+describe("CSS 变量无孤儿 (retro #2)", () => {
+    const layoutHtml = () => getHtmlLayout("测试", getDashboardPage([], [], {}));
+
+    // --pico-* 是写给 Pico 自己的组件消费的覆盖令牌，我们自己的 var() 不引用它们
+    // 属于正常情况，不能当成孤儿。只有自定义命名空间才需要逐个被 var() 消费。
+    const isPicoOverride = (name: string) => name.startsWith("--pico-");
+
+    it("所有自定义 CSS 变量都至少被 var() 引用一次", () => {
+        const html = layoutHtml();
+        const declared = [...html.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]);
+        const orphans = [...new Set(declared)].filter((name) => {
+            if (isPicoOverride(name)) return false;
+            const re = new RegExp(String.raw`var\(\s*${name}\s*[,)]`);
+            return !re.test(html);
+        });
+        expect(orphans).toEqual([]);
+    });
+});
