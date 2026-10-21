@@ -274,6 +274,47 @@ describe("设置页铺满 (FIX-26)", () => {
     });
 });
 
+describe("手动同步进度：日志框即唯一进度面 (retro #1)", () => {
+    // 用户三轮反馈都落在这两个 <pre> 上：重复进度、贴按钮、圆角压字。
+    // 断言只锁契约（走间距刻度、内边距大于圆角），不核对具体像素值。
+    const layoutHtml = () => getHtmlLayout("测试", getDashboardPage([], [], {}));
+    const syncLogRule = (html: string) => {
+        const rule = html.match(/\.sync-log \{([\s\S]*?)\}/);
+        expect(rule).not.toBeNull();
+        return rule![1];
+    };
+
+    it("两页的日志框都挂 .sync-log，并留出上外边距", () => {
+        const html = layoutHtml();
+        // 域名克隆页与 GitHub 上传页各一处，缺一页就是漏改
+        expect(html).toMatch(/<pre id="logOutput" class="sync-log"/);
+        expect(html).toMatch(/<pre id="ipLogOutput" class="sync-log"/);
+        expect(syncLogRule(html)).toMatch(/margin-top:\s*var\(--space-\d+\)/);
+    });
+
+    it("日志框内边距不小于圆角，首行文字不被圆角压住", () => {
+        const html = layoutHtml();
+        const padding = syncLogRule(html).match(/padding:\s*var\(--(space-\d+)\)/);
+        // 裸 px 值会绕过间距刻度，这里要求走令牌
+        expect(padding).not.toBeNull();
+        // 圆角的真相之源是 --radius-md，别把 10px 抄进断言
+        const radius = /--radius-md:\s*(\d+)px/.exec(html);
+        expect(radius).not.toBeNull();
+        const declared = new RegExp(`--${padding![1]}:\\s*(\\d+)px`).exec(html);
+        expect(declared).not.toBeNull();
+        // 内边距小于圆角时，首行文字会被圆角切掉
+        expect(Number(declared![1])).toBeGreaterThanOrEqual(Number(radius![1]));
+    });
+
+    it("按钮不承载进度文案，进度只由日志框呈现", () => {
+        const html = layoutHtml();
+        // 先确认这段脚本真的在断言范围内，避免负向断言空过
+        expect(html).toContain("handleStreamingRequest");
+        // 第一轮的 bug 就是按钮写「同步中」+ 日志框再刷一遍进度，出现两个进度面
+        expect(html).not.toContain("同步中");
+    });
+});
+
 describe("CSS 变量无孤儿 (retro #2)", () => {
     const layoutHtml = () => getHtmlLayout("测试", getDashboardPage([], [], {}));
 

@@ -574,3 +574,23 @@ bsk emulate --session $sid --off
 | 390 | 351 | 285 | 192×59.6 | 0 | 0 |
 
 表单宽度始终等于内容区宽度（`formFillRatio = 1`），五档均无横向溢出。已知代价：1920 下输入框宽 1525px、`<details>` 的 summary 与 chevron 相距较远——这是"单列铺满"的必然结果，记录下来，等用户看过真实大屏再决定是否给控件单独设上限。
+
+### 10.6 手动同步：只留一个进度面（FIX-27）
+
+三轮用户反馈都落在同一对 `<pre>` 上（去重进度 → 贴按钮 → 圆角压字），根因各不相同，合并记录：
+
+| 轮次 | 用户反馈 | 根因 | 改动（`src/ui/templates.js`） |
+| --- | --- | --- | --- |
+| 1 | 点「同步」后按钮显示「同步中」，日志框又刷一遍进度，出现两个进度 | `handleStreamingRequest` 同时写按钮文案与日志框 | 按钮只置 `disabled` + `aria-busy`，文案不动；进度只走日志框 |
+| 2 | 按钮与日志框贴在一起 | 没有自定义 `pre` 规则，Pico 默认外边距为 0 | 两个 `<pre>` 挂 `.sync-log`，`margin-top: var(--space-8)`（32px） |
+| 3 | 日志文字贴着边框、圆角压住首行 | 计算样式 `padding: 0px` 撞上 `border-radius: 10px` | `.sync-log` 补 `padding: var(--space-4)`（16px） |
+
+**改这块之前的三条契约**：
+
+1. 手动同步的唯一进度面是日志框；按钮只表达禁用态，不写「同步中」这类进度文案。
+2. 两个日志框都必须挂 `.sync-log`（域名页 `#logOutput`、GitHub 页 `#ipLogOutput`），样式只写在这个 class 上。
+3. 内边距不小于圆角（Pico 的 `pre` 圆角取自 `--radius-md`），否则首行文字会被圆角切掉。
+
+回归断言：`test/templates-escape.test.ts` 的「手动同步进度：日志框即唯一进度面 (retro #1)」，四条分别锁两个 class 的存在性、`margin-top` 走间距刻度、`padding` 与 `--radius-md` 解析成像素后的大小关系、以及「按钮相关脚本里没有『同步中』」。第 3 轮的修法验证过红-绿：把 `padding` 改回 `0`，该断言立即失败。
+
+实测（2026-10-21，本机 Chromium 1440px 视口，域名页与 GitHub 页数值一致）：第 2 轮按钮底边到日志框顶边 24px → 32px；第 3 轮日志框 `padding` 0px → 16px（> `--radius-md` 的 10px），框高 206px → 238px。
