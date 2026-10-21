@@ -31,7 +31,13 @@ jobs:
             - name: 安装依赖
               run: pnpm install --frozen-lockfile
 
-            # tsc --noEmit，约 0.4 秒
+            # worker-configuration.d.ts 在 .gitignore 内，检出后不存在，
+            # 缺了它 D1Database / Env 等运行时类型全部丢失，tsc 会报 Cannot find name。
+            # 必须先由 wrangler 生成，约 2 秒，不需要任何凭据。
+            - name: 生成运行时类型
+              run: pnpm cf-typegen
+
+            # tsc --noEmit，约 0.3 秒
             - name: 类型检查
               run: pnpm typecheck
 
