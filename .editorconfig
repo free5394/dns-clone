@@ -1,26 +1,31 @@
-# 表示这是最顶层的配置文件，编辑器会停止向上查找[reference:22][reference:23][reference:24]
+# 表示这是最顶层的配置文件，编辑器会停止向上查找
 root = true
 
-# 适用于所有文件的通用规则[reference:25][reference:26]
+# 适用于所有文件的通用规则
 [*]
-indent_style = space          # 使用空格缩进[reference:27][reference:28]
-indent_size = 4              # 缩进大小为4个空格[reference:29]
-end_of_line = lf              # 使用 Unix 风格的换行符[reference:30]
-charset = utf-8               # 文件编码为 UTF-8[reference:31]
-trim_trailing_whitespace = true # 移除行尾空白字符[reference:32]
-insert_final_newline = true   # 文件末尾插入一个新行[reference:33]
+indent_style = space          # 使用空格缩进
+indent_size = 4              # 缩进大小为4个空格
+end_of_line = lf              # 使用 Unix 风格的换行符
+charset = utf-8               # 文件编码为 UTF-8
+trim_trailing_whitespace = true # 移除行尾空白字符
+insert_final_newline = true   # 文件末尾插入一个新行
 
 [*.{js,ts,jsx,tsx}]
 indent_size = 4
 
-[*.{json,yaml,yml}]
+# 与 Prettier 的 tabWidth: 4 对齐：format 的 glob 含 *.json，动 json 时 Prettier 说了算
+[*.json]
+indent_size = 4
+
+# Prettier 的 glob 不含 yml，这里保持 2 空格，与 .github/workflows/*.yml 的现有缩进一致
+[*.{yaml,yml}]
 indent_size = 2
 
-# 针对 Markdown 文件的特殊规则[reference:34]
+# 针对 Markdown 文件的特殊规则
 [*.md]
 trim_trailing_whitespace = false
 
-# 针对 Makefile 文件的特殊规则[reference:35]
+# 针对 Makefile 文件的特殊规则
 [Makefile]
 indent_style = tab
 indent_size = 4

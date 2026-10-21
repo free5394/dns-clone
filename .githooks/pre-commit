@@ -1,0 +1,20 @@
+#!/bin/sh
+# pre-commit — 提交前跑本机门禁（typecheck + lint + format:check，约 2 秒）
+#
+# 为什么不含 test：全套测试约 20 秒，放在提交路径上会让人用 --no-verify 绕过，反而削弱门禁。
+# 测试仍由 CI 把关。
+#
+# 为什么用 pnpm check 而不是把三条命令抄一遍：口径只能有一个，抄两遍就会漂。
+# 钩子失效时（如 pnpm install --force 之后仍不生效）手动执行：
+#   git config core.hooksPath .githooks
+
+set -e
+
+echo "[pre-commit] 跑本机门禁（typecheck + lint + format:check）..."
+if ! pnpm check; then
+    echo ""
+    echo "[pre-commit] 门禁未通过，提交已阻止。"
+    echo "  格式问题可跑：pnpm format"
+    echo "  确认无误要跳过：git commit --no-verify"
+    exit 1
+fi

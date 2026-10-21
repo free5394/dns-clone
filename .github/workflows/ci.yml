@@ -51,7 +51,9 @@ jobs:
             - name: 格式检查
               run: pnpm format:check
 
-            # vitest run，14 个文件 / 154 项，约 18 秒
+            # vitest run --coverage，比 pnpm test 多约 4 秒（istanbul 插桩），换来 coverage 路径进 CI。
+            # 这条命令曾在 .gitignore / 依赖版本错配下静默坏过（@vitest/coverage-istanbul 5.0.5 vs vitest 4.1.11），
+            # 现在由 CI 每次跑，坏了就红。
             # 测试数据全部由 test/apply-migrations.ts 写入固定占位值，不依赖任何 secret
             - name: 测试
-              run: pnpm test
+              run: pnpm test:coverage

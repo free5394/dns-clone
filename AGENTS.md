@@ -5,7 +5,7 @@ Cloudflare Worker 项目：域名克隆（DNS 同步） + IP 聚合（推送到 
 ## 关键事实
 
 - **运行平台**：Cloudflare Workers（运行时 workerd）。开发工具链：pnpm 11 + Node ≥ 22（Volta 锁 24）+ wrangler 4 + TypeScript strict + vitest。
-- **唯一入口**：`src/index.ts`（约 78 行），导出 `fetch` 与 `scheduled` 两个 handler，组装 8 个模块。
+- **唯一入口**：`src/index.ts`，导出 `fetch` 与 `scheduled` 两个 handler，组装 8 个模块。
 - **唯一绑定**：`env.WUYA` → D1 数据库。**变量名必须为 `WUYA`（全大写）**，参见 `src/index.ts:12`。缺失会返回 `500`。
 - **三个路由分支**（`src/index.ts:22-30`）：
   - `/api/*` → `handleApiRequest`（`src/routes/api.ts`）
@@ -19,22 +19,25 @@ Cloudflare Worker 项目：域名克隆（DNS 同步） + IP 聚合（推送到 
 ```bash
 pnpm install              # 安装依赖（首次）
 pnpm dev                  # wrangler dev 起本地 workerd（默认 8787 端口）
-pnpm test                 # 跑一次测试（vitest run，154 项 / 14 个文件，workerd 内执行，约 18 秒）
+pnpm test                 # 跑一次测试（vitest run，workerd 内执行，约 19 秒）
 pnpm test:watch           # 监听模式（改文件自动重跑）
 pnpm test:coverage        # 同上 + istanbul 插桩覆盖率（text/html/lcov）
 pnpm typecheck            # tsc --noEmit 严格模式检查
 pnpm lint                 # oxlint 静态检查（Rust 实现，约 0.4 秒）
 pnpm format               # prettier 全仓格式化
 pnpm format:check         # prettier 校验（CI 用）
+pnpm check                # 本机门禁：typecheck + lint + format:check（pre-commit 钩子跑的就是它）
 pnpm cf-typegen           # 重新生成 worker-configuration.d.ts（gitignore）
 pnpm build:single         # esbuild 打包 src/index.ts → dist/worker.bundle.js（Dashboard 部署用）
 pnpm predeploy            # 校验 wrangler.toml 中 database_id 已替换占位符
 pnpm deploy               # CLI 部署：load-deploy-env.cjs 注入 .env → wrangler deploy
 ```
 
+- **提交前门禁（钩子）**：`prepare` 会在 `pnpm install` 时把 `core.hooksPath` 设为 `.githooks`，提交前跑 `pnpm check`（约 2 秒，不含 test）。pnpm 在 `Already up to date` 时**不跑** `prepare`，所以已有 `node_modules` 的老 clone 钩子可能没生效——执行 `git config core.hooksPath .githooks`（或 `pnpm install --force`）恢复。
 - 本地 D1 数据在 `.wrangler/state/d1/`，可用 `wrangler d1 execute --local` 查询。
 - 测试用 D1 迁移在 `src/db/migrations/`（`.sql` 文件），由 `vitest.config.ts` 通过 `readD1Migrations` 加载。
 - **测试串行约束**：`maxWorkers: 1` + `fileParallelism: true`，避免 D1 SQLite 多进程锁冲突（`vitest.config.ts:21-22`）。
+- **测试与 dev server 共存**：`pnpm test` 与本机 `pnpm dev` 同时跑时，`cloudflare-pool` 的 worker 偶发起不来（`Failed to start cloudflare-pool worker for test files …`，结果是「1 error」而不是断言失败），重跑即绿；要确定性就先停 `pnpm dev`。
 - `vitest.config.ts` 用 `defineProject`（multi-project），**不是** `defineConfig`。
 - **类型配置**：`tsconfig.json` 排除了 `src/ui/templates.js`（不参与 tsc 检查，走纯 JS 路径）。
 
@@ -102,7 +105,7 @@ pnpm deploy
 │   ├── predeploy.cjs          # 部署前校验 wrangler.toml 中 database_id 占位符已替换
 │   └── load-deploy-env.cjs    # pnpm deploy 前置：注入 .env 到 wrangler 环境
 ├── src/                  # 17 个 .ts + 1 个 .js（templates.js 纯 JS 模板）
-│   ├── index.ts          # Worker 入口（fetch + scheduled，约 78 行）
+│   ├── index.ts          # Worker 入口（fetch + scheduled handler）
 │   ├── db/               # client.ts（D1 封装）+ migrations.ts（幂等建表，含 5 张表 DDL）+ migrations/*.sql（测试用）
 │   ├── routes/           # api.ts（REST）/ ui.ts（页面）/ github-proxy.ts（订阅代理）
 │   ├── sync/             # domains.ts（DNS 克隆）/ ip-sources.ts（IP 抓取）/ github.ts（GitHub API 封装）
@@ -193,4 +196,4 @@ Default five canonical roles, label strings equal to their names (`needs-triage`
 
 ### Domain docs
 
-single-context（根目录一份 `GLOSSARY.md`，架构决定放 `docs/adr/`）。See `docs/agents/domain.md`.
+single-context（根目录一份 `GLOSSARY.md`，架构决定放 `docs/adr/`——**按需创建，当前不存在**）。See `docs/agents/domain.md`.
