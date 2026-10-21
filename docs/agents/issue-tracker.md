@@ -15,6 +15,14 @@ Infer the repo from `git remote -v`; `gh` does this automatically when run insid
 
 > 本仓库 remote 为 `git@github.com:free5394/dns-clone.git`（SSH），但 `gh` 当前凭据走 HTTPS；在 clone 内执行 `gh` 即可，无需手写 `--repo`。
 
+## 读票经济：纯读走 `gh`，写操作才用 deck
+
+`deck_` 系工具（`deck_issue_get` / `deck_issue_list` …）是为**写**设计的：返回值里会同时回显 `body`、`excerpt` 和写确认用的 readBack，纯读一张长票最多要吐三份正文（实测约 3 万 token）。
+
+- **只想知道一张票写了什么** → `gh issue view <number> --json body --jq .body`：一次调用、一份正文。正文超过约 2K token 的长票一律走这条。
+- **要动这张票**（改标签 / 认领 / 评论 / 关票 / 补父子与阻塞边）→ 用 `deck_` 工具，它的 readBack 是写确认。
+- **只扫薄行** → `gh issue list --json number,title,labels,state`，或 `deck_issue_list`（不回正文与评论）。
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_

@@ -594,3 +594,23 @@ bsk emulate --session $sid --off
 回归断言：`test/templates-escape.test.ts` 的「手动同步进度：日志框即唯一进度面 (retro #1)」，四条分别锁两个 class 的存在性、`margin-top` 走间距刻度、`padding` 与 `--radius-md` 解析成像素后的大小关系、以及「按钮相关脚本里没有『同步中』」。第 3 轮的修法验证过红-绿：把 `padding` 改回 `0`，该断言立即失败。
 
 实测（2026-10-21，本机 Chromium 1440px 视口，域名页与 GitHub 页数值一致）：第 2 轮按钮底边到日志框顶边 24px → 32px；第 3 轮日志框 `padding` 0px → 16px（> `--radius-md` 的 10px），框高 206px → 238px。
+
+---
+
+## 11. 已知陷阱（agent 版）
+
+> 本节由 `AGENTS.md` 的「界面（UI）专项」整节迁入（2026-10-21）。§2.1 已有的事实（单文件模板、tsconfig 排除、样式依赖）不在这里重复。
+
+四条改之前必须知道的事实（每条都实际踩过）：
+
+1. **Pico v2 的浅色令牌写在 `:root:not([data-theme="dark"])`（特异性 0,2,0）**，裸 `:root`（0,1,0）压不过它，无论源序。所以本项目浅色块用 `:root, :root[data-theme="light"]`，暗色块用 `:root[data-theme="dark"], :root.dark`（同为 0,2,0，暗色排后胜出）。**新增令牌必须放对块**，否则静默失效。
+2. **CSS 全在 `getHtmlLayout(title, content)` 里**（`src/ui/templates.js:31` 起）。`getPublicHomepage` / `getDashboardPage` / `getSetupPage` 只返回主体 HTML。写 CSS 断言必须自己拼：`getHtmlLayout("x", getPublicHomepage(...))`。
+3. **首帧主题脚本在 `getHtmlLayout` 的 `<head>` 内**（与 `</style>` 同一行，`src/ui/templates.js:352`），同时写 `class="dark"` 与 `data-theme` 防闪白。主题逻辑只在这里定义一次，各页只放按钮（`#theme-toggle`）；**不要在页面模板里再写一份 `applyTheme`**。
+4. **选择器契约**：单条同步靠 `#domain-card-${id} .card-actions button:first-child`（`src/ui/templates.js:782`）与 `#ip-source-card-${id} ...`（`:786`）命中，所以 `.card-actions` 里的**第一个按钮必须始终是「同步」**。改行结构时别动这个顺序。
+
+其它约定：
+
+- 主题语义：已保存的 `localStorage.theme` 优先；没有就跟随 `prefers-color-scheme` 并监听其 `change`（用户显式选过之后以保存值为准）。
+- 这些可见文案被测试断言，改站名/关键文案会挂 `test/ui.test.ts` 或 `test/templates-escape.test.ts`：`系统初始化`、`DNS Clone Dashboard`、`CF-DNS-Clon`、`未知线路`、`N/A`。
+- 不引 web font、不引图片资源（保住 `pnpm build:single` 单文件部署）。
+- house rules（本文件 §4–§5 已定）：禁渐变、玻璃拟态、静止阴影、小号大写带字距标签、装饰性图标、hover 位移。

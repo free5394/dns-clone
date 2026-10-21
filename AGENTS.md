@@ -61,16 +61,11 @@ pnpm deploy
 
 ## 文案三档规则（强制）
 
-- **中文**：`console.*` / `throw new Error(msg)` / UI 模板字符串 / 用户可见的 API 错误消息
-- **英文**：函数名 / 变量名 / 类型名 / import 路径 / 测试断言文本
-- **英文**：代码注释中解释"为什么这样做"的元说明可保留英文（一句话内）
+规则全文（含「测试标题属中文档、存量英文标题不动」）见 **`CODING_STANDARDS.md`** §语言三档——写码与评审共用一份，别在本文件重述。
 
 ## 风格与约定
 
-- 缩进 4 空格、LF 行尾、UTF-8（见 `.editorconfig`，Makefile 除外）。
-- 不引入新依赖 / 新构建工具，除非任务明确要求。
-- KISS：避免过度工程化；改代码只碰必须碰的。
-- 注释用"中文说明意图 + 英文引用阶段代号"（如 `// FIX-12`、`// P1-8`），保持溯源。
+阶段代号注释惯例见 **`CODING_STANDARDS.md`** §注释惯例。以下仍在本文件生效（实现期）：缩进 4 空格、LF 行尾、UTF-8（见 `.editorconfig`，Makefile 除外）；不引入新依赖 / 新构建工具，除非任务明确要求；KISS——避免过度工程化，改代码只碰必须碰的。
 
 ## 不要做的事
 
@@ -86,6 +81,7 @@ pnpm deploy
 ```
 .
 ├── README.md             # 用户面向的部署教程（网页 4 步 + 开发者模式，覆盖全部 API/表结构）
+├── CODING_STANDARDS.md   # 评审期规则真相之源（语言三档 / 注释惯例 / 模板转义 / 日志 / 错误响应）
 ├── wrangler.toml         # Worker 配置（compatibility_date 2026-01-15，keep_vars，observability，cron）
 ├── tsconfig.json         # TypeScript strict（exclude src/ui/templates.js）
 ├── vitest.config.ts      # cloudflareTest + D1 迁移绑定 + maxWorkers=1
@@ -97,7 +93,8 @@ pnpm deploy
 ├── .github/workflows/
 │   └── ci.yml            # push main / PR 上跑 typecheck + lint + format:check + test
 ├── docs/
-│   ├── ui-redesign.md    # 界面诊断 + 目标设计系统 + 实施记录（动 UI 前先读）
+│   ├── ui-redesign.md    # 界面诊断 + 目标设计系统 + 实施记录 + §11 已知陷阱（动 UI 前先读）
+│   ├── architecture-review.md  # 架构深化候选 C1–C6 清单（wayfinder chart 的种子）
 │   ├── handoff/          # 跨会话交接文档（按时间戳命名，见「交接文档」一节）
 │   └── agents/           # issue-tracker / triage-labels / domain 约定
 ├── scripts/
@@ -141,10 +138,9 @@ pnpm deploy
 
 ## 关键约定细节
 
+评审期判定规则（怎么写日志、API 与非 API 的错误响应、模板转义）见 **`CODING_STANDARDS.md`**；以下实现期红线留在这里：
+
 - **绑定名优先级**：所有运行时逻辑都通过 `env.WUYA` 访问 D1，**任何**模块都不要引入第二个绑定名。
-- **错误日志格式**：`console.*` 一律输出中文 user-facing 消息 + `e instanceof Error ? e.stack : e`；**不要**用 `String(e)`。
-- **API 错误响应**：使用 `jsonResponse(errorObj, status)`；非 API 路径用 `new Response("固定文案", { status: 500 })`，**绝不**暴露 stack。
-- **HTML 模板**：所有用户可控字段（notes、target_domain 等）必须经 `escapeHtml` 转义。
 - **配置写入**：设置接口忽略未在白名单的字段；`null` 显式清空字段；脱敏返回（`getSafeSettings` 剔除 `ADMIN_PASSWORD_HASH` / `PASSWORD_SALT` / `CF_API_TOKEN` / `GITHUB_TOKEN`）。
 - **批量同步**：单条失败不中断整批；按 `last_sync_status='failed' ASC, last_synced_time ASC` 选目标。
 - **数据库迁移门控**：24h 内跳过整套 DDL；超过 1 小时的 `login_attempts` 自动清理。
@@ -152,6 +148,8 @@ pnpm deploy
 ## 相关资源
 
 - `README.md` 是面向最终用户的部署 4 步流程（网页）+ 开发者 CLI 模式 + API 文档 + 数据表结构 + 故障排查。**所有用户可见字段的含义以 README 为准**。
+- `CODING_STANDARDS.md` 是评审期规则（语言三档、注释惯例、模板转义、错误日志格式、错误响应）的单一真相之源；`/code-review` 的 Standards 轴从这里取规则。
+- `docs/architecture-review.md` 是架构深化候选清单（C1–C6 + 状态）；下次 `/wayfinder` chart 可直接拿它做地图种子。
 - `wrangler.toml` 是部署相关真相之源（cron 表达式、绑定名、compatibility_date）；改这些前先核对 README 同步。
 - `src/db/migrations.ts` 是表结构的真相之源；新增字段时**直接改 `expectedSchemas`**（idempotent DDL），不要手工 ALTER。
 - `vitest.config.ts` 是测试环境配置真相之源；改动需保持 `maxWorkers: 1`（D1 SQLite 锁约束）。
@@ -159,21 +157,7 @@ pnpm deploy
 
 ## 界面（UI）专项
 
-全部界面在**单文件** `src/ui/templates.js`（约 890 行，内联 `<style>`，无构建步骤、无独立 CSS；外链 Pico CSS v2 + Font Awesome 6.5.1）。`tsconfig.json` 排除它，**改它不会被 `pnpm typecheck` 覆盖**，必须靠测试 + 浏览器复验。
-
-四条改之前必须知道的事实（每条都实际踩过）：
-
-1. **Pico v2 的浅色令牌写在 `:root:not([data-theme="dark"])`（特异性 0,2,0）**，裸 `:root`（0,1,0）压不过它，无论源序。所以本项目浅色块用 `:root, :root[data-theme="light"]`，暗色块用 `:root[data-theme="dark"], :root.dark`（同为 0,2,0，暗色排后胜出）。**新增令牌必须放对块**，否则静默失效。
-2. **CSS 全在 `getHtmlLayout(title, content)` 里**（`src/ui/templates.js:31` 起）。`getPublicHomepage` / `getDashboardPage` / `getSetupPage` 只返回主体 HTML。写 CSS 断言必须自己拼：`getHtmlLayout("x", getPublicHomepage(...))`。
-3. **首帧主题脚本在 `getHtmlLayout` 的 `<head>` 内**（与 `</style>` 同一行，`src/ui/templates.js:352`），同时写 `class="dark"` 与 `data-theme` 防闪白。主题逻辑只在这里定义一次，各页只放按钮（`#theme-toggle`）；**不要在页面模板里再写一份 `applyTheme`**。
-4. **选择器契约**：单条同步靠 `#domain-card-${id} .card-actions button:first-child`（`src/ui/templates.js:782`）与 `#ip-source-card-${id} ...`（`:786`）命中，所以 `.card-actions` 里的**第一个按钮必须始终是「同步」**。改行结构时别动这个顺序。
-
-其它约定：
-
-- 主题语义：已保存的 `localStorage.theme` 优先；没有就跟随 `prefers-color-scheme` 并监听其 `change`（用户显式选过之后以保存值为准）。
-- 这些可见文案被测试断言，改站名/关键文案会挂 `test/ui.test.ts` 或 `test/templates-escape.test.ts`：`系统初始化`、`DNS Clone Dashboard`、`CF-DNS-Clon`、`未知线路`、`N/A`。
-- 不引 web font、不引图片资源（保住 `pnpm build:single` 单文件部署）。
-- 已知 house rules（已写进 `docs/ui-redesign.md`）：禁渐变、玻璃拟态、静止阴影、小号大写带字距标签、装饰性图标、hover 位移。
+动 `src/ui/templates.js`（或任何界面模板）前**必读** `docs/ui-redesign.md` §11 已知陷阱（agent 版）——Pico v2 令牌特异性、CSS 落点、首帧主题脚本、同步按钮选择器契约四条 gotcha 与会被测试断言的可见文案清单都在那里，本文件不再重述。
 
 ## 交接文档
 
