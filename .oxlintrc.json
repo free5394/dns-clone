@@ -1,0 +1,32 @@
+{
+    "$schema": "./node_modules/oxlint/configuration_schema.json",
+    "plugins": ["typescript", "unicorn", "oxc", "import"],
+    "categories": {
+        "correctness": "error",
+        "suspicious": "warn",
+        "perf": "warn"
+    },
+    "env": {
+        "builtin": true
+    },
+    "rules": {
+        "no-unused-vars": "warn",
+        "no-console": "off",
+
+        "no-await-in-loop": "off",
+        "unicorn/consistent-function-scoping": "off",
+        "no-underscore-dangle": "off",
+        "unicorn/no-array-sort": "off",
+        "unicorn/prefer-set-has": "off"
+    },
+    "ignorePatterns": [
+        "dist/**",
+        "coverage/**",
+        ".wrangler/**",
+        ".scratch/**",
+        ".archify/**",
+        ".claude/**",
+        ".e2e-run/**",
+        "worker-configuration.d.ts"
+    ]
+}
