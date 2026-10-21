@@ -93,6 +93,10 @@ pnpm deploy
 ├── .gitignore            # 排除 .claude/、*.env、*.vars、.wrangler/、dist/、coverage/、worker-configuration.d.ts
 ├── .github/workflows/
 │   └── ci.yml            # push main / PR 上跑 typecheck + lint + format:check + test
+├── docs/
+│   ├── ui-redesign.md    # 界面诊断 + 目标设计系统 + 实施记录（动 UI 前先读）
+│   ├── handoff/          # 跨会话交接文档（按时间戳命名，见「交接文档」一节）
+│   └── agents/           # issue-tracker / triage-labels / domain 约定
 ├── scripts/
 │   ├── build-single-file.mjs  # esbuild 打包 src/index.ts → dist/worker.bundle.js（Dashboard 部署入口）
 │   ├── predeploy.cjs          # 部署前校验 wrangler.toml 中 database_id 占位符已替换
@@ -148,6 +152,15 @@ pnpm deploy
 - `wrangler.toml` 是部署相关真相之源（cron 表达式、绑定名、compatibility_date）；改这些前先核对 README 同步。
 - `src/db/migrations.ts` 是表结构的真相之源；新增字段时**直接改 `expectedSchemas`**（idempotent DDL），不要手工 ALTER。
 - `vitest.config.ts` 是测试环境配置真相之源；改动需保持 `maxWorkers: 1`（D1 SQLite 锁约束）。
+
+## 交接文档
+
+跨会话的交接文档放 **`docs/handoff/`**（随仓库走，可被新 clone 的 agent 读到），不要写进 `.scratch/`——后者已被 `.gitignore` 排除，只留给截图、探针脚本、种子数据这类一次性产物。
+
+- 命名：`YYYYMMDD-HHMMSS-mmm-<主题>.md`（时间戳精确到毫秒，便于排序；示例见目录内现有文件）。
+- 内容边界：只写「接手必须先知道的东西」——当前状态一句话、未完成/待决定项、会踩坑的技术事实、验证环境怎么起、建议技能。**不要重复** `README.md` / `docs/ui-redesign.md` / 提交信息里已有的细节，用路径引用。
+- 增量交接：后一份只写「从那之后变了什么 + 还欠什么」，并指向前一份，避免整篇重写。
+- 脱敏：不得写入口令、Token、真实 `database_id`、UUID、邮箱。
 
 ## Agent skills
 
