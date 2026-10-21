@@ -16,7 +16,8 @@
         "build:single": "node scripts/build-single-file.mjs",
         "cf-typegen": "wrangler types",
         "typecheck": "tsc --noEmit",
-        "test": "vitest",
+        "test": "vitest run",
+        "test:watch": "vitest",
         "test:coverage": "vitest run --coverage"
     },
     "devDependencies": {

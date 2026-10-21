@@ -1,0 +1,41 @@
+# ci.yml — 每次 push 到 main 与每个 PR 上跑类型检查与测试
+# 仓库此前没有任何 guardrail：pnpm typecheck / pnpm test 都能跑通，但没有机制保证被跑。
+# 本 workflow 只做两件事，全部依赖已在 devDependencies 内，不额外引入新依赖。
+name: CI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+
+# 同一分支的旧运行自动取消，避免 push 频繁时排队堆积
+concurrency:
+    group: ci-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    check:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@v4
+
+            # pnpm 版本取自 package.json 的 packageManager 字段，不在此处重复声明
+            - uses: pnpm/action-setup@v4
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24
+                  cache: pnpm
+
+            - name: 安装依赖
+              run: pnpm install --frozen-lockfile
+
+            # tsc --noEmit，约 0.4 秒
+            - name: 类型检查
+              run: pnpm typecheck
+
+            # vitest run，14 个文件 / 153 项，约 18 秒
+            # 测试数据全部由 test/apply-migrations.ts 写入固定占位值，不依赖任何 secret
+            - name: 测试
+              run: pnpm test

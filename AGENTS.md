@@ -19,7 +19,8 @@ Cloudflare Worker 项目：域名克隆（DNS 同步） + IP 聚合（推送到 
 ```bash
 pnpm install              # 安装依赖（首次）
 pnpm dev                  # wrangler dev 起本地 workerd（默认 8787 端口）
-pnpm test                 # vitest-pool-workers 跑测试（120 个 it 块 / 14 个文件，workerd 内执行）
+pnpm test                 # 跑一次测试（vitest run，153 项 / 14 个文件，workerd 内执行，约 18 秒）
+pnpm test:watch           # 监听模式（改文件自动重跑）
 pnpm test:coverage        # 同上 + istanbul 插桩覆盖率（text/html/lcov）
 pnpm typecheck            # tsc --noEmit 严格模式检查
 pnpm cf-typegen           # 重新生成 worker-configuration.d.ts（gitignore）
@@ -85,6 +86,8 @@ pnpm deploy
 ├── package.json          # 脚本：dev / test / typecheck / deploy / cf-typegen / build:single / predeploy
 ├── .editorconfig         # 4 空格 / LF / UTF-8
 ├── .gitignore            # 排除 .claude/、*.env、*.vars、.wrangler/、dist/、coverage/、worker-configuration.d.ts
+├── .github/workflows/
+│   └── ci.yml            # push main / PR 上跑 pnpm typecheck + pnpm test
 ├── scripts/
 │   ├── build-single-file.mjs  # esbuild 打包 src/index.ts → dist/worker.bundle.js（Dashboard 部署入口）
 │   ├── predeploy.cjs          # 部署前校验 wrangler.toml 中 database_id 占位符已替换
