@@ -25,6 +25,10 @@
 
 所有用户可控字段（`notes`、`target_domain` 等）必须经 `escapeHtml` 转义。
 
+## 前端行为测试
+
+非平凡的内联浏览器脚本（状态流转、解析、缓存、提交行为等）必须提取为可导入的纯函数或 helper，并由测试直接调用这些行为。源码字符串包含某个分支、选择器或正则，只算静态契约，不算行为测试。
+
 ## 错误日志格式
 
 `console.*` 一律输出中文 user-facing 消息 + `e instanceof Error ? e.stack : e`；**不要**用 `String(e)`。
