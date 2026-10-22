@@ -7,7 +7,7 @@ const CHECKED_PATTERNS = [
     {
         kind: "测试标题",
         pattern:
-            /\b(?:it|test|describe)\.each(?:<[^>\r\n]*>)?[ \t]*(?:\([^()\r\n]*(?:\([^()\r\n]*\)[^()\r\n]*)*\)|`[^`\r\n]*`)[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
+            /\b(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails))*\.each(?:<[^>\r\n]*>)?[ \t\r\n]*(?:\[[\s\S]*?\]|\{[\s\S]*?\}|`[\s\S]*?`|\([\s\S]*?\))[ \t\r\n]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
     },
     {
         kind: "错误消息",

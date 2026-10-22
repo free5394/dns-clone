@@ -231,9 +231,14 @@ describe("语言门禁解析", () => {
         const diff = `diff --git a/test/example.test.ts b/test/example.test.ts
 --- a/test/example.test.ts
 +++ b/test/example.test.ts
-@@ -1,0 +1,2 @@
+@@ -1,0 +1,7 @@
 +it.each([1, 2])("English title", () => {});
 +describe.each([1, 2])("English suite", () => {});
++it.each([
++    [1, "value"],
++])("English multiline", () => {});
++it.concurrent.each([1])("English concurrent", () => {});
++test.skip.each({ a: 1 })("English skipped", () => {});
 `;
 
         expect(findLanguageViolations(diff)).toEqual([
@@ -248,6 +253,24 @@ describe("语言门禁解析", () => {
                 line: 2,
                 kind: "测试标题",
                 text: 'describe.each([1, 2])("English suite", () => {});',
+            },
+            {
+                file: "test/example.test.ts",
+                line: 5,
+                kind: "测试标题",
+                text: '])("English multiline", () => {});',
+            },
+            {
+                file: "test/example.test.ts",
+                line: 6,
+                kind: "测试标题",
+                text: 'it.concurrent.each([1])("English concurrent", () => {});',
+            },
+            {
+                file: "test/example.test.ts",
+                line: 7,
+                kind: "测试标题",
+                text: 'test.skip.each({ a: 1 })("English skipped", () => {});',
             },
         ]);
     });

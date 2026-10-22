@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { inspectUtf8 } from "./utf8-check-lib.mjs";
+import { inspectUtf8, isProbablyBinary, selectFilesToCheck } from "./utf8-check-lib.mjs";
 
 function runGit(args, options = {}) {
     const result = spawnSync("git", args, {
@@ -27,7 +27,7 @@ const stagedFiles = new Set(
     runGit(["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR", "--"]).split("\0").filter(Boolean)
 );
 const listedFiles = runGit(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
-const files = hasStagedChanges ? [...stagedFiles] : listedFiles.split("\0").filter(Boolean);
+const files = selectFilesToCheck(hasStagedChanges, [...stagedFiles], listedFiles.split("\0").filter(Boolean));
 const attributes = runGit(["check-attr", "-z", ...(hasStagedChanges ? ["--cached"] : []), "--stdin", "text"], {
     input: `${files.join("\0")}\0`,
 });
@@ -37,12 +37,12 @@ const textFiles = [];
 for (let index = 0; index + 2 < attributeParts.length; index += 3) {
     const [file, , value] = attributeParts.slice(index, index + 3);
     if (file && value !== "unset") {
-        textFiles.push(file);
+        textFiles.push({ file, automatic: value === "auto" || value === "unspecified" });
     }
 }
 
 const failures = [];
-for (const file of textFiles) {
+for (const { file, automatic } of textFiles) {
     let contents;
     if (stagedFiles.has(file)) {
         contents = runGit(["show", `:${file}`], { encoding: null });
@@ -54,6 +54,10 @@ for (const file of textFiles) {
             process.exit(2);
         }
     } else {
+        continue;
+    }
+
+    if (automatic && isProbablyBinary(contents)) {
         continue;
     }
 
