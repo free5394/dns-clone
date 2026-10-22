@@ -18,12 +18,14 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 10
         steps:
-            - uses: actions/checkout@v4
+            # 三个 uses 步骤均固定在其 node24 运行时的大版本：停在 v4 会触发 GitHub 的
+            # "Node.js 20 is deprecated" 警告（v4 自带 node20，被强制跑在 node24 上）。
+            - uses: actions/checkout@v7
 
             # pnpm 版本取自 package.json 的 packageManager 字段，不在此处重复声明
-            - uses: pnpm/action-setup@v4
+            - uses: pnpm/action-setup@v6
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v7
               with:
                   node-version: 24
                   cache: pnpm
