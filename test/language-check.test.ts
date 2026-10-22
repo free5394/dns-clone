@@ -168,7 +168,7 @@ describe("语言门禁解析", () => {
         const diff = `diff --git a/src/example.ts b/src/example.ts
 --- a/src/example.ts
 +++ b/src/example.ts
-@@ -1,0 +1,13 @@
+@@ -1,0 +1,17 @@
 +if (ready) console.warn("English warning");
 +if (ready) throw new Error("English error");
 +if (ready) { console.warn("English warning with brace"); }
@@ -182,6 +182,10 @@ describe("语言门禁解析", () => {
 +const warning = "console.warn('English')";
 +const error = "throw new Error('English')";
 +const pattern = /console\\.warn\\("English"\\)/;
++console.log(getValue(), "English after nested call");
++console.log("中文", "English second argument");
++it.sequential("English sequential");
++const sample = \`console.log("English sample")\`;
 `;
 
         expect(findLanguageViolations(diff)).toEqual([
@@ -238,6 +242,44 @@ describe("语言门禁解析", () => {
                 line: 9,
                 kind: "日志消息",
                 text: 'console.log(value, "English second argument");',
+            },
+            {
+                file: "src/example.ts",
+                line: 14,
+                kind: "日志消息",
+                text: 'console.log(getValue(), "English after nested call");',
+            },
+            {
+                file: "src/example.ts",
+                line: 15,
+                kind: "日志消息",
+                text: 'console.log("中文", "English second argument");',
+            },
+            {
+                file: "src/example.ts",
+                line: 16,
+                kind: "测试标题",
+                text: 'it.sequential("English sequential");',
+            },
+        ]);
+    });
+
+    it("识别模板插值中的英文日志", () => {
+        const diff = [
+            "diff --git a/src/ui/templates.js b/src/ui/templates.js",
+            "--- a/src/ui/templates.js",
+            "+++ b/src/ui/templates.js",
+            "@@ -1,0 +1,1 @@",
+            '+const page = `${console.warn("English interpolation")}`;',
+            "",
+        ].join("\n");
+
+        expect(findLanguageViolations(diff)).toEqual([
+            {
+                file: "src/ui/templates.js",
+                line: 1,
+                kind: "日志消息",
+                text: 'const page = `${console.warn("English interpolation")}`;',
             },
         ]);
     });

@@ -2,23 +2,20 @@ const CHECKED_PATTERNS = [
     {
         kind: "测试标题",
         pattern:
-            /(?<![\w$.])(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails)|\.(?:skipIf|runIf)[ \t]*\([^)]*\))*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
+            /(?<![\w$.])(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails|sequential)|\.(?:skipIf|runIf)[ \t]*\([^)]*\))*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
     },
     {
         kind: "测试标题",
         pattern:
-            /(?<![\w$.])(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails)|\.(?:skipIf|runIf)[ \t]*\([^)]*\))*\.(?:each|for)(?:<[^>\r\n]*>)?[ \t\r\n]*(?:\[[\s\S]*?\]|\{[\s\S]*?\}|`[\s\S]*?`|\([\s\S]*?\))[ \t\r\n]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
+            /(?<![\w$.])(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails|sequential)|\.(?:skipIf|runIf)[ \t]*\([^)]*\))*\.(?:each|for)(?:<[^>\r\n]*>)?[ \t\r\n]*(?:\[[\s\S]*?\]|\{[\s\S]*?\}|`[\s\S]*?`|\([\s\S]*?\))[ \t\r\n]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
     },
     {
         kind: "错误消息",
         pattern: /\bthrow[ \t]+new[ \t]+Error[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
     },
-    {
-        kind: "日志消息",
-        pattern: /\bconsole\??\.[A-Za-z_$][\w$]*[ \t]*\([^)]*?(["'`])([\s\S]*?)\1/dg,
-    },
 ];
 const HAN_PATTERN = /\p{Script=Han}/u;
+const CONSOLE_CALL_PATTERN = /\bconsole\??\.[A-Za-z_$][\w$]*[ \t]*\(/dg;
 const INLINE_SCRIPT_PATTERN = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/dgi;
 const JAVASCRIPT_PREFIX_PATTERN =
     /^(?:["']use strict["'];?\s*)?(?:async\s+function|function|const|let|var|import|export|class|if|for|while|switch|return|throw|console|document|window|\(function|\(\(\)\s*=>)/;
@@ -74,14 +71,49 @@ function findRegexEnd(source, start) {
     return source.length;
 }
 
-function restoreMaskedCode(source, characters, targetStart, allowTemplateCode) {
-    const maskedSource = maskNonCode(source, allowTemplateCode);
+function restoreMaskedCode(source, characters, targetStart, options) {
+    const maskedSource = maskNonCode(source, options);
     for (let offset = 0; offset < maskedSource.length; offset += 1) {
         characters[targetStart + offset] = maskedSource[offset];
     }
 }
 
-function maskNonCode(source, allowTemplateCode = true) {
+function findTemplateExpressionEnd(source, start) {
+    let depth = 1;
+    for (let index = start; index < source.length; index += 1) {
+        if (source[index] === "'" || source[index] === '"' || source[index] === "`") {
+            index = findQuotedEnd(source, index, source[index]) - 1;
+        } else if (source[index] === "/" && source[index + 1] === "/") {
+            const end = source.indexOf("\n", index + 2);
+            index = end === -1 ? source.length : end;
+        } else if (source[index] === "/" && source[index + 1] === "*") {
+            const end = source.indexOf("*/", index + 2);
+            index = end === -1 ? source.length : end + 1;
+        } else if (source[index] === "{") {
+            depth += 1;
+        } else if (source[index] === "}") {
+            depth -= 1;
+            if (depth === 0) {
+                return index + 1;
+            }
+        }
+    }
+    return source.length;
+}
+
+function restoreTemplateExpressions(source, characters, start, end, options) {
+    for (let index = start; index < end - 1; index += 1) {
+        if (source[index] !== "$" || source[index + 1] !== "{" || source[index - 1] === "\\") {
+            continue;
+        }
+        const expressionEnd = findTemplateExpressionEnd(source, index + 2);
+        restoreMaskedCode(source.slice(index + 2, expressionEnd - 1), characters, index + 2, options);
+        index = expressionEnd - 1;
+    }
+}
+
+function maskNonCode(source, options = {}) {
+    const { allowTemplateCode = true, allowBareScriptTemplate = false } = options;
     const characters = source.split("");
 
     for (let index = 0; index < source.length;) {
@@ -113,12 +145,19 @@ function maskNonCode(source, allowTemplateCode = true) {
                             templateContent.slice(bodyStart, bodyEnd),
                             characters,
                             index + 1 + bodyStart,
-                            allowTemplateCode
+                            options
                         );
                     }
                 }
-                if (allowTemplateCode && JAVASCRIPT_PREFIX_PATTERN.test(templateContent.trimStart())) {
-                    restoreMaskedCode(templateContent, characters, index + 1, allowTemplateCode);
+                if (
+                    allowTemplateCode &&
+                    allowBareScriptTemplate &&
+                    JAVASCRIPT_PREFIX_PATTERN.test(templateContent.trimStart())
+                ) {
+                    restoreMaskedCode(templateContent, characters, index + 1, options);
+                }
+                if (allowTemplateCode) {
+                    restoreTemplateExpressions(source, characters, index + 1, next - 1, options);
                 }
             }
             index = next;
@@ -138,6 +177,21 @@ function maskNonCode(source, allowTemplateCode = true) {
     return characters.join("");
 }
 
+function findClosingParenthesis(source, start) {
+    let depth = 0;
+    for (let index = start; index < source.length; index += 1) {
+        if (source[index] === "(") {
+            depth += 1;
+        } else if (source[index] === ")") {
+            depth -= 1;
+            if (depth === 0) {
+                return index;
+            }
+        }
+    }
+    return -1;
+}
+
 function getLineNumber(source, offset, startLine) {
     return startLine + source.slice(0, offset).split("\n").length - 1;
 }
@@ -145,37 +199,59 @@ function getLineNumber(source, offset, startLine) {
 function findHunkViolations(file, lines, addedLineNumbers) {
     const source = lines.map(({ text }) => text).join("\n");
     const allowTemplateCode = !/(^|[\\/])(?:test|tests)([\\/]|$)/.test(file);
-    const maskedSource = maskNonCode(source, allowTemplateCode);
+    const options = {
+        allowTemplateCode,
+        allowBareScriptTemplate: /(^|[\\/])templates\.js$/.test(file),
+    };
+    const maskedSource = maskNonCode(source, options);
     const startLine = lines[0].line;
     const violations = [];
+
+    const pushViolation = (kind, messageStart, messageEnd) => {
+        if (HAN_PATTERN.test(source.slice(messageStart, messageEnd))) {
+            return;
+        }
+
+        const firstLine = getLineNumber(maskedSource, messageStart, startLine);
+        const lastLine = getLineNumber(maskedSource, Math.max(messageStart, messageEnd - 1), startLine);
+        const changedLines = [];
+        for (let line = firstLine; line <= lastLine; line += 1) {
+            if (addedLineNumbers.has(line)) {
+                changedLines.push(line);
+            }
+        }
+
+        if (changedLines.length === 0) {
+            return;
+        }
+
+        const line = changedLines[0];
+        violations.push({
+            file,
+            line,
+            kind,
+            text: lines[line - startLine].text,
+        });
+    };
 
     for (const { kind, pattern } of CHECKED_PATTERNS) {
         for (const match of maskedSource.matchAll(pattern)) {
             const [messageStart, messageEnd] = match.indices[2];
-            if (HAN_PATTERN.test(source.slice(messageStart, messageEnd))) {
-                continue;
-            }
+            pushViolation(kind, messageStart, messageEnd);
+        }
+    }
 
-            const firstLine = getLineNumber(maskedSource, messageStart, startLine);
-            const lastLine = getLineNumber(maskedSource, Math.max(messageStart, messageEnd - 1), startLine);
-            const changedLines = [];
-            for (let line = firstLine; line <= lastLine; line += 1) {
-                if (addedLineNumbers.has(line)) {
-                    changedLines.push(line);
-                }
-            }
+    for (const match of maskedSource.matchAll(CONSOLE_CALL_PATTERN)) {
+        const openParenthesis = match.index + match[0].lastIndexOf("(");
+        const closeParenthesis = findClosingParenthesis(maskedSource, openParenthesis);
+        if (closeParenthesis === -1) {
+            continue;
+        }
 
-            if (changedLines.length === 0) {
-                continue;
-            }
-
-            const line = changedLines[0];
-            violations.push({
-                file,
-                line,
-                kind,
-                text: lines[line - startLine].text,
-            });
+        const argumentsSource = maskedSource.slice(openParenthesis + 1, closeParenthesis);
+        for (const literal of argumentsSource.matchAll(/(["'`])([\s\S]*?)\1/dg)) {
+            const [messageStart, messageEnd] = literal.indices[2];
+            pushViolation("日志消息", openParenthesis + 1 + messageStart, openParenthesis + 1 + messageEnd);
         }
     }
 

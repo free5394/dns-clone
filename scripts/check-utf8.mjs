@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { inspectUtf8, isProbablyBinary, selectFilesToCheck } from "./utf8-check-lib.mjs";
+import { getFilesToCheck, inspectUtf8, isProbablyBinary } from "./utf8-check-lib.mjs";
 
 function runGit(args, options = {}) {
     const result = spawnSync("git", args, {
@@ -24,10 +24,10 @@ function runGit(args, options = {}) {
 const stagedChanges = runGit(["diff", "--cached", "--name-only", "-z", "--"]).split("\0").filter(Boolean);
 const hasStagedChanges = stagedChanges.length > 0;
 const stagedFiles = new Set(
-    runGit(["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR", "--"]).split("\0").filter(Boolean)
+    runGit(["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMRT", "--"]).split("\0").filter(Boolean)
 );
 const listedFiles = runGit(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
-const files = selectFilesToCheck(hasStagedChanges, [...stagedFiles], listedFiles.split("\0").filter(Boolean));
+const files = getFilesToCheck(hasStagedChanges, [...stagedFiles], listedFiles);
 const attributes = runGit(["check-attr", "-z", ...(hasStagedChanges ? ["--cached"] : []), "--stdin", "text"], {
     input: `${files.join("\0")}\0`,
 });
