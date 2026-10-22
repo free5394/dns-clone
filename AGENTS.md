@@ -17,7 +17,7 @@ Cloudflare Worker 项目：域名克隆（DNS 同步） + IP 聚合（推送到 
 ## 本地开发
 
 - **提交前门禁（钩子）**：`prepare` 会在 `pnpm install` 时把 `core.hooksPath` 设为 `.githooks`，提交前跑 `pnpm check`（约 2 秒，不含 test）。pnpm 在 `Already up to date` 时**不跑** `prepare`，所以已有 `node_modules` 的老 clone 钩子可能没生效——执行 `git config core.hooksPath .githooks`（或 `pnpm install --force`）恢复。
-- **评审顺序**：实现完成先 `git commit`，再交 `/code-review`，评审期间冻结改动——skill 自带的「先评审后提交」会让复审跑在移动靶上。派发评审子代理时写明「只读 + 纯文本报告 + 禁止 dsh-ui 围栏」。
+- **评审顺序**：实现完成先 `git commit`，再交 `/code-review`，评审期间冻结改动——skill 自带的「先评审后提交」会让复审跑在移动靶上。派发评审子代理时写明「只读 + 纯文本报告 + 禁止 dsh-ui 围栏」，并把复审范围写死为 `git diff <base-hash>...<head-hash>`（`git rev-parse HEAD` 取），**不要用 `HEAD`**：这样即使派发后又回滚过，报告依然指向一个确定的范围。
 - **脚本清单见 `package.json` 的 `scripts`**，本文件不再抄一份。日常只有三个：`pnpm dev`（本机 workerd，8787）/ `pnpm test`（vitest run，约 19 秒）/ `pnpm check`（钩子跑的那三条）。
 - 本地 D1 数据在 `.wrangler/state/d1/`，可用 `wrangler d1 execute --local` 查询。
 - 测试用 D1 迁移在 `src/db/migrations/`（`.sql` 文件），由 `vitest.config.ts` 通过 `readD1Migrations` 加载。
@@ -29,21 +29,7 @@ Cloudflare Worker 项目：域名克隆（DNS 同步） + IP 聚合（推送到 
 
 ## CLI 部署
 
-```bash
-# 1. 创建生产 D1 数据库（拿到 UUID）
-pnpm dlx wrangler d1 create wuya-db
-
-# 2. 把 UUID 填入 wrangler.toml 替换 database_id = "REPLACE_WITH_YOUR_D1_ID"
-
-# 3. 在仓库根目录创建 .env，写入 CLOUDFLARE_API_TOKEN（账号级 Token："Edit Cloudflare Workers" 模板）
-#    pnpm predeploy 会拦截占位符未替换的部署
-
-# 4. 部署
-pnpm predeploy
-pnpm deploy
-```
-
-`wrangler.toml` 已配置 `keep_vars = true`，CLI 部署不会覆盖 Dashboard 里手动配置的 Variables / Bindings，CLI 与网页两条部署路径可混用。
+`pnpm predeploy` → `pnpm deploy`。完整 4 步（D1 建库拿 UUID、`.env` 写 `CLOUDFLARE_API_TOKEN`、`database_id` 替换）见 `README.md` 的「CLI 部署」一节，别在本文件抄第二份。`wrangler.toml` 的 `database_id` 必须保留占位符 `REPLACE_WITH_YOUR_D1_ID`，`predeploy.cjs` 会拦截；`keep_vars = true`，CLI 与 Dashboard 两条部署路径可混用。
 
 ## 文案三档规则（强制）
 
@@ -83,10 +69,7 @@ pnpm deploy
 │   ├── architecture-review.md  # 架构深化候选 C1–C6 清单（wayfinder chart 的种子）
 │   ├── handoff/          # 跨会话交接文档（按时间戳命名，见「交接文档」一节）
 │   └── agents/           # issue-tracker / triage-labels / domain 约定
-├── scripts/
-│   ├── build-single-file.mjs  # esbuild 打包 src/index.ts → dist/worker.bundle.js（Dashboard 部署入口）
-│   ├── predeploy.cjs          # 部署前校验 wrangler.toml 中 database_id 占位符已替换
-│   └── load-deploy-env.cjs    # pnpm deploy 前置：注入 .env 到 wrangler 环境
+├── scripts/              # 5 个辅助脚本（打包 / 类型生成 / git 钩子安装 / 注入 .env / 部署校验），入口见 package.json
 ├── src/                  # 17 个 .ts + 1 个 .js（templates.js 纯 JS 模板）
 │   ├── index.ts          # Worker 入口（fetch + scheduled handler）
 │   ├── db/               # client.ts（D1 封装）+ migrations.ts（幂等建表，含 5 张表 DDL）+ migrations/*.sql（测试用）
