@@ -33,3 +33,10 @@
 
 - API 路径：`jsonResponse(errorObj, status)`。
 - 非 API 路径：`new Response("固定文案", { status: 500 })`，**绝不**暴露 stack。
+
+## 文档代码围栏
+
+`README.md` 与 `docs/**/*.md` 的围栏内容同样过 Prettier（CI 的 `format:check` 与本地 `pnpm check` 都会扫到）：标了 `js` / `css` / `json` 的片段会被重排（`'`→`"`、`.5`→`0.5`、media query 展开），语义不变。
+
+- 示例代码写成能被格式化器接受的合法片段，不要指望它原样保留。
+- 确实需要原样的片段（伪代码、旧版对照），在围栏上一行紧贴 `<!-- prettier-ignore -->`，或干脆不标语言。
