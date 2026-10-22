@@ -16,24 +16,8 @@ Cloudflare Worker 项目：域名克隆（DNS 同步） + IP 聚合（推送到 
 
 ## 本地开发
 
-```bash
-pnpm install              # 安装依赖（首次）
-pnpm dev                  # wrangler dev 起本地 workerd（默认 8787 端口）
-pnpm test                 # 跑一次测试（vitest run，workerd 内执行，约 19 秒）
-pnpm test:watch           # 监听模式（改文件自动重跑）
-pnpm test:coverage        # 同上 + istanbul 插桩覆盖率（text/html/lcov）
-pnpm typecheck            # tsc --noEmit 严格模式检查
-pnpm lint                 # oxlint 静态检查（Rust 实现，约 0.4 秒）
-pnpm format               # prettier 全仓格式化
-pnpm format:check         # prettier 校验（CI 用）
-pnpm check                # 本机门禁：typecheck + lint + format:check（pre-commit 钩子跑的就是它）
-pnpm cf-typegen           # 重新生成 worker-configuration.d.ts（gitignore）
-pnpm build:single         # esbuild 打包 src/index.ts → dist/worker.bundle.js（Dashboard 部署用）
-pnpm predeploy            # 校验 wrangler.toml 中 database_id 已替换占位符
-pnpm deploy               # CLI 部署：load-deploy-env.cjs 注入 .env → wrangler deploy
-```
-
 - **提交前门禁（钩子）**：`prepare` 会在 `pnpm install` 时把 `core.hooksPath` 设为 `.githooks`，提交前跑 `pnpm check`（约 2 秒，不含 test）。pnpm 在 `Already up to date` 时**不跑** `prepare`，所以已有 `node_modules` 的老 clone 钩子可能没生效——执行 `git config core.hooksPath .githooks`（或 `pnpm install --force`）恢复。
+- **脚本清单见 `package.json` 的 `scripts`**，本文件不再抄一份。日常只有三个：`pnpm dev`（本机 workerd，8787）/ `pnpm test`（vitest run，约 19 秒）/ `pnpm check`（钩子跑的那三条）。
 - 本地 D1 数据在 `.wrangler/state/d1/`，可用 `wrangler d1 execute --local` 查询。
 - 测试用 D1 迁移在 `src/db/migrations/`（`.sql` 文件），由 `vitest.config.ts` 通过 `readD1Migrations` 加载。
 - **测试串行约束**：`maxWorkers: 1` + `fileParallelism: true`，避免 D1 SQLite 多进程锁冲突（`vitest.config.ts:21-22`）。
@@ -69,11 +53,9 @@ pnpm deploy
 
 ## 不要做的事
 
-- **不要修改 `env.WUYA` 这个绑定名**——Dashboard / 控制台配置依赖它，README 已写明用户须设为 `WUYA`。
 - **不要把 `database_id` 占位符替换为真实 UUID 后提交**：本地 `wrangler.toml` 必须保留 `REPLACE_WITH_YOUR_D1_ID`，`predeploy.cjs` 会拦截，把替换步骤留在用户本地。
 - **不要触碰 `.claude/` 内容**（含 `plans/`、`skills/`、`scheduled_tasks.lock`），已被 `.gitignore` 整体排除。
 - **不要在未经确认的情况下向仓库提交任何 Secrets**（CF API Token、GitHub Token、`.env`、`.dev.vars`）。`*.env` / `*.vars` 已在 `.gitignore`。
-- **不要主动删 `worker-configuration.d.ts`**——它由 `pnpm cf-typegen` 重新生成，且已在 `.gitignore`。
 - **不要把接口代码修改成会破坏 `keep_vars` 行为的形态**——Dashboard 手动配置的 Variables / Bindings 必须保留。
 
 ## 仓库结构
@@ -85,7 +67,7 @@ pnpm deploy
 ├── wrangler.toml         # Worker 配置（compatibility_date 2026-01-15，keep_vars，observability，cron）
 ├── tsconfig.json         # TypeScript strict（exclude src/ui/templates.js）
 ├── vitest.config.ts      # cloudflareTest + D1 迁移绑定 + maxWorkers=1
-├── package.json          # 脚本：dev / test / typecheck / lint / format / deploy / cf-typegen / build:single / predeploy
+├── package.json          # pnpm 脚本入口（dev / test / check / deploy，全量见 scripts）
 ├── .editorconfig         # 4 空格 / LF / UTF-8
 ├── .prettierrc.json      # Prettier 配置（与 .editorconfig 对齐）
 ├── .oxlintrc.json        # oxlint 配置（correctness=error，suspicious/perf=warn）
