@@ -11,11 +11,13 @@ const CHECKED_PATTERNS = [
     },
     {
         kind: "错误消息",
-        pattern: /^[ \t]*throw[ \t]+new[ \t]+Error[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
+        pattern:
+            /^[ \t]*(?:if[ \t]*\([^\r\n]*\)[ \t]*)?throw[ \t]+new[ \t]+Error[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
     },
     {
         kind: "日志消息",
-        pattern: /^[ \t]*console\.[A-Za-z_$][\w$]*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
+        pattern:
+            /^[ \t]*(?:if[ \t]*\([^\r\n]*\)[ \t]*)?console\.[A-Za-z_$][\w$]*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
     },
 ];
 const HAN_PATTERN = /\p{Script=Han}/u;

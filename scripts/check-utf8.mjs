@@ -26,7 +26,7 @@ const stagedFiles = new Set(
 );
 const listedFiles = runGit(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
 const files = stagedFiles.size > 0 ? [...stagedFiles] : listedFiles.split("\0").filter(Boolean);
-const attributes = runGit(["check-attr", "-z", "--stdin", "text"], {
+const attributes = runGit(["check-attr", "-z", ...(stagedFiles.size > 0 ? ["--cached"] : []), "--stdin", "text"], {
     input: `${files.join("\0")}\0`,
 });
 const attributeParts = attributes.split("\0");

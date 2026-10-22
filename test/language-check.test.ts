@@ -164,6 +164,33 @@ describe("语言门禁解析", () => {
         ]);
     });
 
+    it("识别行内条件语句后的英文日志与错误消息", () => {
+        const diff = `diff --git a/src/example.ts b/src/example.ts
+--- a/src/example.ts
++++ b/src/example.ts
+@@ -1,0 +1,4 @@
++if (ready) console.warn("English warning");
++if (ready) throw new Error("English error");
++const warning = "console.warn('English')";
++const error = "throw new Error('English')";
+`;
+
+        expect(findLanguageViolations(diff)).toEqual([
+            {
+                file: "src/example.ts",
+                line: 1,
+                kind: "日志消息",
+                text: 'if (ready) console.warn("English warning");',
+            },
+            {
+                file: "src/example.ts",
+                line: 2,
+                kind: "错误消息",
+                text: 'if (ready) throw new Error("English error");',
+            },
+        ]);
+    });
+
     it("识别 each 表格测试的英文标题", () => {
         const diff = `diff --git a/test/example.test.ts b/test/example.test.ts
 --- a/test/example.test.ts
