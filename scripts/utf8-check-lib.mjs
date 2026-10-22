@@ -5,6 +5,28 @@ export function getFilesToCheck(hasStagedChanges, stagedFiles, listedOutput) {
     return hasStagedChanges ? stagedFiles : listedFiles;
 }
 
+export function getTextFilesToCheck(attributes) {
+    const entries = new Map();
+    const parts = attributes.split("\0");
+
+    for (let index = 0; index + 2 < parts.length; index += 3) {
+        const [file, attribute, value] = parts.slice(index, index + 3);
+        if (!file) {
+            continue;
+        }
+        const entry = entries.get(file) || {};
+        entry[attribute] = value;
+        entries.set(file, entry);
+    }
+
+    return [...entries]
+        .filter(([, entry]) => entry.binary !== "set")
+        .map(([file, entry]) => ({
+            file,
+            usesAutoDetection: entry.text === "auto" || entry.text === "unspecified",
+        }));
+}
+
 export function isProbablyBinary(bytes) {
     return bytes.subarray(0, 8000).includes(0);
 }

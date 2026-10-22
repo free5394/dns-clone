@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getFilesToCheck, inspectUtf8, isProbablyBinary } from "../scripts/utf8-check-lib.mjs";
+import { getFilesToCheck, getTextFilesToCheck, inspectUtf8, isProbablyBinary } from "../scripts/utf8-check-lib.mjs";
 
 describe("UTF-8 检查", () => {
     it("接受合法 UTF-8 中文", () => {
@@ -20,6 +20,26 @@ describe("UTF-8 检查", () => {
 
     it("无暂存内容时检查工作树文件", () => {
         expect(getFilesToCheck(false, [], "staged.ts\0unstaged.ts\0")).toEqual(["staged.ts", "unstaged.ts"]);
+    });
+
+    it("将标记为 -text 但非二进制的 patch 当作文本检查", () => {
+        const attributes = [
+            "change.patch",
+            "text",
+            "unset",
+            "change.patch",
+            "binary",
+            "unspecified",
+            "image.png",
+            "text",
+            "unset",
+            "image.png",
+            "binary",
+            "set",
+            "",
+        ].join("\0");
+
+        expect(getTextFilesToCheck(attributes)).toEqual([{ file: "change.patch", usesAutoDetection: false }]);
     });
 
     it("识别含 NUL 字节的二进制内容", () => {

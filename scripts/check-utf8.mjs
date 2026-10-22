@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { getFilesToCheck, inspectUtf8, isProbablyBinary } from "./utf8-check-lib.mjs";
+import { getFilesToCheck, getTextFilesToCheck, inspectUtf8, isProbablyBinary } from "./utf8-check-lib.mjs";
 
 function runGit(args, options = {}) {
     const result = spawnSync("git", args, {
@@ -28,18 +28,13 @@ const stagedFiles = new Set(
 );
 const listedFiles = runGit(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
 const files = getFilesToCheck(hasStagedChanges, [...stagedFiles], listedFiles);
-const attributes = runGit(["check-attr", "-z", ...(hasStagedChanges ? ["--cached"] : []), "--stdin", "text"], {
-    input: `${files.join("\0")}\0`,
-});
-const attributeParts = attributes.split("\0");
-const textFiles = [];
-
-for (let index = 0; index + 2 < attributeParts.length; index += 3) {
-    const [file, , value] = attributeParts.slice(index, index + 3);
-    if (file && value !== "unset") {
-        textFiles.push({ file, usesAutoDetection: value === "auto" || value === "unspecified" });
+const attributes = runGit(
+    ["check-attr", "-z", ...(hasStagedChanges ? ["--cached"] : []), "--stdin", "text", "binary"],
+    {
+        input: `${files.join("\0")}\0`,
     }
-}
+);
+const textFiles = getTextFilesToCheck(attributes);
 
 const failures = [];
 for (const { file, usesAutoDetection } of textFiles) {

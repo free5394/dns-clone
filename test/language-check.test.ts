@@ -279,6 +279,48 @@ describe("语言门禁解析", () => {
         ]);
     });
 
+    it("不把模板插值中的动态标题与错误消息当作英文静态文案", () => {
+        const diff = [
+            "diff --git a/test/example.test.ts b/test/example.test.ts",
+            "--- a/test/example.test.ts",
+            "+++ b/test/example.test.ts",
+            "@@ -1,0 +1,3 @@",
+            "+it(`${caseName}`, () => {});",
+            "+throw new Error(`${errorCode}`);",
+            "+console.log(`${file}：${details}`);",
+            "",
+        ].join("\n");
+
+        expect(findLanguageViolations(diff)).toEqual([]);
+    });
+
+    it("识别模板插值之外的英文静态文案", () => {
+        const diff = [
+            "diff --git a/src/example.ts b/src/example.ts",
+            "--- a/src/example.ts",
+            "+++ b/src/example.ts",
+            "@@ -1,0 +1,2 @@",
+            "+throw new Error(`${errorCode} failed`);",
+            "+console.log(`request failed: ${details}`);",
+            "",
+        ].join("\n");
+
+        expect(findLanguageViolations(diff)).toEqual([
+            {
+                file: "src/example.ts",
+                line: 1,
+                kind: "错误消息",
+                text: "throw new Error(`${errorCode} failed`);",
+            },
+            {
+                file: "src/example.ts",
+                line: 2,
+                kind: "日志消息",
+                text: "console.log(`request failed: ${details}`);",
+            },
+        ]);
+    });
+
     it("识别 each 表格测试的英文标题", () => {
         const diff = `diff --git a/test/example.test.ts b/test/example.test.ts
 --- a/test/example.test.ts

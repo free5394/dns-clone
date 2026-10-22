@@ -103,6 +103,18 @@ function findTemplateExpressionEnd(source, start) {
     return source.length;
 }
 
+function getStaticTemplateText(source, start, end) {
+    let text = "";
+    for (let index = start; index < end; index += 1) {
+        if (source[index] === "$" && source[index + 1] === "{" && source[index - 1] !== "\\") {
+            index = findTemplateExpressionEnd(source, index + 2) - 1;
+        } else {
+            text += source[index];
+        }
+    }
+    return text;
+}
+
 function restoreTemplateExpressions(source, characters, start, end, options) {
     for (let index = start; index < end - 1; index += 1) {
         if (source[index] !== "$" || source[index + 1] !== "{" || source[index - 1] === "\\") {
@@ -213,8 +225,10 @@ function findHunkViolations(file, lines, addedLineNumbers) {
     const startLine = lines[0].line;
     const violations = [];
 
-    const pushViolation = (kind, messageStart, messageEnd) => {
-        const message = source.slice(messageStart, messageEnd);
+    const pushViolation = (kind, messageStart, messageEnd, isTemplate = false) => {
+        const message = isTemplate
+            ? getStaticTemplateText(source, messageStart, messageEnd)
+            : source.slice(messageStart, messageEnd);
         if (!ENGLISH_LETTER_PATTERN.test(message)) {
             return;
         }
@@ -250,7 +264,8 @@ function findHunkViolations(file, lines, addedLineNumbers) {
         }
         for (const match of maskedSource.matchAll(pattern)) {
             const [messageStart, messageEnd] = match.indices[2];
-            pushViolation(kind, messageStart, messageEnd);
+            const quoteStart = match.indices[1][0];
+            pushViolation(kind, messageStart, messageEnd, maskedSource[quoteStart] === "`");
         }
     }
 
@@ -272,12 +287,12 @@ function findHunkViolations(file, lines, addedLineNumbers) {
                         if (source[cursor] !== "$" || source[cursor + 1] !== "{" || source[cursor - 1] === "\\") {
                             continue;
                         }
-                        pushViolation("日志消息", segmentStart, cursor);
+                        pushViolation("日志消息", segmentStart, cursor, true);
                         const expressionEnd = findTemplateExpressionEnd(source, cursor + 2);
                         cursor = expressionEnd - 1;
                         segmentStart = expressionEnd;
                     }
-                    pushViolation("日志消息", segmentStart, end - 1);
+                    pushViolation("日志消息", segmentStart, end - 1, true);
                 } else {
                     pushViolation("日志消息", index + 1, end - 1);
                 }
