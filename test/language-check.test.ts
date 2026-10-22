@@ -348,13 +348,14 @@ describe("语言门禁解析", () => {
         ]);
     });
 
-    it("识别 sequential 与嵌套条件的测试标题", () => {
+    it("识别 sequential、test 别名与嵌套条件的测试标题", () => {
         const diff = `diff --git a/test/example.test.ts b/test/example.test.ts
 --- a/test/example.test.ts
 +++ b/test/example.test.ts
-@@ -1,0 +1,2 @@
+@@ -1,0 +1,3 @@
 +it.sequential("English sequential");
 +it.skipIf(check())("English nested condition");
++test("English test alias");
 `;
 
         expect(findLanguageViolations(diff)).toEqual([
@@ -370,6 +371,12 @@ describe("语言门禁解析", () => {
                 kind: "测试标题",
                 text: 'it.skipIf(check())("English nested condition");',
             },
+            {
+                file: "test/example.test.ts",
+                line: 3,
+                kind: "测试标题",
+                text: 'test("English test alias");',
+            },
         ]);
     });
 
@@ -380,6 +387,20 @@ describe("语言门禁解析", () => {
 @@ -1,0 +1,1 @@
 +it("English business call");
 `;
+
+        expect(findLanguageViolations(diff)).toEqual([]);
+    });
+
+    it("不报告模板插值前后的空静态段", () => {
+        const diff = [
+            "diff --git a/src/example.ts b/src/example.ts",
+            "--- a/src/example.ts",
+            "+++ b/src/example.ts",
+            "@@ -1,0 +1,2 @@",
+            "+console.log(`请求失败 ${details}`);",
+            "+console.log(`${details} 请求失败`);",
+            "",
+        ].join("\n");
 
         expect(findLanguageViolations(diff)).toEqual([]);
     });

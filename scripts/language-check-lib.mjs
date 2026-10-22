@@ -212,6 +212,9 @@ function findHunkViolations(file, lines, addedLineNumbers) {
     const violations = [];
 
     const pushViolation = (kind, messageStart, messageEnd) => {
+        if (!source.slice(messageStart, messageEnd).trim()) {
+            return;
+        }
         if (HAN_PATTERN.test(source.slice(messageStart, messageEnd))) {
             return;
         }

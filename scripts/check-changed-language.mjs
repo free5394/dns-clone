@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { findLanguageViolations } from "./language-check-lib.mjs";
 
-const base = process.env.LANGUAGE_CHECK_BASE;
+const requestedBase = process.env.LANGUAGE_CHECK_BASE;
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const sourcePatterns = ["*.ts", "*.js", "*.mjs", "*.cjs"];
 const WHOLE_FILE_CONTEXT_LINES = 1_000_000;
 
@@ -34,8 +35,24 @@ function runGitDiff(diffArgs) {
     ]);
 }
 
+function resolveBase() {
+    if (!requestedBase) {
+        return "";
+    }
+    if (requestedBase !== EMPTY_TREE && !/^0{40}$/.test(requestedBase)) {
+        return requestedBase;
+    }
+    const parent = runGit(["rev-list", "--parents", "-n", "1", "HEAD"]).trim().split(" ")[1];
+    return parent || EMPTY_TREE;
+}
+
+const base = resolveBase();
 const hasStagedChanges = runGit(["diff", "--cached", "--name-only", "-z", "--"]).length > 0;
-const diff = base ? runGitDiff([`${base}...HEAD`]) : hasStagedChanges ? runGitDiff(["--cached"]) : runGitDiff([]);
+const diff = base
+    ? runGitDiff(base === EMPTY_TREE ? [base, "HEAD"] : [`${base}...HEAD`])
+    : hasStagedChanges
+      ? runGitDiff(["--cached"])
+      : runGitDiff([]);
 const violations = findLanguageViolations(diff);
 if (violations.length === 0) {
     console.log("语言检查通过");
