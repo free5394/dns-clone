@@ -4,7 +4,13 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { fetchIpsFromSource, syncSingleIpSource } from "../src/sync/ip-sources.ts";
-import { syncDomainLogic, syncSystemDomains, resolveRecordsForDomain, processInChunks } from "../src/sync/domains.ts";
+import {
+    syncDomainLogic,
+    syncSystemDomains,
+    resolveRecordsForDomain,
+    processInChunks,
+    updateCloudflareDns,
+} from "../src/sync/domains.ts";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -569,5 +575,64 @@ describe("processInChunks 短路行为 (P1-3)", () => {
         };
         const noopLog = () => {};
         await expect(processInChunks(items, 5, processFn, noopLog)).rejects.toThrow(/network boom/);
+    });
+});
+
+describe("updateCloudflareDns 编码与全量分页", () => {
+    it("编码 name 参数并拉取全部分页", async () => {
+        const domain = {
+            id: 998,
+            source_domain: "source.example.com",
+            target_domain: "a&b.example.com",
+            zone_id: "zone-pagination",
+            is_deep_resolve: 0,
+            ttl: 60,
+            last_synced_records: null,
+            is_enabled: 1,
+            is_system: 0,
+        };
+        const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+            const url = new URL(String(input));
+            if (url.pathname.endsWith("/dns_records") && (!init || init.method === undefined)) {
+                const page = url.searchParams.get("page");
+                return new Response(
+                    JSON.stringify({
+                        success: true,
+                        result:
+                            page === "1"
+                                ? [{ id: "kept-record", type: "A", content: "192.0.2.1", proxied: false, ttl: 60 }]
+                                : [{ id: "stale-page-2", type: "A", content: "192.0.2.9", proxied: false, ttl: 60 }],
+                        result_info: { page: Number(page), total_pages: 2 },
+                    }),
+                    { status: 200 }
+                );
+            }
+            if (init?.method === "DELETE") return new Response(JSON.stringify({ success: true }), { status: 200 });
+            throw new Error("unexpected request: " + String(input));
+        });
+        vi.stubGlobal("fetch", fetchMock);
+
+        const logs: string[] = [];
+        const result = await updateCloudflareDns(
+            "token",
+            "zone-pagination",
+            domain,
+            [{ type: "A", content: "192.0.2.1" }],
+            (message) => logs.push(message)
+        );
+        expect(result).toBe("success");
+
+        const listUrls = fetchMock.mock.calls
+            .map(([input, init]) => ({ url: new URL(String(input)), method: init?.method }))
+            .filter((call) => call.method === undefined)
+            .map((call) => call.url);
+        expect(listUrls).toHaveLength(2);
+        expect(listUrls.map((url) => url.searchParams.get("page"))).toEqual(["1", "2"]);
+        for (const url of listUrls) expect(url.searchParams.get("name")).toBe("a&b.example.com");
+
+        const deleteCalls = fetchMock.mock.calls.filter(
+            ([input, init]) => new URL(String(input)).pathname.endsWith("/stale-page-2") && init?.method === "DELETE"
+        );
+        expect(deleteCalls).toHaveLength(1);
     });
 });

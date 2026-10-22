@@ -179,6 +179,52 @@ describe("getDashboardPage 仪表盘转义 (I2)", () => {
     });
 });
 
+describe("设置页与流式日志脚本契约 (issue #13)", () => {
+    const contractSettings = {
+        CF_ZONE_ID: "zone123",
+        GITHUB_OWNER: "owner",
+        THREE_NETWORK_SOURCE: "wetest.vip",
+        zoneName: "example.com",
+        CF_CONFIGURED: true,
+        GITHUB_CONFIGURED: true,
+    };
+    const dashboardHtml = () => getDashboardPage([], [], contractSettings);
+
+    it("空 Token 不提交，按钮状态使用非敏感 configured 标志", () => {
+        const html = dashboardHtml();
+        // Token 输入不回填 Secret；只有用户输入新值才写入 payload。
+        expect(html).toContain("if (cfToken) settingsToSave.CF_API_TOKEN = cfToken;");
+        expect(html).toContain("if (githubToken) settingsToSave.GITHUB_TOKEN = githubToken;");
+        expect(html).not.toContain("settingsToSave.CF_API_TOKEN = currentSettings.CF_API_TOKEN");
+        expect(html).not.toContain("settingsToSave.GITHUB_TOKEN = currentSettings.GITHUB_TOKEN");
+        // 完整性不能依赖被安全响应剔除的 Token。
+        expect(html).toContain('"CF_CONFIGURED":true,"GITHUB_CONFIGURED":true');
+        expect(html).not.toContain('id="addDomainBtn" disabled');
+        expect(html).not.toContain('id="addIpSourceBtn" disabled');
+        expect(html).toContain("currentSettings.GITHUB_CONFIGURED === true");
+    });
+
+    it("仪表盘实时记录查询并发执行", () => {
+        const html = dashboardHtml();
+        expect(html).toContain("await Promise.all(placeholders.map(async (el) => {");
+        expect(html).not.toContain("for (const el of placeholders)");
+    });
+
+    it("SSE 事件解析使用跨 chunk buffer", () => {
+        const html = dashboardHtml();
+        expect(html).toContain("let sseBuffer = '';");
+        expect(html).toContain("sseBuffer += decoder.decode(value, { stream: true });");
+        expect(html).toContain("sseBuffer = sseBuffer.slice(boundary + 2);");
+        expect(html).not.toContain(".split('\\n\\n')");
+    });
+
+    it("通知调用保持纯文本，不携带 HTML 片段", () => {
+        const html = dashboardHtml();
+        expect(html).toMatch(/function showNotification\(message, type = 'info', duration = 5000\)/);
+        expect(html).not.toMatch(/showNotification\([^\n]*(?:<br\s*\/?>|<code\b|\$\{esc\()/);
+    });
+});
+
 describe("首页导航按钮中线对齐 (FIX-23)", () => {
     it("共享规则对 a 与 button 一起归零 margin，避免 Pico 的 button 底部外边距把主题按钮顶高", () => {
         // 首页模板只返回主体，CSS 在 getHtmlLayout 里，按 ui.ts 的方式拼装

@@ -1,7 +1,7 @@
 // migrations.test.ts — D1 迁移幂等性 + 门控写入（I1）
 import { env, applyD1Migrations } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import { initializeAndMigrateDatabase } from "../src/db/migrations.ts";
+import { ensureInitialData, initializeAndMigrateDatabase } from "../src/db/migrations.ts";
 
 describe("D1 migrations", () => {
     it("applyD1Migrations runs twice without throwing", async () => {
@@ -29,6 +29,29 @@ describe("D1 migrations", () => {
 
         const gate = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'last_migrated_at'").first();
         expect(gate).not.toBeNull();
+    });
+
+    it("同一 zone 只初始化一次，切换 zone 后重新初始化", async () => {
+        const firstZone = "marker-zone-1";
+        const secondZone = "marker-zone-2";
+        await ensureInitialData(env.WUYA, firstZone, "first.example.com");
+
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain = 'yd.first.example.com'").run();
+        await ensureInitialData(env.WUYA, firstZone, "first.example.com");
+        const sameZoneRow = await env.WUYA.prepare(
+            "SELECT id FROM domains WHERE target_domain = 'yd.first.example.com'"
+        ).first();
+        expect(sameZoneRow).toBeNull();
+
+        await ensureInitialData(env.WUYA, secondZone, "second.example.com");
+        const marker = (await env.WUYA.prepare(
+            "SELECT value FROM settings WHERE key = 'INITIALIZED_ZONE_ID'"
+        ).first()) as { value: string };
+        const secondZoneRow = await env.WUYA.prepare(
+            "SELECT id FROM domains WHERE target_domain = 'yd.second.example.com'"
+        ).first();
+        expect(marker.value).toBe(secondZone);
+        expect(secondZoneRow).not.toBeNull();
     });
 
     it("bootstraps a fully empty database without throwing (FIX-19)", async () => {

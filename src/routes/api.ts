@@ -1,7 +1,7 @@
 // api.ts — API 路由层（handleApiRequest + 所有 /api/* 处理函数）
 // 从 index.legacy.js 提取（原 104-302、227-302、1085-1148 行区域）
 
-import { getSetting, setSetting, getCfApiSettings, getSafeSettings } from "../db/client.ts";
+import { getSetting, setSetting, getCfApiSettings, getGitHubSettings, getSafeSettings } from "../db/client.ts";
 import { ensureInitialData } from "../db/migrations.ts";
 import { jsonResponse, getCookie } from "../util/http.ts";
 import { hashPassword, isAuthenticated, verifyPassword } from "../util/auth.ts";
@@ -113,26 +113,30 @@ async function apiSetup(request: Request, db: D1Database): Promise<Response> {
     if (!password || password.length < 8 || password.length > 1024)
         return jsonResponse({ error: "密码长度必须为 8 到 1024 个字符之间。" }, 400);
 
-    // I4: 原子占用——先条件插入占位哈希（仅当凭据尚不存在），成功者才覆盖真哈希。
-    // 旧实现 check-then-act 在并发下两者都过检查 → 后者 UNIQUE 冲突 500；
-    // 现在落败方 changes=0，直接 403，且不存在半途状态。
+    // L2：hash 与 salt 在同一个原子 batch 写入；并发时只有首个请求能写入。
+    // 兼容旧实现的 pending 占位哈希：若上次中断留下占位，允许本次完整重写。
     const salt = crypto.randomUUID();
     const hash = await hashPassword(password, salt);
     const placeholder = "pbkdf2$100000$pending$pending";
-    const claim = await db
-        .prepare(
-            "INSERT INTO settings (key, value) SELECT 'ADMIN_PASSWORD_HASH', ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'ADMIN_PASSWORD_HASH')"
-        )
-        .bind(placeholder)
-        .run();
-    if (claim.meta.changes === 0) {
+    const claims = await db.batch([
+        db
+            .prepare("UPDATE settings SET value = ? WHERE key = 'ADMIN_PASSWORD_HASH' AND value = ?")
+            .bind(hash, placeholder),
+        db
+            .prepare(
+                "INSERT INTO settings (key, value) SELECT 'ADMIN_PASSWORD_HASH', ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'ADMIN_PASSWORD_HASH')"
+            )
+            .bind(hash),
+        db
+            .prepare(
+                "INSERT INTO settings (key, value) SELECT 'PASSWORD_SALT', ? WHERE EXISTS (SELECT 1 FROM settings WHERE key = 'ADMIN_PASSWORD_HASH' AND value = ?)"
+            )
+            .bind(salt, hash),
+    ]);
+    const claimed = (claims[0].meta.changes || 0) + (claims[1].meta.changes || 0);
+    if (claimed === 0) {
         return jsonResponse({ error: "应用已经初始化。" }, 403);
     }
-
-    await db.batch([
-        db.prepare("UPDATE settings SET value = ? WHERE key = 'ADMIN_PASSWORD_HASH'").bind(hash),
-        db.prepare("INSERT INTO settings (key, value) VALUES ('PASSWORD_SALT', ?)").bind(salt),
-    ]);
     return jsonResponse({ success: true });
 }
 
@@ -166,6 +170,7 @@ async function apiLogin(request: Request, db: D1Database): Promise<Response> {
         const expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
         await db.batch([
             db.prepare("INSERT INTO sessions (token, expires_at) VALUES (?, ?)").bind(token, expires.toISOString()),
+            db.prepare("DELETE FROM sessions WHERE datetime(expires_at) <= datetime('now')"),
             db.prepare("INSERT INTO login_attempts (ip, success) VALUES (?, 1)").bind(ip),
             db.prepare("DELETE FROM login_attempts WHERE ip = ? AND success = 0").bind(ip),
         ]);
@@ -185,15 +190,17 @@ async function apiLogout(request: Request, db: D1Database): Promise<Response> {
 
 async function apiGetSettings(request: Request, db: D1Database): Promise<Response> {
     const settings = await getSafeSettings(db);
-    const { token, zoneId } = await getCfApiSettings(db);
-    if (token && zoneId) {
-        try {
-            settings.zoneName = await getZoneName(token, zoneId);
-        } catch {
-            console.warn("Could not fetch zone name for settings endpoint");
-        }
-    }
-    return jsonResponse(settings);
+    const [{ token, zoneId }, github, zoneName] = await Promise.all([
+        getCfApiSettings(db),
+        getGitHubSettings(db),
+        getSetting(db, "CF_ZONE_NAME"),
+    ]);
+    return jsonResponse({
+        ...settings,
+        zoneName: zoneName || "",
+        CF_CONFIGURED: Boolean(token && zoneId),
+        GITHUB_CONFIGURED: Boolean(github.token && github.owner && github.repo),
+    });
 }
 
 async function apiSetSettings(request: Request, db: D1Database): Promise<Response> {
@@ -201,16 +208,16 @@ async function apiSetSettings(request: Request, db: D1Database): Promise<Respons
     if (rawBody === null || typeof rawBody !== "object") return BAD_JSON();
     const rawSettings = rawBody;
 
-    // 白名单：仅允许写入已知 key；保留 null 以表达"清除该字段"语义
+    // 白名单：仅允许写入已知 key；空字符串表示保持不变，显式 null 表示清除。
     const settings: Record<string, string | null> = {};
     for (const [key, value] of Object.entries(rawSettings)) {
         if (!ALLOWED_SETTINGS_KEYS.has(key)) continue;
         if (value === null || value === undefined) {
             settings[key] = null;
-        } else if (typeof value === "string") {
-            settings[key] = value;
         } else {
-            settings[key] = String(value);
+            const text = typeof value === "string" ? value.trim() : String(value);
+            if (text === "") continue;
+            settings[key] = text;
         }
         // I5: BATCH_SIZE 必须是 1..100 的整数——负数在 SQLite LIMIT 中等于无上限
         if (key === "BATCH_SIZE") {
@@ -221,15 +228,27 @@ async function apiSetSettings(request: Request, db: D1Database): Promise<Respons
         }
     }
 
-    const { CF_API_TOKEN, CF_ZONE_ID, GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO } = settings;
+    const configKeys = ["CF_API_TOKEN", "CF_ZONE_ID", "GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO"];
+    const currentConfig = Object.fromEntries(
+        await Promise.all(configKeys.map(async (key) => [key, await getSetting(db, key)]))
+    ) as Record<(typeof configKeys)[number], string | null>;
+    const effective = { ...currentConfig, ...settings };
+    const { CF_API_TOKEN, CF_ZONE_ID, GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO } = effective;
 
-    // Cloudflare 凭据配对验证：只要任一出现，必须两个都提供
-    if ((CF_API_TOKEN !== undefined) !== (CF_ZONE_ID !== undefined)) {
-        return jsonResponse({ error: "Cloudflare API 令牌和区域 ID 必须同时提供。" }, 400);
+    // 配对校验基于合并现有配置后的有效配置，允许保留旧 Token 只修改其它字段。
+    if (Boolean(CF_API_TOKEN) !== Boolean(CF_ZONE_ID)) {
+        return jsonResponse({ error: "Cloudflare API 令牌和区域 ID 必须同时配置。" }, 400);
     }
-    if (CF_API_TOKEN && CF_ZONE_ID) {
+    const githubValues = [GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO];
+    if (githubValues.some(Boolean) && githubValues.some((value) => !value)) {
+        return jsonResponse({ error: "GitHub Token、Owner、Repo 必须同时配置。" }, 400);
+    }
+
+    const cfConfigChanged = settings.CF_API_TOKEN !== undefined || settings.CF_ZONE_ID !== undefined;
+    if (CF_API_TOKEN && CF_ZONE_ID && cfConfigChanged) {
         try {
             const zoneName = await getZoneName(CF_API_TOKEN, CF_ZONE_ID);
+            settings.CF_ZONE_NAME = zoneName;
             await ensureInitialData(db, CF_ZONE_ID, zoneName);
         } catch (e) {
             return jsonResponse(
@@ -238,16 +257,10 @@ async function apiSetSettings(request: Request, db: D1Database): Promise<Respons
             );
         }
     }
+    if (!CF_API_TOKEN || !CF_ZONE_ID) settings.CF_ZONE_NAME = null;
 
-    // GitHub 凭据配对验证：同上
-    const ghDefined = [GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO].filter((v) => v !== undefined);
-    if (ghDefined.length > 0 && ghDefined.length < 3) {
-        return jsonResponse({ error: "GitHub Token、Owner、Repo 必须同时提供。" }, 400);
-    }
-
-    // FIX-18: 用 setSetting 替代裸 INSERT OR REPLACE —— null/空字符串统一表示清除
-    // 单条 SQL 失败的概率极低；setSetting 已实现正确的 null 删除语义
-    await Promise.all(Object.entries(settings).map(([key, value]) => setSetting(db, key, value === "" ? null : value)));
+    // FIX-18: setSetting 提供 null 删除语义；这里不再把空串折叠成清除。
+    await Promise.all(Object.entries(settings).map(([key, value]) => setSetting(db, key, value)));
     return jsonResponse({ success: true, message: "设置已成功保存。" });
 }
 
@@ -276,30 +289,55 @@ async function handleDomainMutation(
     }>(request);
     if (body === null) return BAD_JSON();
     const { source_domain, target_domain_prefix, is_deep_resolve, ttl, notes } = body;
-    if (!source_domain || !target_domain_prefix) {
-        return jsonResponse({ error: "缺少必填字段。" }, 400);
+    const source = String(source_domain ?? "").trim();
+
+    let existing: { source_domain: string; is_system: number } | null = null;
+    if (isUpdate && id) {
+        existing = (await db.prepare("SELECT source_domain, is_system FROM domains WHERE id = ?").bind(id).first()) as {
+            source_domain: string;
+            is_system: number;
+        } | null;
+        if (!existing) return jsonResponse({ error: "目标不存在。" }, 404);
+        if (existing.is_system === 1 && existing.source_domain !== source) {
+            return jsonResponse({ error: "系统预设域名的源域名不可修改。" }, 403);
+        }
+    }
+    const prefix = String(target_domain_prefix ?? "").trim() || "@";
+    const effectiveTtl = ttl ?? 60;
+    const hostnamePattern =
+        /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+    const labelPattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+    if (!source || (!source.startsWith("internal:") && !hostnamePattern.test(source))) {
+        return jsonResponse({ error: "源域名格式无效。" }, 400);
+    }
+    if (source.startsWith("internal:") && !/^internal:hostmonit:(yd|dx|lt)$/.test(source)) {
+        return jsonResponse({ error: "内置源域名格式无效。" }, 400);
+    }
+    if (prefix !== "@" && !labelPattern.test(prefix)) {
+        return jsonResponse({ error: "目标前缀必须是单个 DNS label 或 @。" }, 400);
+    }
+    if (
+        typeof effectiveTtl !== "number" ||
+        !Number.isInteger(effectiveTtl) ||
+        effectiveTtl < 1 ||
+        effectiveTtl > 86400 ||
+        (effectiveTtl > 1 && effectiveTtl < 60)
+    ) {
+        return jsonResponse({ error: "TTL 必须为 1（自动）或 60 到 86400 之间的整数。" }, 400);
     }
     try {
         const { zoneId, token } = await getCfApiSettings(db);
         if (!token || !zoneId) return jsonResponse({ error: "Cloudflare API 未配置。" }, 400);
-        const zoneName = (await getZoneName(token, zoneId)).replace(/\.$/, "");
-        const target_domain = target_domain_prefix === "@" ? zoneName : `${target_domain_prefix}.${zoneName}`;
+        const zoneName = ((await getSetting(db, "CF_ZONE_NAME")) || "").replace(/\.$/, "");
+        if (!zoneName) return jsonResponse({ error: "Cloudflare 区域名称未缓存，请重新保存 Cloudflare 设置。" }, 400);
+        const target_domain = prefix === "@" ? zoneName : `${prefix}.${zoneName}`;
 
         if (isUpdate && id) {
-            // 系统域名保护：禁止修改 source_domain
-            const existing = (await db
-                .prepare("SELECT source_domain, is_system FROM domains WHERE id = ?")
-                .bind(id)
-                .first()) as { source_domain: string; is_system: number } | null;
-            if (!existing) return jsonResponse({ error: "目标不存在。" }, 404);
-            if (existing.is_system === 1 && existing.source_domain !== source_domain) {
-                return jsonResponse({ error: "系统预设域名的源域名不可修改。" }, 403);
-            }
             await db
                 .prepare(
                     "UPDATE domains SET source_domain=?, target_domain=?, zone_id=?, is_deep_resolve=?, ttl=?, notes=? WHERE id=?"
                 )
-                .bind(source_domain, target_domain, zoneId, is_deep_resolve ?? 1, ttl ?? 60, notes || null, id)
+                .bind(source, target_domain, zoneId, is_deep_resolve ?? 1, effectiveTtl, notes || null, id)
                 .run();
             return jsonResponse({ success: true, message: "目标更新成功。" });
         }
@@ -307,7 +345,7 @@ async function handleDomainMutation(
             .prepare(
                 "INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, notes) VALUES (?, ?, ?, ?, ?, ?)"
             )
-            .bind(source_domain, target_domain, zoneId, is_deep_resolve ?? 1, ttl ?? 60, notes || null)
+            .bind(source, target_domain, zoneId, is_deep_resolve ?? 1, effectiveTtl, notes || null)
             .run();
         return jsonResponse({ success: true, message: "目标添加成功。" });
     } catch (e) {

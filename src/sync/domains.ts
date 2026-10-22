@@ -396,17 +396,29 @@ export async function updateCloudflareDns(
     const API_ENDPOINT = `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`;
     const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
-    const listUrl = `${API_ENDPOINT}?name=${target_domain}&per_page=100`;
-    const listResponse = await fetchWithRetry(listUrl, { headers }, 1, 15000);
-    if (!listResponse.ok) throw new Error(`获取DNS记录列表失败: ${await listResponse.text()}`);
-    const listResult = (await listResponse.json()) as {
-        success: boolean;
-        result: { id: string; type: string; content: string; proxied?: boolean; ttl?: number }[];
-        errors?: unknown[];
-    };
-    if (!listResult.success) throw new Error(`获取DNS记录列表API错误: ${JSON.stringify(listResult.errors)}`);
-
-    const existingRecords = listResult.result;
+    interface ExistingRecord {
+        id: string;
+        type: string;
+        content: string;
+        proxied?: boolean;
+        ttl?: number;
+    }
+    const existingRecords: ExistingRecord[] = [];
+    for (let page = 1; ; page++) {
+        const query = new URLSearchParams({ name: target_domain, per_page: "100", page: String(page) }).toString();
+        const listResponse = await fetchWithRetry(`${API_ENDPOINT}?${query}`, { headers }, 1, 15000);
+        if (!listResponse.ok) throw new Error(`获取DNS记录列表失败: ${await listResponse.text()}`);
+        const listResult = (await listResponse.json()) as {
+            success: boolean;
+            result: ExistingRecord[];
+            result_info?: { page?: number; total_pages?: number };
+            errors?: unknown[];
+        };
+        if (!listResult.success) throw new Error(`获取DNS记录列表API错误: ${JSON.stringify(listResult.errors)}`);
+        existingRecords.push(...listResult.result);
+        const totalPages = listResult.result_info?.total_pages ?? 1;
+        if (page >= totalPages) break;
+    }
     log(`目标 ${target_domain} 当前有 ${existingRecords.length} 条相关记录。`);
 
     const recordsToDelete: typeof existingRecords = [];

@@ -10,7 +10,15 @@ export async function handleGitHubFileProxy(
     env: { WUYA: D1Database },
     ctx: ExecutionContext
 ): Promise<Response> {
-    const source = await env.WUYA.prepare("SELECT * FROM ip_sources WHERE github_path = ?").bind(fileName).first();
+    let decodedFileName: string;
+    try {
+        decodedFileName = decodeURIComponent(fileName);
+    } catch {
+        return new Response("请求的文件不存在或不在本服务管理范围内。", { status: 404 });
+    }
+    const source = await env.WUYA.prepare("SELECT * FROM ip_sources WHERE github_path = ?")
+        .bind(decodedFileName)
+        .first();
 
     if (!source) {
         return new Response("请求的文件不存在或不在本服务管理范围内。", { status: 404 });
@@ -24,7 +32,7 @@ export async function handleGitHubFileProxy(
     // 缓存写入走延迟回调，不阻塞本次响应
     return await readFileForSubscriber(
         { token: githubSettings.token, owner: githubSettings.owner, repo: githubSettings.repo },
-        fileName,
+        decodedFileName,
         (promise) => ctx.waitUntil(promise)
     );
 }

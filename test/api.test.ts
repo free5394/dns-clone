@@ -3,6 +3,7 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { handleApiRequest } from "../src/routes/api.ts";
+import { verifyPassword } from "../src/util/auth.ts";
 
 // 种子密码（见 apply-migrations.ts）
 const PASSWORD = "test-password-123";
@@ -27,6 +28,9 @@ async function seedCfSettings(): Promise<void> {
         env.WUYA.prepare(
             "INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
         ).bind("test-zone-id"),
+        env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('CF_ZONE_NAME', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).bind("example.com"),
     ]);
 }
 
@@ -51,6 +55,29 @@ describe("/api/login", () => {
         expect(setCookie).toContain("session=");
         expect(setCookie).toContain("HttpOnly");
         expect(setCookie).toContain("Max-Age=86400");
+    });
+
+    it("登录成功时批量清理过期会话", async () => {
+        await env.WUYA.batch([
+            env.WUYA.prepare("INSERT OR REPLACE INTO sessions (token, expires_at) VALUES ('expired-token', ?)").bind(
+                new Date(Date.now() - 60_000).toISOString()
+            ),
+            env.WUYA.prepare("INSERT OR REPLACE INTO sessions (token, expires_at) VALUES ('active-token', ?)").bind(
+                new Date(Date.now() + 3_600_000).toISOString()
+            ),
+        ]);
+
+        const res = await SELF.fetch("https://example.com/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password: PASSWORD }),
+        });
+        expect(res.status).toBe(200);
+
+        const expired = await env.WUYA.prepare("SELECT token FROM sessions WHERE token = 'expired-token'").first();
+        const active = await env.WUYA.prepare("SELECT token FROM sessions WHERE token = 'active-token'").first();
+        expect(expired).toBeNull();
+        expect(active).not.toBeNull();
     });
 });
 
@@ -122,6 +149,16 @@ describe("/api/setup 原子占用 (I4)", () => {
                 "SELECT COUNT(*) as n FROM settings WHERE key = 'ADMIN_PASSWORD_HASH'"
             ).first()) as { n: number };
             expect(rows.n).toBe(1);
+
+            const credential = (await env.WUYA.prepare(
+                "SELECT (SELECT value FROM settings WHERE key = 'ADMIN_PASSWORD_HASH') as hash, (SELECT value FROM settings WHERE key = 'PASSWORD_SALT') as salt"
+            ).first()) as { hash: string; salt: string };
+            expect(credential.hash).not.toBe("pbkdf2$100000$pending$pending");
+            const verified = await Promise.all([
+                verifyPassword("attacker-pass-123", credential.hash, credential.salt),
+                verifyPassword("owner-pass-456", credential.hash, credential.salt),
+            ]);
+            expect(verified.filter((item) => item.matched)).toHaveLength(1);
         } finally {
             await env.WUYA.batch([
                 env.WUYA.prepare(
@@ -338,7 +375,7 @@ describe("POST /api/domains (Task 1.1 API/UI 契约对齐)", () => {
         }
     });
 
-    it("returns 400 when target_domain_prefix is missing", async () => {
+    it("accepts empty target_domain_prefix as root domain", async () => {
         const cookie = await loginAndGetCookie();
         await seedCfSettings();
         const res = await SELF.fetch("https://example.com/api/domains", {
@@ -346,7 +383,7 @@ describe("POST /api/domains (Task 1.1 API/UI 契约对齐)", () => {
             headers: { Cookie: cookie, "Content-Type": "application/json" },
             body: JSON.stringify({ source_domain: "origin.example.com" }),
         });
-        expect(res.status).toBe(400);
+        expect(res.status).toBe(200);
     });
 });
 
@@ -417,12 +454,126 @@ describe("POST /api/settings (Task 2.6 白名单 + 配对验证)", () => {
 
     it("rejects partial GitHub settings (only GITHUB_TOKEN)", async () => {
         const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "DELETE FROM settings WHERE key IN ('GITHUB_TOKEN', 'GITHUB_OWNER', 'GITHUB_REPO')"
+        ).run();
         const res = await SELF.fetch("https://example.com/api/settings", {
             method: "POST",
             headers: { Cookie: cookie, "Content-Type": "application/json" },
             body: JSON.stringify({ GITHUB_TOKEN: "ghp_xxx" }),
         });
         expect(res.status).toBe(400);
+    });
+
+    it("空 Token 字符串保持既有 Secret 不变", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.batch([
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('CF_API_TOKEN', 'cf-saved-token') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', 'cf-saved-zone') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('GITHUB_TOKEN', 'gh-saved-token') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('GITHUB_OWNER', 'saved-owner') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('GITHUB_REPO', 'saved-repo') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ),
+        ]);
+
+        const res = await SELF.fetch("https://example.com/api/settings", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                THREE_NETWORK_SOURCE: "wetest.vip",
+                CF_API_TOKEN: "",
+                GITHUB_TOKEN: "",
+            }),
+        });
+        expect(res.status).toBe(200);
+
+        const saved = (await env.WUYA.prepare(
+            "SELECT (SELECT value FROM settings WHERE key = 'CF_API_TOKEN') as cf_token, (SELECT value FROM settings WHERE key = 'GITHUB_TOKEN') as github_token"
+        ).first()) as { cf_token: string; github_token: string };
+        expect(saved.cf_token).toBe("cf-saved-token");
+        expect(saved.github_token).toBe("gh-saved-token");
+
+        const safe = await SELF.fetch("https://example.com/api/settings", { headers: { Cookie: cookie } });
+        const safeBody = (await safe.json()) as Record<string, unknown>;
+        expect(safeBody.CF_CONFIGURED).toBe(true);
+        expect(safeBody.GITHUB_CONFIGURED).toBe(true);
+        expect(safeBody.CF_API_TOKEN).toBeUndefined();
+        expect(safeBody.GITHUB_TOKEN).toBeUndefined();
+    });
+
+    it("保存 Cloudflare 配置时缓存区域名称并写入初始化 marker", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "DELETE FROM settings WHERE key IN ('CF_API_TOKEN', 'CF_ZONE_ID', 'CF_ZONE_NAME', 'INITIALIZED_ZONE_ID')"
+        ).run();
+        const fetchSpy = vi.fn(
+            async () =>
+                new Response(JSON.stringify({ success: true, result: { name: "cached.example.com" } }), { status: 200 })
+        );
+        vi.stubGlobal("fetch", fetchSpy);
+
+        const saved = await SELF.fetch("https://example.com/api/settings", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({ CF_API_TOKEN: "cache-token", CF_ZONE_ID: "cache-zone" }),
+        });
+        expect(saved.status).toBe(200);
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+        const cached = (await env.WUYA.prepare(
+            "SELECT (SELECT value FROM settings WHERE key = 'CF_ZONE_NAME') as zone_name, (SELECT value FROM settings WHERE key = 'INITIALIZED_ZONE_ID') as marker"
+        ).first()) as { zone_name: string; marker: string };
+        expect(cached.zone_name).toBe("cached.example.com");
+        expect(cached.marker).toBe("cache-zone");
+
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => {
+                throw new Error("dashboard must not fetch Cloudflare");
+            })
+        );
+        const read = await SELF.fetch("https://example.com/api/settings", { headers: { Cookie: cookie } });
+        expect(read.status).toBe(200);
+        const body = (await read.json()) as Record<string, unknown>;
+        expect(body.CF_CONFIGURED).toBe(true);
+        expect(body.zoneName).toBe("cached.example.com");
+        vi.unstubAllGlobals();
+    });
+
+    it("域名输入非法时返回 400 且不落库", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const invalidCases = [
+            { source_domain: "bad domain.example.com", target_domain_prefix: "clone", ttl: 60 },
+            { source_domain: "internal:hostmonit:bad", target_domain_prefix: "clone", ttl: 60 },
+            { source_domain: "origin.example.com", target_domain_prefix: "two.labels", ttl: 60 },
+            { source_domain: "origin.example.com", target_domain_prefix: "clone", ttl: 30 },
+            { source_domain: "origin.example.com", target_domain_prefix: "clone", ttl: 1.5 },
+            { source_domain: "origin.example.com", target_domain_prefix: "clone", ttl: true },
+        ];
+
+        const before = (await env.WUYA.prepare("SELECT COUNT(*) as n FROM domains").first()) as { n: number };
+        for (const payload of invalidCases) {
+            const res = await SELF.fetch("https://example.com/api/domains", {
+                method: "POST",
+                headers: { Cookie: cookie, "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+            expect(res.status, JSON.stringify(payload)).toBe(400);
+            const body = (await res.json()) as { error?: string };
+            expect(body.error).toBeTruthy();
+        }
+        const after = (await env.WUYA.prepare("SELECT COUNT(*) as n FROM domains").first()) as { n: number };
+        expect(after.n).toBe(before.n);
     });
 
     it("drops unknown keys (whitelist enforcement)", async () => {

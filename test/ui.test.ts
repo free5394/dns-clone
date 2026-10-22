@@ -58,7 +58,7 @@ describe("handleUiRequest /admin 鉴权", () => {
         expect(html).toContain("DNS Clone Dashboard");
     });
 
-    it("CF 凭据存在但 getZoneName 失败时不影响仪表盘渲染", async () => {
+    it("仪表盘读取缓存区域名称且不调用 Cloudflare API", async () => {
         await env.WUYA.batch([
             env.WUYA.prepare(
                 "INSERT INTO settings (key, value) VALUES ('CF_API_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
@@ -67,7 +67,7 @@ describe("handleUiRequest /admin 鉴权", () => {
                 "INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
             ).bind("test-zone"),
         ]);
-        // getZoneName 内部 fetch 抛错 → 应被 catch 吞掉并 console.warn
+        // 区域名称在保存设置时缓存；仪表盘渲染不应访问 Cloudflare API。
         const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
         vi.stubGlobal(
             "fetch",
@@ -81,7 +81,7 @@ describe("handleUiRequest /admin 鉴权", () => {
 
         expect(res.status).toBe(200);
         expect(await res.text()).toContain("DNS Clone Dashboard");
-        expect(warnSpy).toHaveBeenCalled();
+        expect(warnSpy).not.toHaveBeenCalled();
         warnSpy.mockRestore();
     });
 

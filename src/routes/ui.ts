@@ -2,10 +2,8 @@
 // 从 index.legacy.js 提取（原 handleUiRequest）
 // 注：UI 模板函数（getHtmlLayout / getSetupPage / getPublicHomepage / getDashboardPage / getDashboardScript）仍在 legacy，阶段 E 拆分
 
-import { getSetting, getSafeSettings, getCfApiSettings } from "../db/client.ts";
-import { ensureInitialData } from "../db/migrations.ts";
+import { getSetting, getSafeSettings, getCfApiSettings, getGitHubSettings } from "../db/client.ts";
 import { isAuthenticated } from "../util/auth.ts";
-import { getZoneName } from "../util/cf.ts";
 // UI 模板函数从 templates.js 导入
 import { getHtmlLayout, getSetupPage, getPublicHomepage, getDashboardPage } from "../ui/templates.js";
 
@@ -24,17 +22,18 @@ export async function handleUiRequest(request: Request, env: { WUYA: D1Database 
         pageContent = getSetupPage();
     } else if (path === "/admin" && loggedIn) {
         pageTitle = "DNS Clone Dashboard";
-        const settings = await getSafeSettings(db);
-
-        const { token, zoneId } = await getCfApiSettings(db);
-        if (token && zoneId) {
-            try {
-                settings.zoneName = await getZoneName(token, zoneId);
-                await ensureInitialData(db, zoneId, settings.zoneName);
-            } catch (e) {
-                console.warn("Could not fetch zone name or ensure initial data.", e instanceof Error ? e.message : e);
-            }
-        }
+        const [baseSettings, { token, zoneId }, github, zoneName] = await Promise.all([
+            getSafeSettings(db),
+            getCfApiSettings(db),
+            getGitHubSettings(db),
+            getSetting(db, "CF_ZONE_NAME"),
+        ]);
+        const settings = {
+            ...baseSettings,
+            zoneName: zoneName || "",
+            CF_CONFIGURED: Boolean(token && zoneId),
+            GITHUB_CONFIGURED: Boolean(github.token && github.owner && github.repo),
+        };
 
         const domainsPromise = db
             .prepare(

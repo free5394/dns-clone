@@ -120,7 +120,9 @@ export async function initializeAndMigrateDatabase(env: { WUYA: D1Database }): P
 export async function ensureInitialData(db: D1Database, zoneId: string, zoneName: string): Promise<void> {
     if (!zoneId || !zoneName) return;
 
-    await setSetting(db, "THREE_NETWORK_SOURCE", (await getSetting(db, "THREE_NETWORK_SOURCE")) || "CloudFlareYes");
+    const initializedZoneId = await getSetting(db, "INITIALIZED_ZONE_ID");
+    if (initializedZoneId === zoneId) return;
+    const threeNetworkSource = (await getSetting(db, "THREE_NETWORK_SOURCE")) || "CloudFlareYes";
 
     interface InitialIpSource {
         url: string;
@@ -214,5 +216,15 @@ export async function ensureInitialData(db: D1Database, zoneId: string, zoneName
             .bind(d.source, targetDomain, zoneId, d.deep_resolve, d.notes, d.is_system);
     });
 
-    await db.batch([...ipSourceStmts, ...domainStmts]);
+    const markerStmt = db
+        .prepare(
+            "INSERT INTO settings (key, value) VALUES ('INITIALIZED_ZONE_ID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
+        .bind(zoneId);
+    const threeNetworkStmt = db
+        .prepare(
+            "INSERT INTO settings (key, value) VALUES ('THREE_NETWORK_SOURCE', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
+        .bind(threeNetworkSource);
+    await db.batch([threeNetworkStmt, ...ipSourceStmts, ...domainStmts, markerStmt]);
 }

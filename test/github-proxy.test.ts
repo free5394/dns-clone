@@ -57,6 +57,27 @@ describe("handleGitHubFileProxy", () => {
         expect(await res.text()).toBe("1.1.1.1\n2.2.2.2");
     });
 
+    it("decode 后匹配包含斜杠的白名单路径", async () => {
+        await seedGitHubSettings();
+        await seedWhitelistEntry("IP/Cloudflare.txt");
+        const spy = stubUpstreamSuccess("203.0.113.1");
+
+        const ctx = createExecutionContext();
+        const res = await handleGitHubFileProxy("IP%2FCloudflare.txt", env, ctx);
+        await waitOnExecutionContext(ctx);
+
+        expect(res.status).toBe(200);
+        expect(await res.text()).toBe("203.0.113.1");
+        expect(String(spy.mock.calls[0][0])).toContain("IP/Cloudflare.txt");
+    });
+
+    it("decode 非法路径返回受控 404", async () => {
+        const ctx = createExecutionContext();
+        const res = await handleGitHubFileProxy("bad%ZZ.txt", env, ctx);
+        await waitOnExecutionContext(ctx);
+        expect(res.status).toBe(404);
+    });
+
     it("returns 500 when GitHub settings are missing", async () => {
         await seedWhitelistEntry("no-settings.txt");
         // 删除 GitHub 设置（模拟未配置）

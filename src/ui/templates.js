@@ -529,11 +529,12 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
  * settings 必须是已过滤敏感字段的安全版本（getSafeSettings）
  */
 export function getDashboardPage(domains, ipSources, settings) {
-    const githubSettingsComplete = settings.GITHUB_TOKEN && settings.GITHUB_OWNER && settings.GITHUB_REPO;
+    const githubSettingsComplete = settings.GITHUB_CONFIGURED === true;
+    const cfSettingsComplete = settings.CF_CONFIGURED === true && Boolean(settings.zoneName);
     return `<aside class="sidebar"><div class="sidebar-header"><h3>DNS Clone</h3><button id="theme-toggle" type="button" aria-label="切换到深色主题"><i class="fa-solid fa-moon" aria-hidden="true"></i></button></div><nav class="sidebar-nav"><a href="#page-dns-clone" class="nav-link active" data-target="page-dns-clone"><i class="fa-solid fa-clone fa-fw"></i> 域名克隆</a><a href="#page-github-upload" class="nav-link" data-target="page-github-upload"><i class="fa-brands fa-github fa-fw"></i> GitHub 上传</a><a href="#page-settings" class="nav-link" data-target="page-settings"><i class="fa-solid fa-gear fa-fw"></i> 系统设置</a></nav></aside>
     <div class="main-content">
         <div id="page-dns-clone" class="page active">
-            <div class="page-header"><h2>域名克隆列表</h2><button id="addDomainBtn" ${settings.CF_ZONE_ID ? "" : "disabled"}>＋ 添加克隆目标</button></div>
+            <div class="page-header"><h2>域名克隆列表</h2><button id="addDomainBtn" ${cfSettingsComplete ? "" : "disabled"}>＋ 添加克隆目标</button></div>
             <div id="domain-list-container"></div>
             <article><h3>手动操作</h3><p>点击下方按钮，可以立即为所有已启用的目标执行一次同步任务。</p><button id="manualSyncBtn">手动同步所有目标</button><pre id="logOutput" class="sync-log" style="display:none;"></pre></article>
         </div>
@@ -545,12 +546,12 @@ export function getDashboardPage(domains, ipSources, settings) {
         <div id="page-settings" class="page">
             <div class="page-header"><h2>系统设置</h2></div>
             <form id="settingsForm">
-                <fieldset><legend><i class="fa-brands fa-cloudflare"></i> Cloudflare API 设置</legend><label for="cfToken">API 令牌 (Token)</label><input type="password" id="cfToken" value="${escapeHtml(settings.CF_API_TOKEN || "")}"><label for="cfZoneId">区域 (Zone) ID</label><input type="text" id="cfZoneId" value="${escapeHtml(settings.CF_ZONE_ID || "")}">
+                <fieldset><legend><i class="fa-brands fa-cloudflare"></i> Cloudflare API 设置</legend><label for="cfToken">API 令牌 (Token)</label><input type="password" id="cfToken" value="" placeholder="${settings.CF_CONFIGURED ? "已配置，留空保持不变" : "输入 Cloudflare API 令牌"}"><label><input type="checkbox" id="cfClear"> 清除已保存的 Cloudflare 配置</label><label for="cfZoneId">区域 (Zone) ID</label><input type="text" id="cfZoneId" value="${escapeHtml(settings.CF_ZONE_ID || "")}">
                     <details class="tutorial-details"><summary>如何获取 API 令牌和区域 ID？</summary><div class="tutorial-content"><ol><li><strong>获取 API 令牌 (Token):</strong><ol type="a"><li>登录 <a href="https://dash.cloudflare.com/" target="_blank">Cloudflare</a>，进入 <strong>“我的个人资料”</strong> &rarr; <strong>“API 令牌”</strong>。</li><li>点击 <strong>“创建令牌”</strong>，然后选择 <strong>“编辑区域 DNS”</strong> 模板并点击“使用模板”。</li><li>在 <strong>“区域资源”</strong> 部分，选择您需要操作的具体域名区域。</li><li>点击“继续以显示摘要”和“创建令牌”，复制生成的令牌。<strong>注意：令牌仅显示一次，请妥善保管。</strong></li></ol></li><li><strong>获取区域 ID (Zone ID):</strong><ol type="a"><li>在 Cloudflare 仪表板主页，点击您需要操作的域名。</li><li>在域名的“概述”页面，您可以在右下角找到 <strong>“区域 ID”</strong>，点击即可复制。</li></ol></li></ol></div></details>
                 </fieldset>
                  <fieldset><legend><i class="fa-solid fa-network-wired"></i> 三网优选IP源设置</legend><label for="threeNetworkSource">三网采集源</label><select id="threeNetworkSource"><option value="CloudFlareYes" ${settings.THREE_NETWORK_SOURCE === "CloudFlareYes" ? "selected" : ""}>CloudFlareYes</option><option value="api.uouin.com" ${settings.THREE_NETWORK_SOURCE === "api.uouin.com" ? "selected" : ""}>api.uouin.com</option><option value="wetest.vip" ${settings.THREE_NETWORK_SOURCE === "wetest.vip" ? "selected" : ""}>wetest.vip</option></select><small>为系统预设的电信/移动/联通域名选择IP来源。更改后保存设置将自动同步一次系统域名。</small>
                 </fieldset>
-                <fieldset><legend><i class="fa-brands fa-github"></i> GitHub API 设置</legend><label for="githubToken">GitHub Token</label><input type="password" id="githubToken" value="${escapeHtml(settings.GITHUB_TOKEN || "")}" placeholder="具有 repo 权限的 Personal Access Token"><label for="githubOwner">GitHub 用户名/组织名</label><input type="text" id="githubOwner" value="${escapeHtml(settings.GITHUB_OWNER || "")}" placeholder="例如: my-username"><label for="githubRepo">仓库名称</label><input type="text" id="githubRepo" value="${escapeHtml(settings.GITHUB_REPO || "")}" placeholder="例如: my-dns-records">
+                <fieldset><legend><i class="fa-brands fa-github"></i> GitHub API 设置</legend><label for="githubToken">GitHub Token</label><input type="password" id="githubToken" value="" placeholder="${settings.GITHUB_CONFIGURED ? "已配置，留空保持不变" : "具有 repo 权限的 Personal Access Token"}"><label><input type="checkbox" id="githubClear"> 清除已保存的 GitHub 配置</label><label for="githubOwner">GitHub 用户名/组织名</label><input type="text" id="githubOwner" value="${escapeHtml(settings.GITHUB_OWNER || "")}" placeholder="例如: my-username"><label for="githubRepo">仓库名称</label><input type="text" id="githubRepo" value="${escapeHtml(settings.GITHUB_REPO || "")}" placeholder="例如: my-dns-records">
                     <details class="tutorial-details"><summary>如何获取 GitHub API 信息？</summary><div class="tutorial-content"><ol><li><strong>获取 GitHub Token:</strong><ol type="a"><li>登录 <a href="https://github.com/" target="_blank">GitHub</a>，点击右上角头像，进入 <strong>“Settings”</strong>。</li><li>在左侧菜单中，选择 <strong>“Developer settings”</strong> &rarr; <strong>“Personal access tokens”</strong> &rarr; <strong>“Tokens (classic)”</strong>。</li><li>点击 <strong>“Generate new token”</strong>，并选择 <strong>“Generate new token (classic)”</strong>。</li><li>为令牌添加描述（Note），设置合适的过期时间（Expiration）。</li><li>在 <strong>“Select scopes”</strong> 部分，勾选 <code>repo</code> 权限。</li><li>点击页面底部的 <strong>“Generate token”</strong>，并复制生成的令牌。<strong>注意：令牌仅显示一次，请妥善保管。</strong></li></ol></li><li><strong>获取用户名/组织名 和 仓库名称:</strong><ol type="a"><li><strong>用户名/组织名</strong> 就是您的GitHub个人主页URL中，github.com后面的那部分，或者您组织的主页URL。</li><li><strong>仓库名称</strong> 是您在GitHub上创建的，用来存储IP文件的仓库的名字。如果仓库不存在，系统将在第一次同步时自动为您创建为私有仓库。</li></ol></li></ol></div></details>
                 </fieldset>
                 <button type="submit">保存设置</button>
@@ -713,9 +714,9 @@ function getDashboardScript(domains, ipSources, settings) {
       const id = document.getElementById('domainId').value;
       const payload = { source_domain: document.getElementById('source_domain').value, target_domain_prefix: document.getElementById('target_domain_prefix').value.trim(), is_deep_resolve: document.getElementById('is_deep_resolve').checked, ttl: parseInt(document.getElementById('ttl').value), notes: document.getElementById('notes').value };
       const url = id ? '/api/domains/' + id : '/api/domains'; const method = id ? 'PUT' : 'POST';
-      try { const result = await apiFetch(url, { method, body: JSON.stringify(payload) }); showNotification(result.message, 'success'); closeModal('domainModal'); await refreshDomains(); } catch (e) { showNotification(\`保存失败: <code>\${e.message}</code>\`, 'error'); }
+      try { const result = await apiFetch(url, { method, body: JSON.stringify(payload) }); showNotification(result.message, 'success'); closeModal('domainModal'); await refreshDomains(); } catch (e) { showNotification(\`保存失败: \${e.message}\`, 'error'); }
   }
-  window.deleteDomain = async (id) => { if (!confirm('确定要删除这个目标吗？此操作不可逆转。')) return; try { const result = await apiFetch('/api/domains/' + id, { method: 'DELETE' }); showNotification(result.message, 'success'); await refreshDomains(); } catch (e) { showNotification(\`错误: <code>\${e.message}</code>\`, 'error'); } }
+  window.deleteDomain = async (id) => { if (!confirm('确定要删除这个目标吗？此操作不可逆转。')) return; try { const result = await apiFetch('/api/domains/' + id, { method: 'DELETE' }); showNotification(result.message, 'success'); await refreshDomains(); } catch (e) { showNotification(\`错误: \${e.message}\`, 'error'); } }
 
   async function refreshDomains() {
     try {
@@ -723,13 +724,13 @@ function getDashboardScript(domains, ipSources, settings) {
         renderDomainList();
         fetchLiveRecords();
     } catch (e) {
-        showNotification(\`更新列表失败: <code>\${e.message}</code>\`, 'error');
+        showNotification(\`更新列表失败: \${e.message}\`, 'error');
     }
   }
 
   async function fetchLiveRecords() {
-    const placeholders = document.querySelectorAll('.records-placeholder');
-    for (const el of placeholders) {
+    const placeholders = Array.from(document.querySelectorAll('.records-placeholder'));
+    await Promise.all(placeholders.map(async (el) => {
         const id = el.dataset.domainId;
         try {
             const records = await apiFetch('/api/domains/' + id + '/records');
@@ -737,7 +738,7 @@ function getDashboardScript(domains, ipSources, settings) {
         } catch(e) {
             el.innerHTML = '<span class="status-failed">查询失败</span>';
         }
-    }
+    }));
   }
 
   async function saveIpSource() {
@@ -745,10 +746,10 @@ function getDashboardScript(domains, ipSources, settings) {
       const payload = { url: document.getElementById('ip_source_url').value, github_path: document.getElementById('github_path').value, commit_message: document.getElementById('commit_message').value, fetch_strategy: successfulProbeStrategy };
       const apiUrl = id ? \`/api/ip_sources/\${id}\` : '/api/ip_sources';
       const method = id ? 'PUT' : 'POST';
-      try { const result = await apiFetch(apiUrl, { method, body: JSON.stringify(payload) }); showNotification(result.message, 'success'); closeModal('ipSourceModal'); await refreshIpSources(); } catch (e) { showNotification(\`保存失败: <code>\${e.message}</code>\`, 'error'); }
+      try { const result = await apiFetch(apiUrl, { method, body: JSON.stringify(payload) }); showNotification(result.message, 'success'); closeModal('ipSourceModal'); await refreshIpSources(); } catch (e) { showNotification(\`保存失败: \${e.message}\`, 'error'); }
   }
-    window.deleteIpSource = async (id) => { if (!confirm('确定要删除这个IP源吗？')) return; try { await apiFetch(\`/api/ip_sources/\${id}\`, { method: 'DELETE' }); showNotification('IP源已删除', 'success'); await refreshIpSources(); } catch(e) { showNotification(\`删除失败: <code>\${esc(e.message)}</code>\`, 'error'); } }
-    async function refreshIpSources() { try { currentIpSources = await apiFetch('/api/ip_sources'); renderIpSourceList(); } catch (e) { showNotification(\`更新IP源列表失败: <code>\${e.message}</code>\`, 'error'); } }
+    window.deleteIpSource = async (id) => { if (!confirm('确定要删除这个IP源吗？')) return; try { await apiFetch(\`/api/ip_sources/\${id}\`, { method: 'DELETE' }); showNotification('IP源已删除', 'success'); await refreshIpSources(); } catch(e) { showNotification(\`删除失败: \${e.message}\`, 'error'); } }
+    async function refreshIpSources() { try { currentIpSources = await apiFetch('/api/ip_sources'); renderIpSourceList(); } catch (e) { showNotification(\`更新IP源列表失败: \${e.message}\`, 'error'); } }
 
   async function handleStreamingRequest(url, btn, logOutputElem) {
       const allButtons = document.querySelectorAll('button'); allButtons.forEach(b => b.disabled = true); if (btn) btn.setAttribute('aria-busy', 'true'); // 进度只由日志面板呈现，按钮只禁用不改文案
@@ -759,12 +760,24 @@ function getDashboardScript(domains, ipSources, settings) {
           if (!response.ok || !response.body) throw new Error(\`服务器错误: \${response.status}\`);
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
+          let sseBuffer = '';
           while (true) {
               const { done, value } = await reader.read();
-              if (done) break;
-              const chunk = decoder.decode(value, { stream: true });
-              const lines = chunk.split('\\n\\n').filter(line => line.startsWith('data: '));
-              for (const line of lines) { logOutputElem.textContent += line.substring(6) + '\\n'; logOutputElem.scrollTop = logOutputElem.scrollHeight; }
+              if (done) {
+                  sseBuffer += decoder.decode();
+                  break;
+              }
+              sseBuffer += decoder.decode(value, { stream: true });
+              let boundary = sseBuffer.indexOf('\\n\\n');
+              while (boundary !== -1) {
+                  const event = sseBuffer.slice(0, boundary);
+                  sseBuffer = sseBuffer.slice(boundary + 2);
+                  if (event.startsWith('data: ')) {
+                      logOutputElem.textContent += event.substring(6) + '\\n';
+                      logOutputElem.scrollTop = logOutputElem.scrollHeight;
+                  }
+                  boundary = sseBuffer.indexOf('\\n\\n');
+              }
           }
           logOutputElem.textContent += '\\n同步完成，正在更新列表。';
           if(logOutputElem.id === 'logOutput') await refreshDomains();
@@ -795,14 +808,25 @@ function getDashboardScript(domains, ipSources, settings) {
       const oldThreeNetworkSource = currentSettings.THREE_NETWORK_SOURCE;
       const newThreeNetworkSource = document.getElementById('threeNetworkSource').value;
 
-      const settingsToSave = {
-          CF_API_TOKEN: document.getElementById('cfToken').value,
-          CF_ZONE_ID: document.getElementById('cfZoneId').value,
-          THREE_NETWORK_SOURCE: newThreeNetworkSource,
-          GITHUB_TOKEN: document.getElementById('githubToken').value,
-          GITHUB_OWNER: document.getElementById('githubOwner').value,
-          GITHUB_REPO: document.getElementById('githubRepo').value
-      };
+      const settingsToSave = { THREE_NETWORK_SOURCE: newThreeNetworkSource };
+      if (document.getElementById('cfClear').checked) {
+          Object.assign(settingsToSave, { CF_API_TOKEN: null, CF_ZONE_ID: null });
+      } else {
+          const cfToken = document.getElementById('cfToken').value.trim();
+          const cfZoneId = document.getElementById('cfZoneId').value.trim();
+          if (cfToken) settingsToSave.CF_API_TOKEN = cfToken;
+          if (cfZoneId) settingsToSave.CF_ZONE_ID = cfZoneId;
+      }
+      if (document.getElementById('githubClear').checked) {
+          Object.assign(settingsToSave, { GITHUB_TOKEN: null, GITHUB_OWNER: null, GITHUB_REPO: null });
+      } else {
+          const githubToken = document.getElementById('githubToken').value.trim();
+          const githubOwner = document.getElementById('githubOwner').value.trim();
+          const githubRepo = document.getElementById('githubRepo').value.trim();
+          if (githubToken) settingsToSave.GITHUB_TOKEN = githubToken;
+          if (githubOwner) settingsToSave.GITHUB_OWNER = githubOwner;
+          if (githubRepo) settingsToSave.GITHUB_REPO = githubRepo;
+      }
       try {
           const result = await apiFetch('/api/settings', { method: 'POST', body: JSON.stringify(settingsToSave) });
           showNotification(result.message || '设置已保存！', 'success');
@@ -815,12 +839,15 @@ function getDashboardScript(domains, ipSources, settings) {
           const newSettings = await apiFetch('/api/settings');
           currentSettings = {...currentSettings, ...newSettings };
           zoneName = currentSettings.zoneName || '';
-          const githubSettingsComplete = currentSettings.GITHUB_TOKEN && currentSettings.GITHUB_OWNER && currentSettings.GITHUB_REPO;
-          document.getElementById('addDomainBtn').disabled = !zoneName;
+          const githubSettingsComplete = currentSettings.GITHUB_CONFIGURED === true;
+          const cfSettingsComplete = currentSettings.CF_CONFIGURED === true && Boolean(zoneName);
+          document.getElementById('addDomainBtn').disabled = !cfSettingsComplete;
           document.getElementById('addIpSourceBtn').disabled = !githubSettingsComplete;
+          document.getElementById('cfClear').checked = false;
+          document.getElementById('githubClear').checked = false;
           await refreshDomains();
       } catch (e) {
-          showNotification(\`保存失败: <br><code>\${e.message}</code>\`, 'error', 10000);
+          showNotification(\`保存失败: \${e.message}\`, 'error', 10000);
       } finally {
           btn.disabled = false; btn.removeAttribute('aria-busy');
       }
