@@ -21,9 +21,11 @@ function runGit(args, options = {}) {
     return result.stdout;
 }
 
+const stagedFiles = new Set(
+    runGit(["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR", "--"]).split("\0").filter(Boolean)
+);
 const listedFiles = runGit(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
-const files = listedFiles.split("\0").filter(Boolean);
-
+const files = stagedFiles.size > 0 ? [...stagedFiles] : listedFiles.split("\0").filter(Boolean);
 const attributes = runGit(["check-attr", "-z", "--stdin", "text"], {
     input: `${files.join("\0")}\0`,
 });
@@ -37,31 +39,25 @@ for (let index = 0; index + 2 < attributeParts.length; index += 3) {
     }
 }
 
-const stagedFiles = new Set(
-    runGit(["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR", "--"]).split("\0").filter(Boolean)
-);
 const failures = [];
 for (const file of textFiles) {
-    const contents = [];
-
-    if (existsSync(file)) {
+    let contents;
+    if (stagedFiles.has(file)) {
+        contents = runGit(["show", `:${file}`], { encoding: null });
+    } else if (existsSync(file)) {
         try {
-            contents.push(readFileSync(file));
+            contents = readFileSync(file);
         } catch (error) {
             console.error(`UTF-8 检查无法读取工作树文件 ${file}：${error instanceof Error ? error.stack : error}`);
             process.exit(2);
         }
+    } else {
+        continue;
     }
 
-    if (stagedFiles.has(file)) {
-        contents.push(runGit(["show", `:${file}`], { encoding: null }));
-    }
-
-    for (const bytes of contents) {
-        const violation = inspectUtf8(bytes);
-        if (violation) {
-            failures.push(`${file}：${violation}`);
-        }
+    const violation = inspectUtf8(contents);
+    if (violation) {
+        failures.push(`${file}：${violation}`);
     }
 }
 

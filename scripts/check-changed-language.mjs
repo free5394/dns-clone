@@ -3,6 +3,7 @@ import { findLanguageViolations } from "./language-check-lib.mjs";
 
 const base = process.env.LANGUAGE_CHECK_BASE;
 const sourcePatterns = ["*.ts", "*.js", "*.mjs", "*.cjs"];
+const WHOLE_FILE_CONTEXT_LINES = 1_000_000;
 
 function runGit(args) {
     const result = spawnSync("git", args, {
@@ -22,20 +23,20 @@ function runGit(args) {
 }
 
 function runGitDiff(diffArgs) {
-    return runGit(["diff", "--unified=3", "--no-color", "--diff-filter=ACMR", ...diffArgs, "--", ...sourcePatterns]);
+    return runGit([
+        "diff",
+        `--unified=${WHOLE_FILE_CONTEXT_LINES}`,
+        "--no-color",
+        "--diff-filter=ACMR",
+        ...diffArgs,
+        "--",
+        ...sourcePatterns,
+    ]);
 }
 
-const stagedFiles = runGit(["diff", "--cached", "--name-only", "-z", "--"]);
-const diffs = base ? [runGitDiff([`${base}...HEAD`])] : stagedFiles ? [runGitDiff(["--cached"])] : [runGitDiff([])];
-const violationsById = new Map();
-for (const diff of diffs) {
-    for (const violation of findLanguageViolations(diff)) {
-        const id = `${violation.file}:${violation.line}:${violation.kind}:${violation.text}`;
-        violationsById.set(id, violation);
-    }
-}
-
-const violations = [...violationsById.values()];
+const hasStagedChanges = runGit(["diff", "--cached", "--name-only", "-z", "--"]).length > 0;
+const diff = base ? runGitDiff([`${base}...HEAD`]) : hasStagedChanges ? runGitDiff(["--cached"]) : runGitDiff([]);
+const violations = findLanguageViolations(diff);
 if (violations.length === 0) {
     console.log("语言检查通过");
     process.exit(0);

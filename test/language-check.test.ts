@@ -104,8 +104,12 @@ describe("语言门禁解析", () => {
         const diff = `diff --git a/test/example.test.ts b/test/example.test.ts
 --- a/test/example.test.ts
 +++ b/test/example.test.ts
-@@ -10,7 +10,7 @@
+@@ -10,6 +10,14 @@
  it(
++
++
++
++
 -    "中文标题",
 +    "English title",
      () => {},
@@ -123,21 +127,39 @@ describe("语言门禁解析", () => {
         expect(findLanguageViolations(diff)).toEqual([
             {
                 file: "test/example.test.ts",
-                line: 11,
+                line: 15,
                 kind: "测试标题",
                 text: '    "English title",',
             },
             {
                 file: "test/example.test.ts",
-                line: 15,
+                line: 19,
                 kind: "日志消息",
                 text: '    "English warning",',
             },
             {
                 file: "test/example.test.ts",
-                line: 18,
+                line: 22,
                 kind: "错误消息",
                 text: '    "English error",',
+            },
+        ]);
+    });
+
+    it("识别任意 console 方法的英文消息", () => {
+        const diff = `diff --git a/src/example.ts b/src/example.ts
+--- a/src/example.ts
++++ b/src/example.ts
+@@ -1,0 +1,1 @@
++console.table("English table");
+`;
+
+        expect(findLanguageViolations(diff)).toEqual([
+            {
+                file: "src/example.ts",
+                line: 1,
+                kind: "日志消息",
+                text: 'console.table("English table");',
             },
         ]);
     });

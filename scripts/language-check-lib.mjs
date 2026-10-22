@@ -15,7 +15,7 @@ const CHECKED_PATTERNS = [
     },
     {
         kind: "日志消息",
-        pattern: /^[ \t]*console\.(?:log|info|warn|error|debug)[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
+        pattern: /^[ \t]*console\.[A-Za-z_$][\w$]*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
     },
 ];
 const HAN_PATTERN = /\p{Script=Han}/u;
