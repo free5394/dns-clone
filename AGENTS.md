@@ -20,6 +20,8 @@ Cloudflare Worker：域名克隆（DNS 同步）+ IP 聚合（推送 GitHub）�
 - 部署配置保持 `keep_vars = true`，Dashboard 手配的 Variables / Bindings 必须保留。
 - 不提交任何 Secrets；不触碰已被忽略的 `.claude/`。
 - 调整表结构时直接修改 `src/db/migrations.ts` 的 `expectedSchemas`，保持幂等 DDL。
+- 设置写入遵守白名单；`null` 显式清除，空字符串不得误清已配置 Secret；密码哈希、Salt 与 Token 不得回传。
+- 批量同步时单条失败不得中断整批；迁移保持 24h 门控并清理超过 1h 的 `login_attempts`。
 - 定时同步轮转必须无论当前批成功或失败都切换到下一类任务，避免单点失败永久卡死。
 - 回复、代码注释、测试标题、项目文档和 commit message 使用简体中文；标识符使用英文，判定细则只查 `CODING_STANDARDS.md`。
 - 不引入新依赖或构建工具，除非任务明确要求；改动只碰请求所需范围。
@@ -30,7 +32,6 @@ Cloudflare Worker：域名克隆（DNS 同步）+ IP 聚合（推送 GitHub）�
 - 钩子未生效时执行 `git config core.hooksPath .githooks` 或 `pnpm install --force`。
 - 测试配置保持 `maxWorkers: 1`，避免 D1 SQLite 多进程锁冲突。
 - `pnpm test` 与本机 `pnpm dev` 同跑时，worker 偶发启动失败；需要确定性结果时先停 dev server。
-- `src/ui/templates.js` 不在 `tsc` 覆盖范围，界面改动必须依赖行为测试与 `pnpm check` 的其余门禁。
 - 标语言的 Markdown 围栏会被 Prettier 重排；需要原样保留时删除语言标注或加 `<!-- prettier-ignore -->`。
 - Prettier 没有 parser 的文件不受行尾门禁覆盖；需要归一索引时使用 `git add --renormalize <path>`。
 

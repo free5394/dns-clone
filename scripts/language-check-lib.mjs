@@ -1,68 +1,83 @@
-const TEST_TITLE_PATTERN =
-    /^\s*(?:it|test|describe)(?:\.(?:each|skip|only|todo|concurrent|fails))?\s*\(\s*(["'`])(.*?)\1/;
-const ERROR_MESSAGE_PATTERN = /^\s*throw\s+new\s+Error\s*\(\s*(["'`])(.*?)\1/;
-const LOG_MESSAGE_PATTERN = /^\s*console\.(?:log|info|warn|error|debug)\s*\(\s*(["'`])(.*?)\1/;
+const CHECKED_PATTERNS = [
+    {
+        kind: "测试标题",
+        pattern:
+            /^[ \t]*(?:it|test|describe)(?:\.(?:each|skip|only|todo|concurrent|fails))?[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/gm,
+    },
+    {
+        kind: "错误消息",
+        pattern: /^[ \t]*throw[ \t]+new[ \t]+Error[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/gm,
+    },
+    {
+        kind: "日志消息",
+        pattern: /^[ \t]*console\.(?:log|info|warn|error|debug)[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/gm,
+    },
+];
 const HAN_PATTERN = /\p{Script=Han}/u;
 
-function isComment(line) {
-    const trimmed = line.trimStart();
-    return trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*");
-}
+function findGroupViolations(file, lines) {
+    const source = lines.map(({ text }) => text).join("\n");
+    const startLine = lines[0].line;
+    const violations = [];
 
-function findViolationKind(line) {
-    if (isComment(line)) {
-        return null;
+    for (const { kind, pattern } of CHECKED_PATTERNS) {
+        for (const match of source.matchAll(pattern)) {
+            if (HAN_PATTERN.test(match[2])) {
+                continue;
+            }
+
+            const lineOffset = source.slice(0, match.index).split("\n").length - 1;
+            violations.push({
+                file,
+                line: startLine + lineOffset,
+                kind,
+                text: lines[lineOffset].text,
+            });
+        }
     }
 
-    const testTitle = TEST_TITLE_PATTERN.exec(line);
-    if (testTitle && !HAN_PATTERN.test(testTitle[2])) {
-        return "测试标题";
-    }
-
-    const errorMessage = ERROR_MESSAGE_PATTERN.exec(line);
-    if (errorMessage && !HAN_PATTERN.test(errorMessage[2])) {
-        return "错误消息";
-    }
-
-    const logMessage = LOG_MESSAGE_PATTERN.exec(line);
-    if (logMessage && !HAN_PATTERN.test(logMessage[2])) {
-        return "日志消息";
-    }
-
-    return null;
+    return violations.sort((left, right) => left.line - right.line);
 }
 
 export function findLanguageViolations(diff) {
     const violations = [];
     let file = "";
     let nextLine = 0;
+    let addedLines = [];
+
+    const flushAddedLines = () => {
+        if (addedLines.length > 0) {
+            violations.push(...findGroupViolations(file, addedLines));
+            addedLines = [];
+        }
+    };
 
     for (const rawLine of diff.split(/\r?\n/)) {
         if (rawLine.startsWith("+++ b/")) {
+            flushAddedLines();
             file = rawLine.slice("+++ b/".length);
             continue;
         }
 
         const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(rawLine);
         if (hunk) {
+            flushAddedLines();
             nextLine = Number(hunk[1]);
             continue;
         }
 
         if (rawLine.startsWith("+") && !rawLine.startsWith("+++")) {
-            const text = rawLine.slice(1);
-            const kind = findViolationKind(text);
-            if (kind) {
-                violations.push({ file, line: nextLine, kind, text });
-            }
+            addedLines.push({ line: nextLine, text: rawLine.slice(1) });
             nextLine += 1;
             continue;
         }
 
+        flushAddedLines();
         if (rawLine.startsWith(" ")) {
             nextLine += 1;
         }
     }
 
+    flushAddedLines();
     return violations;
 }

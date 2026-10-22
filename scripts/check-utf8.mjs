@@ -10,7 +10,11 @@ function runGit(args, options = {}) {
     });
 
     if (result.status !== 0) {
-        console.error(`UTF-8 检查无法调用 Git：${result.stderr || result.error?.message}`);
+        const stderr = Buffer.isBuffer(result.stderr) ? result.stderr.toString("utf8") : result.stderr;
+        const details = [stderr, result.error instanceof Error ? result.error.stack : result.error]
+            .filter(Boolean)
+            .join("\n");
+        console.error(`UTF-8 检查无法调用 Git：\n${details}`);
         process.exit(2);
     }
 
@@ -23,33 +27,41 @@ const files = listedFiles.split("\0").filter(Boolean);
 const attributes = runGit(["check-attr", "-z", "--stdin", "text"], {
     input: `${files.join("\0")}\0`,
 });
-const parts = attributes.split("\0");
+const attributeParts = attributes.split("\0");
 const textFiles = [];
 
-for (let index = 0; index + 2 < parts.length; index += 3) {
-    const [file, , value] = parts.slice(index, index + 3);
+for (let index = 0; index + 2 < attributeParts.length; index += 3) {
+    const [file, , value] = attributeParts.slice(index, index + 3);
     if (file && value !== "unset") {
         textFiles.push(file);
     }
 }
 
+const stagedFiles = new Set(
+    runGit(["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR", "--"]).split("\0").filter(Boolean)
+);
 const failures = [];
 for (const file of textFiles) {
-    if (!existsSync(file)) {
-        continue;
+    const contents = [];
+
+    if (existsSync(file)) {
+        try {
+            contents.push(readFileSync(file));
+        } catch (error) {
+            console.error(`UTF-8 检查无法读取工作树文件 ${file}：${error instanceof Error ? error.stack : error}`);
+            process.exit(2);
+        }
     }
 
-    let bytes;
-    try {
-        bytes = readFileSync(file);
-    } catch (error) {
-        console.error(`UTF-8 检查无法读取 ${file}：${error instanceof Error ? error.stack : error}`);
-        process.exit(2);
+    if (stagedFiles.has(file)) {
+        contents.push(runGit(["show", `:${file}`], { encoding: null }));
     }
 
-    const violation = inspectUtf8(bytes);
-    if (violation) {
-        failures.push(`${file}：${violation}`);
+    for (const bytes of contents) {
+        const violation = inspectUtf8(bytes);
+        if (violation) {
+            failures.push(`${file}：${violation}`);
+        }
     }
 }
 
@@ -58,5 +70,5 @@ if (failures.length === 0) {
     process.exit(0);
 }
 
-console.error(failures.join("\n"));
+console.error([...new Set(failures)].join("\n"));
 process.exit(1);

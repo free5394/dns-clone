@@ -60,4 +60,43 @@ describe("语言门禁解析", () => {
             },
         ]);
     });
+
+    it("识别跨行的测试标题、日志与错误消息", () => {
+        const diff = `diff --git a/test/example.test.ts b/test/example.test.ts
+--- a/test/example.test.ts
++++ b/test/example.test.ts
+@@ -10,0 +10,9 @@
++it(
++    "English title",
++    () => {},
++);
++console.warn(
++    "English warning",
++);
++throw new Error(
++    "English error",
++);
+`;
+
+        expect(findLanguageViolations(diff)).toEqual([
+            {
+                file: "test/example.test.ts",
+                line: 10,
+                kind: "测试标题",
+                text: "it(",
+            },
+            {
+                file: "test/example.test.ts",
+                line: 14,
+                kind: "日志消息",
+                text: "console.warn(",
+            },
+            {
+                file: "test/example.test.ts",
+                line: 17,
+                kind: "错误消息",
+                text: "throw new Error(",
+            },
+        ]);
+    });
 });
