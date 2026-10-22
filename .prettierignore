@@ -1,10 +1,3 @@
-dist/
-coverage/
-.wrangler/
-.scratch/
-.archify/
-.claude/
-.e2e-run/
-node_modules/
-worker-configuration.d.ts
+# Prettier 默认读根 .gitignore，dist/、node_modules/、.wrangler/ 与本地工具目录都在那里，
+# 不在这里重抄一份（两份清单会漂）。只留一条 .gitignore 管不到的：
 pnpm-lock.yaml
