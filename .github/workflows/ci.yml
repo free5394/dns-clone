@@ -52,6 +52,10 @@ jobs:
                   LANGUAGE_CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
               run: pnpm check:language
 
+            # 检查纳入版本控制或待提交的全部文本文件，阻止 BOM、非法字节与替换符。
+            - name: UTF-8 检查
+              run: pnpm check:utf8
+
             # oxlint（Rust 实现），约 0.4 秒
             # 用 oxlint 而非 ESLint：本项目 TS 7 是 Go 原生端口，不暴露 JS 编译器 API，
             # typescript-eslint 在模块加载时直接抛错退出，无法使用。
