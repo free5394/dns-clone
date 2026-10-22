@@ -2,25 +2,113 @@ const CHECKED_PATTERNS = [
     {
         kind: "测试标题",
         pattern:
-            /^[ \t]*(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails))?[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
+            /\b(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails))*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
     },
     {
         kind: "测试标题",
         pattern:
-            /^[ \t]*(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails))?\.each(?:<[^>\r\n]*>)?[ \t]*(?:\([^()\r\n]*(?:\([^()\r\n]*\)[^()\r\n]*)*\)|`[^`\r\n]*`)[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
+            /\b(?:it|test|describe)\.each(?:<[^>\r\n]*>)?[ \t]*(?:\([^()\r\n]*(?:\([^()\r\n]*\)[^()\r\n]*)*\)|`[^`\r\n]*`)[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
     },
     {
         kind: "错误消息",
-        pattern:
-            /^[ \t]*(?:if[ \t]*\([^\r\n]*\)[ \t]*\{?[ \t]*)?throw[ \t]+new[ \t]+Error[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
+        pattern: /\bthrow[ \t]+new[ \t]+Error[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
     },
     {
         kind: "日志消息",
-        pattern:
-            /^[ \t]*(?:if[ \t]*\([^\r\n]*\)[ \t]*\{?[ \t]*)?console\.[A-Za-z_$][\w$]*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
+        pattern: /\bconsole\.[A-Za-z_$][\w$]*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
     },
 ];
 const HAN_PATTERN = /\p{Script=Han}/u;
+
+function maskRange(characters, start, end) {
+    for (let index = start; index < end; index += 1) {
+        if (characters[index] !== "\n" && characters[index] !== "\r") {
+            characters[index] = " ";
+        }
+    }
+}
+
+function findQuotedEnd(source, start, quote) {
+    for (let index = start + 1; index < source.length; index += 1) {
+        if (source[index] === "\\") {
+            index += 1;
+        } else if (source[index] === quote) {
+            return index + 1;
+        }
+    }
+    return source.length;
+}
+
+function isRegexStart(source, start) {
+    let index = start - 1;
+    while (index >= 0 && /\s/.test(source[index])) {
+        index -= 1;
+    }
+    if (index < 0 || "([{:;,=!?&|+-*%^~<>".includes(source[index])) {
+        return true;
+    }
+    return /\b(?:case|in|of|return|throw|typeof)\s*$/.test(source.slice(Math.max(0, index - 10), index + 1));
+}
+
+function findRegexEnd(source, start) {
+    let inCharacterClass = false;
+    for (let index = start + 1; index < source.length; index += 1) {
+        if (source[index] === "\\") {
+            index += 1;
+        } else if (source[index] === "[") {
+            inCharacterClass = true;
+        } else if (source[index] === "]") {
+            inCharacterClass = false;
+        } else if (source[index] === "/" && !inCharacterClass) {
+            index += 1;
+            while (index < source.length && /[a-z]/i.test(source[index])) {
+                index += 1;
+            }
+            return index;
+        }
+    }
+    return source.length;
+}
+
+function maskNonCode(source) {
+    const characters = source.split("");
+
+    for (let index = 0; index < source.length;) {
+        if (source[index] === "/" && source[index + 1] === "/") {
+            const end = source.indexOf("\n", index + 2);
+            const next = end === -1 ? source.length : end;
+            maskRange(characters, index, next);
+            index = next;
+            continue;
+        }
+
+        if (source[index] === "/" && source[index + 1] === "*") {
+            const end = source.indexOf("*/", index + 2);
+            const next = end === -1 ? source.length : end + 2;
+            maskRange(characters, index, next);
+            index = next;
+            continue;
+        }
+
+        if (source[index] === "'" || source[index] === '"' || source[index] === "`") {
+            const next = findQuotedEnd(source, index, source[index]);
+            maskRange(characters, index + 1, next - 1);
+            index = next;
+            continue;
+        }
+
+        if (source[index] === "/" && isRegexStart(source, index)) {
+            const next = findRegexEnd(source, index);
+            maskRange(characters, index, next);
+            index = next;
+            continue;
+        }
+
+        index += 1;
+    }
+
+    return characters.join("");
+}
 
 function getLineNumber(source, offset, startLine) {
     return startLine + source.slice(0, offset).split("\n").length - 1;
@@ -28,18 +116,19 @@ function getLineNumber(source, offset, startLine) {
 
 function findHunkViolations(file, lines, addedLineNumbers) {
     const source = lines.map(({ text }) => text).join("\n");
+    const maskedSource = maskNonCode(source);
     const startLine = lines[0].line;
     const violations = [];
 
     for (const { kind, pattern } of CHECKED_PATTERNS) {
-        for (const match of source.matchAll(pattern)) {
-            if (HAN_PATTERN.test(match[2])) {
+        for (const match of maskedSource.matchAll(pattern)) {
+            const [messageStart, messageEnd] = match.indices[2];
+            if (HAN_PATTERN.test(source.slice(messageStart, messageEnd))) {
                 continue;
             }
 
-            const [messageStart, messageEnd] = match.indices[2];
-            const firstLine = getLineNumber(source, messageStart, startLine);
-            const lastLine = getLineNumber(source, Math.max(messageStart, messageEnd - 1), startLine);
+            const firstLine = getLineNumber(maskedSource, messageStart, startLine);
+            const lastLine = getLineNumber(maskedSource, Math.max(messageStart, messageEnd - 1), startLine);
             const changedLines = [];
             for (let line = firstLine; line <= lastLine; line += 1) {
                 if (addedLineNumbers.has(line)) {

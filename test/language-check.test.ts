@@ -164,17 +164,21 @@ describe("语言门禁解析", () => {
         ]);
     });
 
-    it("识别行内条件语句后的英文日志与错误消息", () => {
+    it("识别任意代码位置的英文日志与错误消息", () => {
         const diff = `diff --git a/src/example.ts b/src/example.ts
 --- a/src/example.ts
 +++ b/src/example.ts
-@@ -1,0 +1,6 @@
+@@ -1,0 +1,10 @@
 +if (ready) console.warn("English warning");
 +if (ready) throw new Error("English error");
 +if (ready) { console.warn("English warning with brace"); }
 +if (ready) { throw new Error("English error with brace"); }
++const warn = () => console.warn("English arrow");
++void console.error("English void");
++foo(); console.log("English same line");
 +const warning = "console.warn('English')";
 +const error = "throw new Error('English')";
++const pattern = /console\\.warn\\("English"\\)/;
 `;
 
         expect(findLanguageViolations(diff)).toEqual([
@@ -201,6 +205,24 @@ describe("语言门禁解析", () => {
                 line: 4,
                 kind: "错误消息",
                 text: 'if (ready) { throw new Error("English error with brace"); }',
+            },
+            {
+                file: "src/example.ts",
+                line: 5,
+                kind: "日志消息",
+                text: 'const warn = () => console.warn("English arrow");',
+            },
+            {
+                file: "src/example.ts",
+                line: 6,
+                kind: "日志消息",
+                text: 'void console.error("English void");',
+            },
+            {
+                file: "src/example.ts",
+                line: 7,
+                kind: "日志消息",
+                text: 'foo(); console.log("English same line");',
             },
         ]);
     });
