@@ -15,11 +15,13 @@ const CHECKED_PATTERNS = [
     },
 ];
 const HAN_PATTERN = /\p{Script=Han}/u;
+const ENGLISH_LETTER_PATTERN = /[A-Za-z]/;
 const CONSOLE_CALL_PATTERN = /\bconsole\??\.[A-Za-z_$][\w$]*[ \t]*\(/dg;
 const INLINE_SCRIPT_PATTERN = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/dgi;
 const JAVASCRIPT_PREFIX_PATTERN =
     /^(?:["']use strict["'];?\s*)?(?:async\s+function|function|const|let|var|import|export|class|if|for|while|switch|return|throw|console|document|window|\(function|\(\(\)\s*=>)/;
 const DIFF_PREFIX_PATTERN = /^diff --git /;
+export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 function maskRange(characters, start, end) {
     for (let index = start; index < end; index += 1) {
@@ -212,10 +214,11 @@ function findHunkViolations(file, lines, addedLineNumbers) {
     const violations = [];
 
     const pushViolation = (kind, messageStart, messageEnd) => {
-        if (!source.slice(messageStart, messageEnd).trim()) {
+        const message = source.slice(messageStart, messageEnd);
+        if (!ENGLISH_LETTER_PATTERN.test(message)) {
             return;
         }
-        if (HAN_PATTERN.test(source.slice(messageStart, messageEnd))) {
+        if (HAN_PATTERN.test(message)) {
             return;
         }
 
@@ -296,6 +299,7 @@ export function findLanguageViolations(diff) {
     let nextLine = 0;
     let hunkLines = [];
     let addedLineNumbers = new Set();
+    let inFileHeader = false;
 
     const flushHunk = () => {
         if (hunkLines.length > 0) {
@@ -306,20 +310,31 @@ export function findLanguageViolations(diff) {
     };
 
     for (const rawLine of diff.split(/\r?\n/)) {
-        if (rawLine.startsWith("+++ b/")) {
+        if (DIFF_PREFIX_PATTERN.test(rawLine)) {
             flushHunk();
+            inFileHeader = true;
+            continue;
+        }
+
+        if (inFileHeader && rawLine.startsWith("--- ")) {
+            continue;
+        }
+
+        if (inFileHeader && rawLine.startsWith("+++ b/")) {
             file = rawLine.slice("+++ b/".length);
+            inFileHeader = false;
             continue;
         }
 
         const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(rawLine);
         if (hunk) {
             flushHunk();
+            inFileHeader = false;
             nextLine = Number(hunk[1]);
             continue;
         }
 
-        if (rawLine.startsWith("+") && !rawLine.startsWith("+++")) {
+        if (rawLine.startsWith("+")) {
             hunkLines.push({ line: nextLine, text: rawLine.slice(1) });
             addedLineNumbers.add(nextLine);
             nextLine += 1;
@@ -334,4 +349,18 @@ export function findLanguageViolations(diff) {
 
     flushHunk();
     return violations;
+}
+
+export function resolveLanguageCheckBase(requestedBase, firstCommit, readParents) {
+    if (!requestedBase) {
+        return "";
+    }
+    if (requestedBase !== EMPTY_TREE && !/^0{40}$/.test(requestedBase)) {
+        return requestedBase;
+    }
+
+    const parent = readParents(firstCommit || "HEAD")
+        .trim()
+        .split(" ")[1];
+    return parent || EMPTY_TREE;
 }

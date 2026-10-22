@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { findLanguageViolations } from "./language-check-lib.mjs";
+import { EMPTY_TREE, findLanguageViolations, resolveLanguageCheckBase } from "./language-check-lib.mjs";
 
 const requestedBase = process.env.LANGUAGE_CHECK_BASE;
-const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const firstCommit = process.env.LANGUAGE_CHECK_FIRST_COMMIT;
 const sourcePatterns = ["*.ts", "*.js", "*.mjs", "*.cjs"];
 const WHOLE_FILE_CONTEXT_LINES = 1_000_000;
 
@@ -35,18 +35,9 @@ function runGitDiff(diffArgs) {
     ]);
 }
 
-function resolveBase() {
-    if (!requestedBase) {
-        return "";
-    }
-    if (requestedBase !== EMPTY_TREE && !/^0{40}$/.test(requestedBase)) {
-        return requestedBase;
-    }
-    const parent = runGit(["rev-list", "--parents", "-n", "1", "HEAD"]).trim().split(" ")[1];
-    return parent || EMPTY_TREE;
-}
-
-const base = resolveBase();
+const base = resolveLanguageCheckBase(requestedBase, firstCommit, (commit) =>
+    runGit(["rev-list", "--parents", "-n", "1", commit])
+);
 const hasStagedChanges = runGit(["diff", "--cached", "--name-only", "-z", "--"]).length > 0;
 const diff = base
     ? runGitDiff(base === EMPTY_TREE ? [base, "HEAD"] : [`${base}...HEAD`])

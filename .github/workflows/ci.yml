@@ -50,9 +50,11 @@ jobs:
             - name: 语言检查
               env:
                   LANGUAGE_CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+                  # RETRO-1 首次 push 的 before 全零，传入最早提交以覆盖同批全部提交。
+                  LANGUAGE_CHECK_FIRST_COMMIT: ${{ github.event.commits[0].id }}
               run: pnpm check:language
 
-            # RETRO-4 检查纳入版本控制或待提交的全部文本文件，阻止 BOM、非法字节与替换符。
+            # RETRO-4 检查纳入版本控制或待提交的全部文本文件，阻止 BOM 与非法字节。
             - name: UTF-8 检查
               run: pnpm check:utf8
 

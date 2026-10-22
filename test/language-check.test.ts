@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findLanguageViolations } from "../scripts/language-check-lib.mjs";
+import { findLanguageViolations, resolveLanguageCheckBase } from "../scripts/language-check-lib.mjs";
 
 describe("语言门禁解析", () => {
     it("只报告新增行中的英文测试标题与错误消息", () => {
@@ -396,13 +396,46 @@ describe("语言门禁解析", () => {
             "diff --git a/src/example.ts b/src/example.ts",
             "--- a/src/example.ts",
             "+++ b/src/example.ts",
-            "@@ -1,0 +1,2 @@",
+            "@@ -1,0 +1,3 @@",
             "+console.log(`请求失败 ${details}`);",
             "+console.log(`${details} 请求失败`);",
+            "+console.error(`${file}：${details}`);",
             "",
         ].join("\n");
 
         expect(findLanguageViolations(diff)).toEqual([]);
+    });
+
+    it("识别以双加号开头的新增源码行", () => {
+        const diff = [
+            "diff --git a/src/example.ts b/src/example.ts",
+            "--- a/src/example.ts",
+            "+++ b/src/example.ts",
+            "@@ -1,0 +1,2 @@",
+            '+++counter; console.warn("English warning");',
+            "+const next = counter + 1;",
+            "",
+        ].join("\n");
+
+        expect(findLanguageViolations(diff)).toEqual([
+            {
+                file: "src/example.ts",
+                line: 1,
+                kind: "日志消息",
+                text: '++counter; console.warn("English warning");',
+            },
+        ]);
+    });
+
+    it("首次推送多个提交时从最早提交前开始检查", () => {
+        const calls = [];
+        const base = resolveLanguageCheckBase("0".repeat(40), "最早提交", (commit) => {
+            calls.push(commit);
+            return "最早提交 父提交";
+        });
+
+        expect(base).toBe("父提交");
+        expect(calls).toEqual(["最早提交"]);
     });
 
     it("识别 HTML 模板内联脚本中的英文日志与错误消息", () => {
