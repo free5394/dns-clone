@@ -375,7 +375,7 @@ describe("POST /api/domains (Task 1.1 API/UI 契约对齐)", () => {
         }
     });
 
-    it("accepts empty target_domain_prefix as root domain", async () => {
+    it("空目标前缀按根域名处理", async () => {
         const cookie = await loginAndGetCookie();
         await seedCfSettings();
         const res = await SELF.fetch("https://example.com/api/domains", {
@@ -538,7 +538,7 @@ describe("POST /api/settings (Task 2.6 白名单 + 配对验证)", () => {
         vi.stubGlobal(
             "fetch",
             vi.fn(async () => {
-                throw new Error("dashboard must not fetch Cloudflare");
+                throw new Error("仪表盘不应请求 Cloudflare");
             })
         );
         const read = await SELF.fetch("https://example.com/api/settings", { headers: { Cookie: cookie } });
@@ -559,6 +559,7 @@ describe("POST /api/settings (Task 2.6 白名单 + 配对验证)", () => {
             { source_domain: "origin.example.com", target_domain_prefix: "clone", ttl: 30 },
             { source_domain: "origin.example.com", target_domain_prefix: "clone", ttl: 1.5 },
             { source_domain: "origin.example.com", target_domain_prefix: "clone", ttl: true },
+            { source_domain: "origin.example.com", target_domain_prefix: "clone", ttl: null },
         ];
 
         const before = (await env.WUYA.prepare("SELECT COUNT(*) as n FROM domains").first()) as { n: number };
@@ -609,6 +610,22 @@ describe("POST /api/settings (Task 2.6 白名单 + 配对验证)", () => {
         });
         expect(res.status).toBe(200);
         // 字段应被删除，不应序列化为字符串 "null"
+        const row = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'THREE_NETWORK_SOURCE'").first();
+        expect(row).toBeNull();
+    });
+
+    it("非 Secret 字段的空字符串仍按清除处理", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('THREE_NETWORK_SOURCE', 'wetest.vip') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run();
+
+        const res = await SELF.fetch("https://example.com/api/settings", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({ THREE_NETWORK_SOURCE: "" }),
+        });
+        expect(res.status).toBe(200);
         const row = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'THREE_NETWORK_SOURCE'").first();
         expect(row).toBeNull();
     });

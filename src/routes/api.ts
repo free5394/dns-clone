@@ -208,16 +208,21 @@ async function apiSetSettings(request: Request, db: D1Database): Promise<Respons
     if (rawBody === null || typeof rawBody !== "object") return BAD_JSON();
     const rawSettings = rawBody;
 
-    // 白名单：仅允许写入已知 key；空字符串表示保持不变，显式 null 表示清除。
+    // 白名单：Secret Token 的空字符串表示保持不变，其它字段沿用空串清除语义。
+    const secretSettingKeys = new Set(["CF_API_TOKEN", "GITHUB_TOKEN"]);
     const settings: Record<string, string | null> = {};
     for (const [key, value] of Object.entries(rawSettings)) {
         if (!ALLOWED_SETTINGS_KEYS.has(key)) continue;
         if (value === null || value === undefined) {
             settings[key] = null;
         } else {
-            const text = typeof value === "string" ? value.trim() : String(value);
-            if (text === "") continue;
-            settings[key] = text;
+            const text = (typeof value === "string" ? value : String(value)).trim();
+            if (text === "") {
+                if (secretSettingKeys.has(key)) continue;
+                settings[key] = null;
+            } else {
+                settings[key] = text;
+            }
         }
         // I5: BATCH_SIZE 必须是 1..100 的整数——负数在 SQLite LIMIT 中等于无上限
         if (key === "BATCH_SIZE") {
@@ -303,7 +308,7 @@ async function handleDomainMutation(
         }
     }
     const prefix = String(target_domain_prefix ?? "").trim() || "@";
-    const effectiveTtl = ttl ?? 60;
+    const effectiveTtl = ttl === undefined ? 60 : ttl;
     const hostnamePattern =
         /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
     const labelPattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;

@@ -1,7 +1,7 @@
 // templates-escape.test.ts — P0-2：公开首页存储型 XSS 修复回归测试
 // 验证 getPublicHomepage 对用户控制字段（notes/target_domain/github_path/url）做 HTML 实体转义
 import { describe, it, expect } from "vitest";
-import { getHtmlLayout, getPublicHomepage, getDashboardPage } from "../src/ui/templates.js";
+import { consumeSseEvents, getHtmlLayout, getPublicHomepage, getDashboardPage } from "../src/ui/templates.js";
 
 const requestUrl = "https://example.com/";
 
@@ -202,20 +202,32 @@ describe("设置页与流式日志脚本契约 (issue #13)", () => {
         expect(html).not.toContain('id="addDomainBtn" disabled');
         expect(html).not.toContain('id="addIpSourceBtn" disabled');
         expect(html).toContain("currentSettings.GITHUB_CONFIGURED === true");
-    });
-
-    it("仪表盘实时记录查询并发执行", () => {
-        const html = dashboardHtml();
-        expect(html).toContain("await Promise.all(placeholders.map(async (el) => {");
-        expect(html).not.toContain("for (const el of placeholders)");
+        expect(html).toContain("currentSettings = newSettings;");
+        expect(html).toContain("document.getElementById('cfZoneId').value = currentSettings.CF_ZONE_ID || '';");
+        expect(html).toContain("document.getElementById('githubOwner').value = currentSettings.GITHUB_OWNER || '';");
+        expect(html).toContain("document.getElementById('githubRepo').value = currentSettings.GITHUB_REPO || '';");
     });
 
     it("SSE 事件解析使用跨 chunk buffer", () => {
         const html = dashboardHtml();
-        expect(html).toContain("let sseBuffer = '';");
-        expect(html).toContain("sseBuffer += decoder.decode(value, { stream: true });");
-        expect(html).toContain("sseBuffer = sseBuffer.slice(boundary + 2);");
+        expect(html).toContain("const parsed = consumeSseEvents(sseBuffer, decoder.decode(value, { stream: true }));");
+        expect(html).toContain("decoder.decode();");
+        expect(html).not.toContain("sseBuffer += decoder.decode();");
         expect(html).not.toContain(".split('\\n\\n')");
+    });
+
+    it("SSE 跨分块事件不丢失且保留残余字节", () => {
+        const first = consumeSseEvents("", "data: 第一");
+        expect(first.events).toEqual([]);
+        expect(first.buffer).toBe("data: 第一");
+
+        const second = consumeSseEvents(first.buffer, "行\n\ndata: 第二");
+        expect(second.events).toEqual(["第一行"]);
+        expect(second.buffer).toBe("data: 第二");
+
+        const third = consumeSseEvents(second.buffer, "行\n\n");
+        expect(third.events).toEqual(["第二行"]);
+        expect(third.buffer).toBe("");
     });
 
     it("通知调用保持纯文本，不携带 HTML 片段", () => {

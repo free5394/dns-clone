@@ -608,7 +608,7 @@ describe("updateCloudflareDns 编码与全量分页", () => {
                 );
             }
             if (init?.method === "DELETE") return new Response(JSON.stringify({ success: true }), { status: 200 });
-            throw new Error("unexpected request: " + String(input));
+            throw new Error("意外的请求：" + String(input));
         });
         vi.stubGlobal("fetch", fetchMock);
 

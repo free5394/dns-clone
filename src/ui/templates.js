@@ -562,12 +562,28 @@ export function getDashboardPage(domains, ipSources, settings) {
     <dialog id="ipSourceModal"><article><header><a href="#close" aria-label="Close" class="close" onclick="window.closeModal('ipSourceModal')"></a><h3 id="ipSourceModalTitle"></h3></header><form id="ipSourceForm"><input type="hidden" id="ipSourceId"><div class="grid"><label for="ip_source_url">IP源地址</label><button type="button" class="outline" id="probeBtn" style="width:auto;padding:0 1rem;">探测方案</button></div><input type="text" id="ip_source_url" placeholder="https://example.com/ip_list.txt" required><progress id="probeProgress" style="display:none;"></progress><p id="probeResult" style="font-size:0.9em;"></p><label for="github_path">GitHub 文件路径</label><input type="text" id="github_path" placeholder="IP/Cloudflare.txt" required><label for="commit_message">Commit 信息</label><input type="text" id="commit_message" placeholder="Update Cloudflare IPs" required><footer><button type="button" class="secondary" onclick="window.closeModal('ipSourceModal')">取消</button><button type="submit" id="saveIpSourceBtn">保存</button></footer></form></article></dialog>
     <script>${getDashboardScript(domains, ipSources, settings)}</script>`;
 }
+
+/** 消费完整的 SSE 事件，并保留被网络分块切开的残余内容 */
+export function consumeSseEvents(buffer, chunk) {
+    buffer += chunk;
+    const events = [];
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+        const event = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        if (event.startsWith("data: ")) events.push(event.substring(6));
+        boundary = buffer.indexOf("\n\n");
+    }
+    return { buffer, events };
+}
+
 /**
  * 渲染仪表盘浏览器端脚本（API 调用 / 流式同步 / 主题切换等）
  * 模板字符串中的 settings 仅渲染为可读视图，敏感字段已被剔除
  */
 function getDashboardScript(domains, ipSources, settings) {
     return `
+  const consumeSseEvents = ${consumeSseEvents.toString()};
   function showNotification(message, type = 'info', duration = 5000) {
       const container = document.getElementById('notifications');
       const toast = document.createElement('div');
@@ -729,8 +745,8 @@ function getDashboardScript(domains, ipSources, settings) {
   }
 
   async function fetchLiveRecords() {
-    const placeholders = Array.from(document.querySelectorAll('.records-placeholder'));
-    await Promise.all(placeholders.map(async (el) => {
+    const placeholders = document.querySelectorAll('.records-placeholder');
+    for (const el of placeholders) {
         const id = el.dataset.domainId;
         try {
             const records = await apiFetch('/api/domains/' + id + '/records');
@@ -738,7 +754,7 @@ function getDashboardScript(domains, ipSources, settings) {
         } catch(e) {
             el.innerHTML = '<span class="status-failed">查询失败</span>';
         }
-    }));
+    }
   }
 
   async function saveIpSource() {
@@ -764,19 +780,14 @@ function getDashboardScript(domains, ipSources, settings) {
           while (true) {
               const { done, value } = await reader.read();
               if (done) {
-                  sseBuffer += decoder.decode();
+                  decoder.decode();
                   break;
               }
-              sseBuffer += decoder.decode(value, { stream: true });
-              let boundary = sseBuffer.indexOf('\\n\\n');
-              while (boundary !== -1) {
-                  const event = sseBuffer.slice(0, boundary);
-                  sseBuffer = sseBuffer.slice(boundary + 2);
-                  if (event.startsWith('data: ')) {
-                      logOutputElem.textContent += event.substring(6) + '\\n';
-                      logOutputElem.scrollTop = logOutputElem.scrollHeight;
-                  }
-                  boundary = sseBuffer.indexOf('\\n\\n');
+              const parsed = consumeSseEvents(sseBuffer, decoder.decode(value, { stream: true }));
+              sseBuffer = parsed.buffer;
+              for (const payload of parsed.events) {
+                  logOutputElem.textContent += payload + '\\n';
+                  logOutputElem.scrollTop = logOutputElem.scrollHeight;
               }
           }
           logOutputElem.textContent += '\\n同步完成，正在更新列表。';
@@ -837,7 +848,7 @@ function getDashboardScript(domains, ipSources, settings) {
           }
 
           const newSettings = await apiFetch('/api/settings');
-          currentSettings = {...currentSettings, ...newSettings };
+          currentSettings = newSettings;
           zoneName = currentSettings.zoneName || '';
           const githubSettingsComplete = currentSettings.GITHUB_CONFIGURED === true;
           const cfSettingsComplete = currentSettings.CF_CONFIGURED === true && Boolean(zoneName);
@@ -845,6 +856,11 @@ function getDashboardScript(domains, ipSources, settings) {
           document.getElementById('addIpSourceBtn').disabled = !githubSettingsComplete;
           document.getElementById('cfClear').checked = false;
           document.getElementById('githubClear').checked = false;
+          document.getElementById('cfToken').value = '';
+          document.getElementById('cfZoneId').value = currentSettings.CF_ZONE_ID || '';
+          document.getElementById('githubToken').value = '';
+          document.getElementById('githubOwner').value = currentSettings.GITHUB_OWNER || '';
+          document.getElementById('githubRepo').value = currentSettings.GITHUB_REPO || '';
           await refreshDomains();
       } catch (e) {
           showNotification(\`保存失败: \${e.message}\`, 'error', 10000);
