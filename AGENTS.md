@@ -8,9 +8,9 @@ Cloudflare Worker 项目：域名克隆（DNS 同步） + IP 聚合（推送到 
 - **唯一入口**：`src/index.ts`，导出 `fetch` 与 `scheduled` 两个 handler，组装 8 个模块。
 - **唯一绑定**：`env.WUYA` → D1 数据库。**变量名必须为 `WUYA`（全大写）**，参见 `src/index.ts:12`。缺失会返回 `500`。
 - **三个路由分支**（`src/index.ts:22-30`）：
-  - `/api/*` → `handleApiRequest`（`src/routes/api.ts`）
-  - 其它非根路径（除 `/login`、`/admin`）→ `handleGitHubFileProxy`（订阅器直读，`src/routes/github-proxy.ts`）
-  - `/`、`/login`、`/admin` → `handleUiRequest`（`src/routes/ui.ts`）
+    - `/api/*` → `handleApiRequest`（`src/routes/api.ts`）
+    - 其它非根路径（除 `/login`、`/admin`）→ `handleGitHubFileProxy`（订阅器直读，`src/routes/github-proxy.ts`）
+    - `/`、`/login`、`/admin` → `handleUiRequest`（`src/routes/ui.ts`）
 - **定时任务**：Cron `* * * * *`（每分钟）触发 `scheduled` handler，通过 `settings.next_sync_task` 在 `domains` ↔ `ip_sources` 两种批任务间**轮转**，每批处理 `BATCH_SIZE` 条（默认 10，由 `settings.BATCH_SIZE` 配置，非数值回退到 10）且失败优先（`src/sync/domains.ts:62-80`、`src/sync/ip-sources.ts:57-76`）。**无论同步成功或失败都翻转 `next_sync_task`**，避免单点失败永久卡死。
 - **数据表**（5 张）：`settings` / `domains` / `ip_sources` / `sessions` / `login_attempts`，由 `initializeAndMigrateDatabase` 幂等创建，24h 门控（`last_migrated_at`）。
 
@@ -22,6 +22,7 @@ Cloudflare Worker 项目：域名克隆（DNS 同步） + IP 聚合（推送到 
 - 测试用 D1 迁移在 `src/db/migrations/`（`.sql` 文件），由 `vitest.config.ts` 通过 `readD1Migrations` 加载。
 - **测试串行约束**：`maxWorkers: 1` + `fileParallelism: true`，避免 D1 SQLite 多进程锁冲突（`vitest.config.ts:21-22`）。
 - **测试与 dev server 共存**：`pnpm test` 与本机 `pnpm dev` 同时跑时，`cloudflare-pool` 的 worker 偶发起不来（`Failed to start cloudflare-pool worker for test files …`，结果是「1 error」而不是断言失败），重跑即绿；要确定性就先停 `pnpm dev`。
+- **行尾归一化**：提交内容统一 LF；`git ls-files --eol` 可查工作树里的 `w/crlf`，只对点名的路径转换（`pnpm format` 写盘即归一为 LF）。有未提交改动时**不要**跑整树 `git restore .` / `git checkout .`——会把改动一起回滚。
 - `vitest.config.ts` 用 `defineProject`（multi-project），**不是** `defineConfig`。
 - **类型配置**：`tsconfig.json` 排除了 `src/ui/templates.js`（不参与 tsc 检查，走纯 JS 路径）。
 
