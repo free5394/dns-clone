@@ -90,8 +90,10 @@ pnpm deploy
 ├── .prettierrc.json      # Prettier 配置（与 .editorconfig 对齐）
 ├── .oxlintrc.json        # oxlint 配置（correctness=error，suspicious/perf=warn）
 ├── .gitignore            # 排除 .claude/、*.env、*.vars、.wrangler/、dist/、coverage/、worker-configuration.d.ts
-├── .github/workflows/
-│   └── ci.yml            # push main / PR 上跑 typecheck + lint + format:check + test
+├── .github/
+│   ├── dependabot.yml    # 每周检查 github-actions 版本更新（只覆盖 actions 生态）
+│   └── workflows/
+│       └── ci.yml            # push main / PR 上跑 typecheck + lint + format:check + test
 ├── docs/
 │   ├── ui-redesign.md    # 界面诊断 + 目标设计系统 + 实施记录 + §11 已知陷阱（动 UI 前先读）
 │   ├── architecture-review.md  # 架构深化候选 C1–C6 清单（wayfinder chart 的种子）
