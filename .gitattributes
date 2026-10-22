@@ -1,7 +1,9 @@
 # Common settings that generally should always be used with your language specific settings
 
-# Auto detect text files and perform LF normalization
-*          text=auto
+# 提交内容默认 LF（显式 eol=crlf 的例外见下方）。未声明 eol 时，Windows 上
+# core.autocrlf=true 会把文件检出成 CRLF，而格式化门禁按 lf 判行尾，CRLF 检出必然判红。
+# Prettier 的 endOfLine 与 .editorconfig 的 end_of_line 也都是 lf。
+*          text=auto eol=lf
 
 #
 # The above will handle all files NOT found below
