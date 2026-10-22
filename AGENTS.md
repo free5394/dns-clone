@@ -27,9 +27,6 @@ Cloudflare Worker：域名克隆（DNS 同步）+ IP 聚合（推送 GitHub）�
 
 ## 验证
 
-- `pnpm check` 是提交前门禁，`pnpm test` 是完整测试入口；CI 还跑覆盖率。
-- 钩子未生效时执行 `git config core.hooksPath .githooks` 或 `pnpm install --force`。
-- 测试配置保持 `maxWorkers: 1`，避免 D1 SQLite 多进程锁冲突。
 - `pnpm test` 与本机 `pnpm dev` 同跑时，worker 偶发启动失败；需要确定性结果时先停 dev server。
 - 标语言的 Markdown 围栏会被 Prettier 重排；需要原样保留时删除语言标注或加 `<!-- prettier-ignore -->`。
 - Prettier 没有 parser 的文件不受行尾门禁覆盖；需要归一索引时使用 `git add --renormalize <path>`。

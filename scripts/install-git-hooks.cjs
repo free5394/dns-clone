@@ -5,7 +5,7 @@
 // 而 prepare 是零依赖的自动安装路径。
 //
 // 已知限制：pnpm 在 "Already up to date" 时不跑 prepare，所以已有 node_modules 的老 clone
-// 需要 `pnpm install --force` 或手工执行下面的 git config 命令。这条恢复命令写在 AGENTS.md。
+// 需要 `pnpm install --force` 或手工执行下面的 git config 命令。
 
 const fs = require("node:fs");
 const path = require("node:path");

@@ -21,12 +21,14 @@ function runGit(args, options = {}) {
     return result.stdout;
 }
 
+const stagedChanges = runGit(["diff", "--cached", "--name-only", "-z", "--"]).split("\0").filter(Boolean);
+const hasStagedChanges = stagedChanges.length > 0;
 const stagedFiles = new Set(
     runGit(["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR", "--"]).split("\0").filter(Boolean)
 );
 const listedFiles = runGit(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
-const files = stagedFiles.size > 0 ? [...stagedFiles] : listedFiles.split("\0").filter(Boolean);
-const attributes = runGit(["check-attr", "-z", ...(stagedFiles.size > 0 ? ["--cached"] : []), "--stdin", "text"], {
+const files = hasStagedChanges ? [...stagedFiles] : listedFiles.split("\0").filter(Boolean);
+const attributes = runGit(["check-attr", "-z", ...(hasStagedChanges ? ["--cached"] : []), "--stdin", "text"], {
     input: `${files.join("\0")}\0`,
 });
 const attributeParts = attributes.split("\0");

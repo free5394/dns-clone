@@ -168,9 +168,11 @@ describe("语言门禁解析", () => {
         const diff = `diff --git a/src/example.ts b/src/example.ts
 --- a/src/example.ts
 +++ b/src/example.ts
-@@ -1,0 +1,4 @@
+@@ -1,0 +1,6 @@
 +if (ready) console.warn("English warning");
 +if (ready) throw new Error("English error");
++if (ready) { console.warn("English warning with brace"); }
++if (ready) { throw new Error("English error with brace"); }
 +const warning = "console.warn('English')";
 +const error = "throw new Error('English')";
 `;
@@ -187,6 +189,18 @@ describe("语言门禁解析", () => {
                 line: 2,
                 kind: "错误消息",
                 text: 'if (ready) throw new Error("English error");',
+            },
+            {
+                file: "src/example.ts",
+                line: 3,
+                kind: "日志消息",
+                text: 'if (ready) { console.warn("English warning with brace"); }',
+            },
+            {
+                file: "src/example.ts",
+                line: 4,
+                kind: "错误消息",
+                text: 'if (ready) { throw new Error("English error with brace"); }',
             },
         ]);
     });
