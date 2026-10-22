@@ -49,7 +49,7 @@ jobs:
             # RETRO-1 只检查本次变更新增的中文档代码，存量英文测试标题不触发告警。
             - name: 语言检查
               env:
-                  LANGUAGE_CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+                  LANGUAGE_CHECK_BASE: ${{ github.event.pull_request.base.sha || (github.event.before != '0000000000000000000000000000000000000000' && github.event.before) || '4b825dc642cb6eb9a060e54bf8d69288fbee4904' }}
               run: pnpm check:language
 
             # RETRO-4 检查纳入版本控制或待提交的全部文本文件，阻止 BOM、非法字节与替换符。

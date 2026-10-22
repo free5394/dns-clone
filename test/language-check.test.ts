@@ -40,9 +40,9 @@ describe("语言门禁解析", () => {
     });
 
     it("忽略注释、删除行与不含中文字符的技术术语标题", () => {
-        const diff = `diff --git a/src/example.ts b/src/example.ts
---- a/src/example.ts
-+++ b/src/example.ts
+        const diff = `diff --git a/test/example.test.ts b/test/example.test.ts
+--- a/test/example.test.ts
++++ b/test/example.test.ts
 @@ -1,1 +1,5 @@
 -it("old English title", () => {});
 +// it("English title", () => {});
@@ -53,7 +53,7 @@ describe("语言门禁解析", () => {
 
         expect(findLanguageViolations(diff)).toEqual([
             {
-                file: "src/example.ts",
+                file: "test/example.test.ts",
                 line: 2,
                 kind: "测试标题",
                 text: 'it("SSE buffer", () => {});',
@@ -168,7 +168,7 @@ describe("语言门禁解析", () => {
         const diff = `diff --git a/src/example.ts b/src/example.ts
 --- a/src/example.ts
 +++ b/src/example.ts
-@@ -1,0 +1,17 @@
+@@ -1,0 +1,18 @@
 +if (ready) console.warn("English warning");
 +if (ready) throw new Error("English error");
 +if (ready) { console.warn("English warning with brace"); }
@@ -184,8 +184,9 @@ describe("语言门禁解析", () => {
 +const pattern = /console\\.warn\\("English"\\)/;
 +console.log(getValue(), "English after nested call");
 +console.log("中文", "English second argument");
-+it.sequential("English sequential");
 +const sample = \`console.log("English sample")\`;
++console.log("请求完成", t("English payload"));
++console.log("查询结果：", JSON.stringify({ status: "ok" }));
 `;
 
         expect(findLanguageViolations(diff)).toEqual([
@@ -254,12 +255,6 @@ describe("语言门禁解析", () => {
                 line: 15,
                 kind: "日志消息",
                 text: 'console.log("中文", "English second argument");',
-            },
-            {
-                file: "src/example.ts",
-                line: 16,
-                kind: "测试标题",
-                text: 'it.sequential("English sequential");',
             },
         ]);
     });
@@ -351,6 +346,42 @@ describe("语言门禁解析", () => {
                 text: 'describe.for([1])("English for", () => {});',
             },
         ]);
+    });
+
+    it("识别 sequential 与嵌套条件的测试标题", () => {
+        const diff = `diff --git a/test/example.test.ts b/test/example.test.ts
+--- a/test/example.test.ts
++++ b/test/example.test.ts
+@@ -1,0 +1,2 @@
++it.sequential("English sequential");
++it.skipIf(check())("English nested condition");
+`;
+
+        expect(findLanguageViolations(diff)).toEqual([
+            {
+                file: "test/example.test.ts",
+                line: 1,
+                kind: "测试标题",
+                text: 'it.sequential("English sequential");',
+            },
+            {
+                file: "test/example.test.ts",
+                line: 2,
+                kind: "测试标题",
+                text: 'it.skipIf(check())("English nested condition");',
+            },
+        ]);
+    });
+
+    it("不把业务代码中的同名 it 调用当作测试标题", () => {
+        const diff = `diff --git a/src/example.ts b/src/example.ts
+--- a/src/example.ts
++++ b/src/example.ts
+@@ -1,0 +1,1 @@
++it("English business call");
+`;
+
+        expect(findLanguageViolations(diff)).toEqual([]);
     });
 
     it("识别 HTML 模板内联脚本中的英文日志与错误消息", () => {

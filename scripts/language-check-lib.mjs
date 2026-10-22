@@ -2,12 +2,12 @@ const CHECKED_PATTERNS = [
     {
         kind: "测试标题",
         pattern:
-            /(?<![\w$.])(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails|sequential)|\.(?:skipIf|runIf)[ \t]*\([^)]*\))*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
+            /(?<![\w$.])(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails|sequential)|\.(?:skipIf|runIf)[ \t]*\([^()]*(?:\([^()]*\)[^()]*)*\))*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
     },
     {
         kind: "测试标题",
         pattern:
-            /(?<![\w$.])(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails|sequential)|\.(?:skipIf|runIf)[ \t]*\([^)]*\))*\.(?:each|for)(?:<[^>\r\n]*>)?[ \t\r\n]*(?:\[[\s\S]*?\]|\{[\s\S]*?\}|`[\s\S]*?`|\([\s\S]*?\))[ \t\r\n]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
+            /(?<![\w$.])(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails|sequential)|\.(?:skipIf|runIf)[ \t]*\([^()]*(?:\([^()]*\)[^()]*)*\))*\.(?:each|for)(?:<[^>\r\n]*>)?[ \t\r\n]*(?:\[[\s\S]*?\]|\{[\s\S]*?\}|`[\s\S]*?`|\([\s\S]*?\))[ \t\r\n]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
     },
     {
         kind: "错误消息",
@@ -196,9 +196,13 @@ function getLineNumber(source, offset, startLine) {
     return startLine + source.slice(0, offset).split("\n").length - 1;
 }
 
+function isTestFile(file) {
+    return /(^|[\\/])(?:test|tests)([\\/]|$)|\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file);
+}
+
 function findHunkViolations(file, lines, addedLineNumbers) {
     const source = lines.map(({ text }) => text).join("\n");
-    const allowTemplateCode = !/(^|[\\/])(?:test|tests)([\\/]|$)/.test(file);
+    const allowTemplateCode = !isTestFile(file);
     const options = {
         allowTemplateCode,
         allowBareScriptTemplate: /(^|[\\/])templates\.js$/.test(file),
@@ -235,6 +239,9 @@ function findHunkViolations(file, lines, addedLineNumbers) {
     };
 
     for (const { kind, pattern } of CHECKED_PATTERNS) {
+        if (kind === "测试标题" && !isTestFile(file)) {
+            continue;
+        }
         for (const match of maskedSource.matchAll(pattern)) {
             const [messageStart, messageEnd] = match.indices[2];
             pushViolation(kind, messageStart, messageEnd);
@@ -248,10 +255,32 @@ function findHunkViolations(file, lines, addedLineNumbers) {
             continue;
         }
 
-        const argumentsSource = maskedSource.slice(openParenthesis + 1, closeParenthesis);
-        for (const literal of argumentsSource.matchAll(/(["'`])([\s\S]*?)\1/dg)) {
-            const [messageStart, messageEnd] = literal.indices[2];
-            pushViolation("日志消息", openParenthesis + 1 + messageStart, openParenthesis + 1 + messageEnd);
+        let depth = 0;
+        for (let index = openParenthesis + 1; index < closeParenthesis; index += 1) {
+            const character = maskedSource[index];
+            if ((character === "'" || character === '"' || character === "`") && depth === 0) {
+                const end = findQuotedEnd(source, index, character);
+                if (character === "`") {
+                    let segmentStart = index + 1;
+                    for (let cursor = segmentStart; cursor < end - 1; cursor += 1) {
+                        if (source[cursor] !== "$" || source[cursor + 1] !== "{" || source[cursor - 1] === "\\") {
+                            continue;
+                        }
+                        pushViolation("日志消息", segmentStart, cursor);
+                        const expressionEnd = findTemplateExpressionEnd(source, cursor + 2);
+                        cursor = expressionEnd - 1;
+                        segmentStart = expressionEnd;
+                    }
+                    pushViolation("日志消息", segmentStart, end - 1);
+                } else {
+                    pushViolation("日志消息", index + 1, end - 1);
+                }
+                index = end - 1;
+            } else if (character === "(" || character === "[" || character === "{") {
+                depth += 1;
+            } else if (character === ")" || character === "]" || character === "}") {
+                depth -= 1;
+            }
         }
     }
 
