@@ -81,22 +81,107 @@ describe("语言门禁解析", () => {
         expect(findLanguageViolations(diff)).toEqual([
             {
                 file: "test/example.test.ts",
-                line: 10,
+                line: 11,
                 kind: "测试标题",
-                text: "it(",
+                text: '    "English title",',
             },
             {
                 file: "test/example.test.ts",
-                line: 14,
+                line: 15,
                 kind: "日志消息",
-                text: "console.warn(",
+                text: '    "English warning",',
             },
             {
                 file: "test/example.test.ts",
-                line: 17,
+                line: 18,
                 kind: "错误消息",
-                text: "throw new Error(",
+                text: '    "English error",',
             },
         ]);
+    });
+
+    it("识别只改动多行调用中字符串的英文内容", () => {
+        const diff = `diff --git a/test/example.test.ts b/test/example.test.ts
+--- a/test/example.test.ts
++++ b/test/example.test.ts
+@@ -10,7 +10,7 @@
+ it(
+-    "中文标题",
++    "English title",
+     () => {},
+ );
+ console.warn(
+-    "中文警告",
++    "English warning",
+ );
+ throw new Error(
+-    "中文错误",
++    "English error",
+ );
+`;
+
+        expect(findLanguageViolations(diff)).toEqual([
+            {
+                file: "test/example.test.ts",
+                line: 11,
+                kind: "测试标题",
+                text: '    "English title",',
+            },
+            {
+                file: "test/example.test.ts",
+                line: 15,
+                kind: "日志消息",
+                text: '    "English warning",',
+            },
+            {
+                file: "test/example.test.ts",
+                line: 18,
+                kind: "错误消息",
+                text: '    "English error",',
+            },
+        ]);
+    });
+
+    it("识别 each 表格测试的英文标题", () => {
+        const diff = `diff --git a/test/example.test.ts b/test/example.test.ts
+--- a/test/example.test.ts
++++ b/test/example.test.ts
+@@ -1,0 +1,2 @@
++it.each([1, 2])("English title", () => {});
++describe.each([1, 2])("English suite", () => {});
+`;
+
+        expect(findLanguageViolations(diff)).toEqual([
+            {
+                file: "test/example.test.ts",
+                line: 1,
+                kind: "测试标题",
+                text: 'it.each([1, 2])("English title", () => {});',
+            },
+            {
+                file: "test/example.test.ts",
+                line: 2,
+                kind: "测试标题",
+                text: 'describe.each([1, 2])("English suite", () => {});',
+            },
+        ]);
+    });
+
+    it("不报告调用之外改动的存量英文标题", () => {
+        const diff = [
+            "diff --git a/test/example.test.ts b/test/example.test.ts",
+            "--- a/test/example.test.ts",
+            "+++ b/test/example.test.ts",
+            "@@ -10,6 +10,7 @@",
+            " it(",
+            '     "Existing English title",',
+            "     () => {",
+            "+        run();",
+            "     },",
+            " );",
+            "",
+        ].join("\n");
+
+        expect(findLanguageViolations(diff)).toEqual([]);
     });
 });

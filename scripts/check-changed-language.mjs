@@ -4,15 +4,11 @@ import { findLanguageViolations } from "./language-check-lib.mjs";
 const base = process.env.LANGUAGE_CHECK_BASE;
 const sourcePatterns = ["*.ts", "*.js", "*.mjs", "*.cjs"];
 
-function runGit(diffArgs) {
-    const result = spawnSync(
-        "git",
-        ["diff", "--unified=0", "--no-color", "--diff-filter=ACMR", ...diffArgs, "--", ...sourcePatterns],
-        {
-            encoding: "utf8",
-            maxBuffer: 10 * 1024 * 1024,
-        }
-    );
+function runGit(args) {
+    const result = spawnSync("git", args, {
+        encoding: "utf8",
+        maxBuffer: 10 * 1024 * 1024,
+    });
 
     if (result.status !== 0) {
         const details = [result.stderr, result.error instanceof Error ? result.error.stack : result.error]
@@ -25,7 +21,12 @@ function runGit(diffArgs) {
     return result.stdout;
 }
 
-const diffs = base ? [runGit([`${base}...HEAD`])] : [runGit(["--cached"]), runGit([])];
+function runGitDiff(diffArgs) {
+    return runGit(["diff", "--unified=3", "--no-color", "--diff-filter=ACMR", ...diffArgs, "--", ...sourcePatterns]);
+}
+
+const stagedFiles = runGit(["diff", "--cached", "--name-only", "-z", "--"]);
+const diffs = base ? [runGitDiff([`${base}...HEAD`])] : stagedFiles ? [runGitDiff(["--cached"])] : [runGitDiff([])];
 const violationsById = new Map();
 for (const diff of diffs) {
     for (const violation of findLanguageViolations(diff)) {

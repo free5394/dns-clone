@@ -2,20 +2,29 @@ const CHECKED_PATTERNS = [
     {
         kind: "测试标题",
         pattern:
-            /^[ \t]*(?:it|test|describe)(?:\.(?:each|skip|only|todo|concurrent|fails))?[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/gm,
+            /^[ \t]*(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails))?[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
+    },
+    {
+        kind: "测试标题",
+        pattern:
+            /^[ \t]*(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails))?\.each(?:<[^>\r\n]*>)?[ \t]*(?:\([^()\r\n]*(?:\([^()\r\n]*\)[^()\r\n]*)*\)|`[^`\r\n]*`)[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
     },
     {
         kind: "错误消息",
-        pattern: /^[ \t]*throw[ \t]+new[ \t]+Error[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/gm,
+        pattern: /^[ \t]*throw[ \t]+new[ \t]+Error[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
     },
     {
         kind: "日志消息",
-        pattern: /^[ \t]*console\.(?:log|info|warn|error|debug)[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/gm,
+        pattern: /^[ \t]*console\.(?:log|info|warn|error|debug)[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dgm,
     },
 ];
 const HAN_PATTERN = /\p{Script=Han}/u;
 
-function findGroupViolations(file, lines) {
+function getLineNumber(source, offset, startLine) {
+    return startLine + source.slice(0, offset).split("\n").length - 1;
+}
+
+function findHunkViolations(file, lines, addedLineNumbers) {
     const source = lines.map(({ text }) => text).join("\n");
     const startLine = lines[0].line;
     const violations = [];
@@ -26,12 +35,26 @@ function findGroupViolations(file, lines) {
                 continue;
             }
 
-            const lineOffset = source.slice(0, match.index).split("\n").length - 1;
+            const [messageStart, messageEnd] = match.indices[2];
+            const firstLine = getLineNumber(source, messageStart, startLine);
+            const lastLine = getLineNumber(source, Math.max(messageStart, messageEnd - 1), startLine);
+            const changedLines = [];
+            for (let line = firstLine; line <= lastLine; line += 1) {
+                if (addedLineNumbers.has(line)) {
+                    changedLines.push(line);
+                }
+            }
+
+            if (changedLines.length === 0) {
+                continue;
+            }
+
+            const line = changedLines[0];
             violations.push({
                 file,
-                line: startLine + lineOffset,
+                line,
                 kind,
-                text: lines[lineOffset].text,
+                text: lines[line - startLine].text,
             });
         }
     }
@@ -43,41 +66,44 @@ export function findLanguageViolations(diff) {
     const violations = [];
     let file = "";
     let nextLine = 0;
-    let addedLines = [];
+    let hunkLines = [];
+    let addedLineNumbers = new Set();
 
-    const flushAddedLines = () => {
-        if (addedLines.length > 0) {
-            violations.push(...findGroupViolations(file, addedLines));
-            addedLines = [];
+    const flushHunk = () => {
+        if (hunkLines.length > 0) {
+            violations.push(...findHunkViolations(file, hunkLines, addedLineNumbers));
+            hunkLines = [];
+            addedLineNumbers = new Set();
         }
     };
 
     for (const rawLine of diff.split(/\r?\n/)) {
         if (rawLine.startsWith("+++ b/")) {
-            flushAddedLines();
+            flushHunk();
             file = rawLine.slice("+++ b/".length);
             continue;
         }
 
         const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(rawLine);
         if (hunk) {
-            flushAddedLines();
+            flushHunk();
             nextLine = Number(hunk[1]);
             continue;
         }
 
         if (rawLine.startsWith("+") && !rawLine.startsWith("+++")) {
-            addedLines.push({ line: nextLine, text: rawLine.slice(1) });
+            hunkLines.push({ line: nextLine, text: rawLine.slice(1) });
+            addedLineNumbers.add(nextLine);
             nextLine += 1;
             continue;
         }
 
-        flushAddedLines();
         if (rawLine.startsWith(" ")) {
+            hunkLines.push({ line: nextLine, text: rawLine.slice(1) });
             nextLine += 1;
         }
     }
 
-    flushAddedLines();
+    flushHunk();
     return violations;
 }
