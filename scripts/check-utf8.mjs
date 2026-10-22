@@ -37,12 +37,12 @@ const textFiles = [];
 for (let index = 0; index + 2 < attributeParts.length; index += 3) {
     const [file, , value] = attributeParts.slice(index, index + 3);
     if (file && value !== "unset") {
-        textFiles.push({ file, automatic: value === "auto" || value === "unspecified" });
+        textFiles.push({ file, usesAutoDetection: value === "auto" || value === "unspecified" });
     }
 }
 
 const failures = [];
-for (const { file, automatic } of textFiles) {
+for (const { file, usesAutoDetection } of textFiles) {
     let contents;
     if (stagedFiles.has(file)) {
         contents = runGit(["show", `:${file}`], { encoding: null });
@@ -57,7 +57,7 @@ for (const { file, automatic } of textFiles) {
         continue;
     }
 
-    if (automatic && isProbablyBinary(contents)) {
+    if (usesAutoDetection && isProbablyBinary(contents)) {
         continue;
     }
 

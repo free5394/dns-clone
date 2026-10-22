@@ -168,7 +168,7 @@ describe("语言门禁解析", () => {
         const diff = `diff --git a/src/example.ts b/src/example.ts
 --- a/src/example.ts
 +++ b/src/example.ts
-@@ -1,0 +1,12 @@
+@@ -1,0 +1,13 @@
 +if (ready) console.warn("English warning");
 +if (ready) throw new Error("English error");
 +if (ready) { console.warn("English warning with brace"); }
@@ -177,6 +177,7 @@ describe("语言门禁解析", () => {
 +void console.error("English void");
 +foo(); console.log("English same line");
 +const optional = console?.warn("English optional");
++console.log(value, "English second argument");
 +hostnamePattern.test("English");
 +const warning = "console.warn('English')";
 +const error = "throw new Error('English')";
@@ -231,6 +232,12 @@ describe("语言门禁解析", () => {
                 line: 8,
                 kind: "日志消息",
                 text: 'const optional = console?.warn("English optional");',
+            },
+            {
+                file: "src/example.ts",
+                line: 9,
+                kind: "日志消息",
+                text: 'console.log(value, "English second argument");',
             },
         ]);
     });
@@ -333,6 +340,52 @@ describe("语言门禁解析", () => {
                 text: 'throw new Error("English inline error");',
             },
         ]);
+    });
+
+    it("识别裸脚本模板中的英文日志与错误消息", () => {
+        const diff = [
+            "diff --git a/src/ui/templates.js b/src/ui/templates.js",
+            "--- a/src/ui/templates.js",
+            "+++ b/src/ui/templates.js",
+            "@@ -1,0 +1,6 @@",
+            "+const script = `",
+            '+console.warn("English raw warning");',
+            '+throw new Error("English raw error");',
+            "+`;",
+            "",
+        ].join("\n");
+
+        expect(findLanguageViolations(diff)).toEqual([
+            {
+                file: "src/ui/templates.js",
+                line: 2,
+                kind: "日志消息",
+                text: 'console.warn("English raw warning");',
+            },
+            {
+                file: "src/ui/templates.js",
+                line: 3,
+                kind: "错误消息",
+                text: 'throw new Error("English raw error");',
+            },
+        ]);
+    });
+
+    it("不报告测试 fixture 中 HTML 脚本模板的英文内容", () => {
+        const diff = [
+            "diff --git a/test/example.test.ts b/test/example.test.ts",
+            "--- a/test/example.test.ts",
+            "+++ b/test/example.test.ts",
+            "@@ -1,0 +1,6 @@",
+            "+const fixture = `",
+            "+<script>",
+            '+console.warn("English fixture");',
+            "+</script>",
+            "+`;",
+            "",
+        ].join("\n");
+
+        expect(findLanguageViolations(diff)).toEqual([]);
     });
 
     it("不报告调用之外改动的存量英文标题", () => {

@@ -15,11 +15,14 @@ const CHECKED_PATTERNS = [
     },
     {
         kind: "日志消息",
-        pattern: /\bconsole\??\.[A-Za-z_$][\w$]*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
+        pattern: /\bconsole\??\.[A-Za-z_$][\w$]*[ \t]*\([^)]*?(["'`])([\s\S]*?)\1/dg,
     },
 ];
 const HAN_PATTERN = /\p{Script=Han}/u;
 const INLINE_SCRIPT_PATTERN = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/dgi;
+const JAVASCRIPT_PREFIX_PATTERN =
+    /^(?:["']use strict["'];?\s*)?(?:async\s+function|function|const|let|var|import|export|class|if|for|while|switch|return|throw|console|document|window|\(function|\(\(\)\s*=>)/;
+const DIFF_PREFIX_PATTERN = /^diff --git /;
 
 function maskRange(characters, start, end) {
     for (let index = start; index < end; index += 1) {
@@ -71,7 +74,14 @@ function findRegexEnd(source, start) {
     return source.length;
 }
 
-function maskNonCode(source) {
+function restoreMaskedCode(source, characters, targetStart, allowTemplateCode) {
+    const maskedSource = maskNonCode(source, allowTemplateCode);
+    for (let offset = 0; offset < maskedSource.length; offset += 1) {
+        characters[targetStart + offset] = maskedSource[offset];
+    }
+}
+
+function maskNonCode(source, allowTemplateCode = true) {
     const characters = source.split("");
 
     for (let index = 0; index < source.length;) {
@@ -96,13 +106,19 @@ function maskNonCode(source) {
             maskRange(characters, index + 1, next - 1);
             if (source[index] === "`") {
                 const templateContent = source.slice(index + 1, next - 1);
-                for (const match of templateContent.matchAll(INLINE_SCRIPT_PATTERN)) {
-                    const [bodyStart, bodyEnd] = match.indices[1];
-                    const scriptBody = templateContent.slice(bodyStart, bodyEnd);
-                    const maskedScript = maskNonCode(scriptBody);
-                    for (let offset = 0; offset < maskedScript.length; offset += 1) {
-                        characters[index + 1 + bodyStart + offset] = maskedScript[offset];
+                if (allowTemplateCode && !DIFF_PREFIX_PATTERN.test(templateContent.trimStart())) {
+                    for (const match of templateContent.matchAll(INLINE_SCRIPT_PATTERN)) {
+                        const [bodyStart, bodyEnd] = match.indices[1];
+                        restoreMaskedCode(
+                            templateContent.slice(bodyStart, bodyEnd),
+                            characters,
+                            index + 1 + bodyStart,
+                            allowTemplateCode
+                        );
                     }
+                }
+                if (allowTemplateCode && JAVASCRIPT_PREFIX_PATTERN.test(templateContent.trimStart())) {
+                    restoreMaskedCode(templateContent, characters, index + 1, allowTemplateCode);
                 }
             }
             index = next;
@@ -128,7 +144,8 @@ function getLineNumber(source, offset, startLine) {
 
 function findHunkViolations(file, lines, addedLineNumbers) {
     const source = lines.map(({ text }) => text).join("\n");
-    const maskedSource = maskNonCode(source);
+    const allowTemplateCode = !/(^|[\\/])(?:test|tests)([\\/]|$)/.test(file);
+    const maskedSource = maskNonCode(source, allowTemplateCode);
     const startLine = lines[0].line;
     const violations = [];
 
