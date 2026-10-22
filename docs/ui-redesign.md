@@ -21,62 +21,62 @@
 
 ### 2.1 技术事实
 
-| 项    | 事实                                           | 位置                                                     |
-| ---- | -------------------------------------------- | ------------------------------------------------------ |
-| 模板载体 | 单文件 JS 模板字符串，无构建、无独立 CSS                     | `src/ui/templates.js`                                  |
-| 共享样式 | 唯一 `<style>` 块，被首页与后台共用                      | `src/ui/templates.js:23-242`                           |
-| 样式依赖 | Pico CSS v2（CDN）+ Font Awesome 6.5.1（CDN）    | `src/ui/templates.js:23`                               |
-| 令牌覆盖 | 只覆盖 9 个 `--pico-*`，**未覆盖主业色**                | `src/ui/templates.js:26-34`                            |
-| 自建变量 | `--c-*` 亮色 12 个 / 暗色 11 个，仅首页 `.public-*` 消费 | `src/ui/templates.js:35-47` / `:49-61`                 |
-| 主题切换 | 只切 `document.documentElement.classList`      | `src/ui/templates.js:369-379`                          |
-| 列表渲染 | 服务端出壳 + 客户端 `innerHTML` 拼行                   | `src/ui/templates.js:524-533`、`:544-553`、`:534`、`:554` |
-| 后台布局 | `main.container` 改为 flex 行，侧栏 250px 固定       | `src/ui/templates.js:112`、`:122`                       |
-| 断点   | 只有一个 `max-width: 768px`                      | `src/ui/templates.js:206-241`                          |
+| 项       | 事实                                                     | 位置                                                      |
+| -------- | -------------------------------------------------------- | --------------------------------------------------------- |
+| 模板载体 | 单文件 JS 模板字符串，无构建、无独立 CSS                 | `src/ui/templates.js`                                     |
+| 共享样式 | 唯一 `<style>` 块，被首页与后台共用                      | `src/ui/templates.js:23-242`                              |
+| 样式依赖 | Pico CSS v2（CDN）+ Font Awesome 6.5.1（CDN）            | `src/ui/templates.js:23`                                  |
+| 令牌覆盖 | 只覆盖 9 个 `--pico-*`，**未覆盖主业色**                 | `src/ui/templates.js:26-34`                               |
+| 自建变量 | `--c-*` 亮色 12 个 / 暗色 11 个，仅首页 `.public-*` 消费 | `src/ui/templates.js:35-47` / `:49-61`                    |
+| 主题切换 | 只切 `document.documentElement.classList`                | `src/ui/templates.js:369-379`                             |
+| 列表渲染 | 服务端出壳 + 客户端 `innerHTML` 拼行                     | `src/ui/templates.js:524-533`、`:544-553`、`:534`、`:554` |
+| 后台布局 | `main.container` 改为 flex 行，侧栏 250px 固定           | `src/ui/templates.js:112`、`:122`                         |
+| 断点     | 只有一个 `max-width: 768px`                              | `src/ui/templates.js:206-241`                             |
 
 关键约束：`tsconfig.json` 排除 `src/ui/templates.js`，改它**不会被 `pnpm typecheck` 覆盖**，必须靠浏览器复验；`README.md` 是用户可见文案的真相之源，改文案前需同步。
 
 ### 2.2 实测令牌（`getComputedStyle` + 像素级截图）
 
-| 项       | 实测值                                                                                        | 来源                                 |
-| ------- | ------------------------------------------------------------------------------------------ | ---------------------------------- |
-| 页面背景    | `rgb(240,242,245)`                                                                         | `--c-bg`                           |
-| 后台主色    | `rgb(1,114,173)` = `#0172ad`                                                               | Pico 默认，未覆盖                        |
-| 首页主色    | `#007aff`（暗色 `#0a84ff`）                                                                    | `src/ui/templates.js:35` / `:50`   |
-| 后台卡片    | `#ffffff`，边框 `rgb(231,234,240)`，圆角 12px，内边距 24px                                           | `.domain-card`                     |
-| 后台行内标签  | `16px` / `#6c757d`（**与正文同字号**）                                                             | `src/ui/templates.js:140`          |
-| 后台域名单元格 | `16px` / `#212529` 硬编码                                                                     | `src/ui/templates.js:141`          |
-| 语义色     | 成功 `#198754`、失败 `#dc3545`、无变化 `#6c757d`                                                    | `src/ui/templates.js:146`          |
-| 首页卡片    | `rgba(255,255,255,.6)` + `backdrop-filter: blur(5px)`                                      | `src/ui/templates.js:183-185`      |
-| 首页导航    | `rgba(248,249,250,.7)` + `backdrop-filter: blur(10px)`，`max-width: 1200px`，内边距 `12px 16px` | `src/ui/templates.js:148-164`      |
-| 首页内容容器  | `max-width: 1200px`，内边距 `24px`                                                             | `src/ui/templates.js:178`          |
-| 装饰层     | 2 团 `.blur-orb`（`filter: blur(100px)`，`#007aff` / `#ff3b30`，`opacity: .2`）+ 噪声 SVG         | `src/ui/templates.js:76-111`、`:47` |
-| 首页卡内字号  | 标题 `17.6px/600`、日期 `12.8px`、内容 `16px` 等宽、来源 `13.6px`                                       | `:198-201`                         |
+| 项             | 实测值                                                                                          | 来源                                |
+| -------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------- |
+| 页面背景       | `rgb(240,242,245)`                                                                              | `--c-bg`                            |
+| 后台主色       | `rgb(1,114,173)` = `#0172ad`                                                                    | Pico 默认，未覆盖                   |
+| 首页主色       | `#007aff`（暗色 `#0a84ff`）                                                                     | `src/ui/templates.js:35` / `:50`    |
+| 后台卡片       | `#ffffff`，边框 `rgb(231,234,240)`，圆角 12px，内边距 24px                                      | `.domain-card`                      |
+| 后台行内标签   | `16px` / `#6c757d`（**与正文同字号**）                                                          | `src/ui/templates.js:140`           |
+| 后台域名单元格 | `16px` / `#212529` 硬编码                                                                       | `src/ui/templates.js:141`           |
+| 语义色         | 成功 `#198754`、失败 `#dc3545`、无变化 `#6c757d`                                                | `src/ui/templates.js:146`           |
+| 首页卡片       | `rgba(255,255,255,.6)` + `backdrop-filter: blur(5px)`                                           | `src/ui/templates.js:183-185`       |
+| 首页导航       | `rgba(248,249,250,.7)` + `backdrop-filter: blur(10px)`，`max-width: 1200px`，内边距 `12px 16px` | `src/ui/templates.js:148-164`       |
+| 首页内容容器   | `max-width: 1200px`，内边距 `24px`                                                              | `src/ui/templates.js:178`           |
+| 装饰层         | 2 团 `.blur-orb`（`filter: blur(100px)`，`#007aff` / `#ff3b30`，`opacity: .2`）+ 噪声 SVG       | `src/ui/templates.js:76-111`、`:47` |
+| 首页卡内字号   | 标题 `17.6px/600`、日期 `12.8px`、内容 `16px` 等宽、来源 `13.6px`                               | `:198-201`                          |
 
 ### 2.3 对比度核查（WCAG 2.1 相对亮度公式，脚本核算）
 
-| 前景 / 背景                       | 比值         | 结论               |
-| ----------------------------- | ---------- | ---------------- |
+| 前景 / 背景                           | 比值       | 结论                    |
+| ------------------------------------- | ---------- | ----------------------- |
 | `#007aff` / `#ffffff`（首页域名链接） | **4.02:1** | 正文不达 AA（需 4.5:1） |
-| `#6c757d` / `#ffffff`（次要文字）   | 4.69:1     | 勉强通过             |
-| `#0172ad` 白字（后台主按钮）           | 5.28:1     | 通过               |
-| 禁用按钮（Pico `opacity: .5` 后）    | **≈2.1:1** | 不通过              |
-| 暗色页标题 `#373c44` / `#121212`   | **1.69:1** | 严重不通过            |
-| 暗色白卡 `#ffffff` / `#121212` 背景 | 18.7:1     | 反向刺眼             |
+| `#6c757d` / `#ffffff`（次要文字）     | 4.69:1     | 勉强通过                |
+| `#0172ad` 白字（后台主按钮）          | 5.28:1     | 通过                    |
+| 禁用按钮（Pico `opacity: .5` 后）     | **≈2.1:1** | 不通过                  |
+| 暗色页标题 `#373c44` / `#121212`      | **1.69:1** | 严重不通过              |
+| 暗色白卡 `#ffffff` / `#121212` 背景   | 18.7:1     | 反向刺眼                |
 
 ### 2.4 截图基线
 
-| 界面             | 视口 / 状态                | 文件                                                                                |
-| -------------- | ---------------------- | --------------------------------------------------------------------------------- |
-| 公开首页           | 1440 亮                 | `home-1440.png` / `home-1440-full.png`                                            |
-| 公开首页           | 1440 暗                 | `home-1440-dark.png` / `home-1440-dark-full.png`                                  |
-| 公开首页           | 768 / 390              | `home-768.png` / `home-390.png`                                                   |
-| 登录弹窗           | 1440 亮                 | `login-modal-1440.png`                                                            |
-| 后台 · 域名克隆      | 1440 亮                 | `admin-domains-1440.png` / `admin-domains-1440-full.png`                          |
-| 后台 · 域名克隆      | 1440 暗 / 768 / 390     | `admin-domains-1440-dark.png` / `admin-domains-768.png` / `admin-domains-390.png` |
-| 后台 · GitHub 上传 | 1440 亮                 | `admin-github-1440.png`                                                           |
-| 后台 · 系统设置      | 1440 亮 / 暗 / 768 / 390 | `admin-settings-1440.png`、`-full.png`、`-dark.png`、`-768.png`、`-390.png`           |
-| 新增克隆目标弹窗       | 1440 亮                 | `admin-add-modal-1440.png`                                                        |
-| 设置 · 教程折叠展开    | 1440 亮                 | `admin-settings-tutorial-1440.png`                                                |
+| 界面                | 视口 / 状态              | 文件                                                                              |
+| ------------------- | ------------------------ | --------------------------------------------------------------------------------- |
+| 公开首页            | 1440 亮                  | `home-1440.png` / `home-1440-full.png`                                            |
+| 公开首页            | 1440 暗                  | `home-1440-dark.png` / `home-1440-dark-full.png`                                  |
+| 公开首页            | 768 / 390                | `home-768.png` / `home-390.png`                                                   |
+| 登录弹窗            | 1440 亮                  | `login-modal-1440.png`                                                            |
+| 后台 · 域名克隆     | 1440 亮                  | `admin-domains-1440.png` / `admin-domains-1440-full.png`                          |
+| 后台 · 域名克隆     | 1440 暗 / 768 / 390      | `admin-domains-1440-dark.png` / `admin-domains-768.png` / `admin-domains-390.png` |
+| 后台 · GitHub 上传  | 1440 亮                  | `admin-github-1440.png`                                                           |
+| 后台 · 系统设置     | 1440 亮 / 暗 / 768 / 390 | `admin-settings-1440.png`、`-full.png`、`-dark.png`、`-768.png`、`-390.png`       |
+| 新增克隆目标弹窗    | 1440 亮                  | `admin-add-modal-1440.png`                                                        |
+| 设置 · 教程折叠展开 | 1440 亮                  | `admin-settings-tutorial-1440.png`                                                |
 
 > 截图中出现的紫色圆角浮标与粉色「T」圆钮来自浏览器扩展注入，不属于本仓库，评估时已排除。
 
@@ -153,28 +153,37 @@
 ```css
 :root {
     /* 字体：补中文字族，避免 Windows 下落到宋体 */
-    --pico-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-        "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+    --pico-font-family:
+        -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB",
+        "Microsoft YaHei", Arial, sans-serif;
     --pico-font-size: 100%;
     --pico-line-height: 1.6;
 
     /* 间距：4px 基准刻度 */
-    --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
-    --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px;
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+    --space-10: 40px;
 
     /* 圆角 */
-    --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
     --pico-border-radius: var(--radius-md);
 
     /* 单一主色（替换 Pico 默认 #0172ad，白底 5.48:1） */
     --pico-primary: #0b64d8;
     --pico-primary-background: #0b64d8;
     --pico-primary-border: #0b64d8;
-    --pico-primary-underline: rgba(11, 100, 216, .5);
+    --pico-primary-underline: rgba(11, 100, 216, 0.5);
     --pico-primary-hover: #0a58bd;
     --pico-primary-hover-background: #0a58bd;
     --pico-primary-hover-border: #0a58bd;
-    --pico-primary-focus: rgba(11, 100, 216, .25);
+    --pico-primary-focus: rgba(11, 100, 216, 0.25);
     --pico-primary-inverse: #ffffff;
 
     /* 表面 / 边框 / 文字 */
@@ -183,12 +192,12 @@
     --border-subtle: #e4e8ef;
     --text-strong: #1a1f27;
     --text-body: #3d4551;
-    --text-muted: #5b6472;   /* 白底 6.9:1 */
+    --text-muted: #5b6472; /* 白底 6.9:1 */
 
     /* 语义色（白底均 ≥4.5:1） */
-    --ok: #15803d;      /* 5.0:1 */
+    --ok: #15803d; /* 5.0:1 */
     --warn: #b45309;
-    --danger: #b91c1c;  /* 6.5:1 */
+    --danger: #b91c1c; /* 6.5:1 */
     --info: #0b64d8;
 }
 ```
@@ -199,15 +208,16 @@
 
 ```css
 /* 双写选择器：Pico 认 [data-theme]，首页自定义变量认 .dark，兼容旧 localStorage */
-[data-theme="dark"], html.dark {
-    --c-primary: #4d9bff;            /* 深底 6.7:1 */
+[data-theme="dark"],
+html.dark {
+    --c-primary: #4d9bff; /* 深底 6.7:1 */
     --c-primary-hover: #74b1ff;
     --c-bg: #121212;
-    --c-bg-blur: rgba(28, 28, 30, .72);
+    --c-bg-blur: rgba(28, 28, 30, 0.72);
     --c-card-bg: #1c1c1e;
     --c-card-border: #2c2c2e;
     --c-text: #e5e5e7;
-    --c-text-muted: #a1a1a6;         /* 深底 6.7:1 */
+    --c-text-muted: #a1a1a6; /* 深底 6.7:1 */
     --c-icon-bg: #2c2c2e;
     --c-button-bg: #0b64d8;
     --c-button-text: #ffffff;
@@ -229,59 +239,57 @@
 
 ```js
 function applyTheme(theme) {
-    const dark = theme === 'dark';
-    document.documentElement.classList.toggle('dark', dark);
+    const dark = theme === "dark";
+    document.documentElement.classList.toggle("dark", dark);
     // Pico v2 只认 data-theme；不同步设置的话后台组件会留在浅色
-    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
-    themeToggle.innerHTML = dark
-        ? '<i class="fa-solid fa-sun"></i>'
-        : '<i class="fa-solid fa-moon"></i>';
-    localStorage.setItem('theme', theme);
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    themeToggle.innerHTML = dark ? '<i class="fa-solid fa-sun"></i>' : '<i class="fa-solid fa-moon"></i>';
+    localStorage.setItem("theme", theme);
 }
 
-applyTheme(localStorage.getItem('theme') || 'light');
-themeToggle.addEventListener('click', () => {
-    applyTheme(document.documentElement.classList.contains('dark') ? 'light' : 'dark');
+applyTheme(localStorage.getItem("theme") || "light");
+themeToggle.addEventListener("click", () => {
+    applyTheme(document.documentElement.classList.contains("dark") ? "light" : "dark");
 });
 ```
 
 ### 4.4 排版刻度
 
-| 用途             | 字号 / 字重 / 行高                                     |
-| -------------- | ------------------------------------------------ |
-| 页面标题 `h2`      | 28px / 700 / 1.25（移动端 24px）                      |
-| 区块标题           | 20px / 600                                       |
-| 正文             | 15px / 400 / 1.6                                 |
-| 数据强调（域名）       | 15px / 500                                       |
-| 行内标签           | 12px / 600 / 0.04em 字距                           |
-| 辅助信息（时间、来源）    | 12.5px / 400                                     |
+| 用途                    | 字号 / 字重 / 行高                                |
+| ----------------------- | ------------------------------------------------- |
+| 页面标题 `h2`           | 28px / 700 / 1.25（移动端 24px）                  |
+| 区块标题                | 20px / 600                                        |
+| 正文                    | 15px / 400 / 1.6                                  |
+| 数据强调（域名）        | 15px / 500                                        |
+| 行内标签                | 12px / 600 / 0.04em 字距                          |
+| 辅助信息（时间、来源）  | 12.5px / 400                                      |
 | 等宽（IP、URL、策略名） | 13px，`"SF Mono", "Consolas", "Menlo", monospace` |
 
 ### 4.5 组件规范
 
-| 组件      | 规范                                                                                         |
-| ------- | ------------------------------------------------------------------------------------------ |
-| 主按钮     | 实心 `--pico-primary`，白字，圆角 `--radius-md`，高 40px，内边距 `10px 20px`                             |
-| 次按钮     | 透明底 + `1px solid --border-subtle`，文字 `--text-body`                                         |
-| 危险按钮    | 透明底 + `--danger` 文字与边框，hover 时才填色                                                          |
-| 禁用      | **不用 opacity**，改 `color: --text-muted` + `background: --surface-2` + `cursor: not-allowed` |
-| 卡片      | `--surface-1` 实心 + `1px solid --border-subtle` + `--radius-lg` + `--space-6` 内边距（去掉玻璃态）    |
-| 列表行     | 表头一次（sticky）+ 行内标签视觉隐藏（移动端恢复）+ 行高 ≥72px                                                    |
-| 状态徽标    | 胶囊 `border-radius: 999px`，底色用 `color-mix(in srgb, var(--ok) 12%, transparent)`             |
-| 表单控件    | 高 40px，圆角 `--radius-sm`，`1px solid --border-subtle`，focus 时主色描边 2px                        |
-| 弹窗      | 宽 520px，footer 右对齐、按钮等宽 `min-width: 96px`                                                  |
-| Tooltip | 绝对定位浮层，`max-width: 260px`，深底白字；触屏降级为可点开的 `<details>` 或长按                                   |
-| 空状态     | 居中，图标 + 一句说明 + 主按钮                                                                         |
-| Toast   | `role="status" aria-live="polite"`，右上角，3s 自动淡出                                             |
+| 组件     | 规范                                                                                                |
+| -------- | --------------------------------------------------------------------------------------------------- |
+| 主按钮   | 实心 `--pico-primary`，白字，圆角 `--radius-md`，高 40px，内边距 `10px 20px`                        |
+| 次按钮   | 透明底 + `1px solid --border-subtle`，文字 `--text-body`                                            |
+| 危险按钮 | 透明底 + `--danger` 文字与边框，hover 时才填色                                                      |
+| 禁用     | **不用 opacity**，改 `color: --text-muted` + `background: --surface-2` + `cursor: not-allowed`      |
+| 卡片     | `--surface-1` 实心 + `1px solid --border-subtle` + `--radius-lg` + `--space-6` 内边距（去掉玻璃态） |
+| 列表行   | 表头一次（sticky）+ 行内标签视觉隐藏（移动端恢复）+ 行高 ≥72px                                      |
+| 状态徽标 | 胶囊 `border-radius: 999px`，底色用 `color-mix(in srgb, var(--ok) 12%, transparent)`                |
+| 表单控件 | 高 40px，圆角 `--radius-sm`，`1px solid --border-subtle`，focus 时主色描边 2px                      |
+| 弹窗     | 宽 520px，footer 右对齐、按钮等宽 `min-width: 96px`                                                 |
+| Tooltip  | 绝对定位浮层，`max-width: 260px`，深底白字；触屏降级为可点开的 `<details>` 或长按                   |
+| 空状态   | 居中，图标 + 一句说明 + 主按钮                                                                      |
+| Toast    | `role="status" aria-live="polite"`，右上角，3s 自动淡出                                             |
 
 ### 4.6 断点
 
-| 档位  | 范围         | 布局                                             |
-| --- | ---------- | ---------------------------------------------- |
-| L   | ≥1024px    | 侧栏 250px + 内容区 `max-width: 1180px` 居中；列表 4 列   |
-| M   | 768–1023px | 侧栏 220px；列表 4 列但压缩间距；首页网格 `minmax(280px, 1fr)` |
-| S   | 521–767px  | 侧栏折叠为顶部三格 nav；列表单列 + 行内标签恢复                    |
-| XS  | ≤520px     | 首页单列；卡片内边距降到 16px；页头纵向堆叠                       |
+| 档位 | 范围       | 布局                                                           |
+| ---- | ---------- | -------------------------------------------------------------- |
+| L    | ≥1024px    | 侧栏 250px + 内容区 `max-width: 1180px` 居中；列表 4 列        |
+| M    | 768–1023px | 侧栏 220px；列表 4 列但压缩间距；首页网格 `minmax(280px, 1fr)` |
+| S    | 521–767px  | 侧栏折叠为顶部三格 nav；列表单列 + 行内标签恢复                |
+| XS   | ≤520px     | 首页单列；卡片内边距降到 16px；页头纵向堆叠                    |
 
 ---
 
@@ -320,15 +328,23 @@ themeToggle.addEventListener('click', () => {
     grid-template-columns: minmax(0, 2fr) minmax(0, 1.5fr) minmax(0, 1.1fr) auto;
     gap: var(--space-4);
     padding: var(--space-2) var(--space-4);
-    font-size: 12px; font-weight: 600; letter-spacing: .04em;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
     color: var(--text-muted);
-    position: sticky; top: 0; z-index: 2;
+    position: sticky;
+    top: 0;
+    z-index: 2;
     background: var(--surface-2);
 }
 @media (min-width: 768px) {
     .card-col strong {
-        position: absolute; width: 1px; height: 1px;
-        overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
     }
 }
 ```
@@ -360,22 +376,42 @@ themeToggle.addEventListener('click', () => {
 1. Tooltip 修成浮层（`:464` 的 `.tooltip-text` 目前内联铺开，把「深度 (?)」标签挤断）：
 
 ```css
-#domainModal .tooltip { position: relative; display: inline-flex; }
+#domainModal .tooltip {
+    position: relative;
+    display: inline-flex;
+}
 #domainModal .tooltip-text {
-    position: absolute; left: 0; top: 1.75em; z-index: 10;
-    width: max-content; max-width: 260px;
+    position: absolute;
+    left: 0;
+    top: 1.75em;
+    z-index: 10;
+    width: max-content;
+    max-width: 260px;
     padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-sm);
-    background: var(--text-strong); color: #fff;
-    font-size: 13px; line-height: 1.45; font-weight: 400;
-    opacity: 0; visibility: hidden; transform: translateY(-4px);
-    transition: opacity .15s ease, transform .15s ease;
+    background: var(--text-strong);
+    color: #fff;
+    font-size: 13px;
+    line-height: 1.45;
+    font-weight: 400;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-4px);
+    transition:
+        opacity 0.15s ease,
+        transform 0.15s ease;
 }
 #domainModal .tooltip:hover .tooltip-text,
 #domainModal .tooltip:focus-within .tooltip-text {
-    opacity: 1; visibility: visible; transform: none;
+    opacity: 1;
+    visibility: visible;
+    transform: none;
 }
-@media (hover: none) { #domainModal .tooltip-text { display: none; } }
+@media (hover: none) {
+    #domainModal .tooltip-text {
+        display: none;
+    }
+}
 ```
 
 2. Footer 对齐：`#domainModal footer { display: flex; justify-content: flex-end; gap: var(--space-3); }` + `footer button { width: auto; min-width: 96px; }`。
@@ -389,42 +425,42 @@ themeToggle.addEventListener('click', () => {
 
 改动点：
 
-| 位置                            | 动作                                                                     |
-| ----------------------------- | ---------------------------------------------------------------------- |
-| `src/ui/templates.js:26-34`   | 替换为 4.1 的完整令牌块（含主色覆盖）                                                  |
-| `src/ui/templates.js:35`      | `--c-primary: #007aff` → `var(--pico-primary)`                         |
-| `src/ui/templates.js:49-61`   | 替换为 4.2 的双写暗色块                                                         |
+| 位置                          | 动作                                                                      |
+| ----------------------------- | ------------------------------------------------------------------------- |
+| `src/ui/templates.js:26-34`   | 替换为 4.1 的完整令牌块（含主色覆盖）                                     |
+| `src/ui/templates.js:35`      | `--c-primary: #007aff` → `var(--pico-primary)`                            |
+| `src/ui/templates.js:49-61`   | 替换为 4.2 的双写暗色块                                                   |
 | `src/ui/templates.js:140-142` | 硬编码 `#6c757d` / `#212529` → `var(--text-muted)` / `var(--text-strong)` |
-| `src/ui/templates.js:146`     | `#198754` / `#dc3545` → `var(--ok)` / `var(--danger)`                  |
-| `src/ui/templates.js:153`     | 导航内边距对齐 24px                                                           |
-| `src/ui/templates.js:183-188` | 卡片去玻璃态改实心                                                              |
-| `src/ui/templates.js:369-379` | 替换为 4.3 的 `applyTheme`                                                 |
+| `src/ui/templates.js:146`     | `#198754` / `#dc3545` → `var(--ok)` / `var(--danger)`                     |
+| `src/ui/templates.js:153`     | 导航内边距对齐 24px                                                       |
+| `src/ui/templates.js:183-188` | 卡片去玻璃态改实心                                                        |
+| `src/ui/templates.js:369-379` | 替换为 4.3 的 `applyTheme`                                                |
 
 验收：暗色下 `html[data-theme="dark"]` 生效、正文对比度 ≥4.5:1、后台主色与首页一致。
 
 ### P2 结构与断点（约一天）
 
-| 位置                                       | 动作                        |
-| ---------------------------------------- | ------------------------- |
-| `src/ui/templates.js:129-131`            | 内容区限宽 + 页头令牌化             |
-| `src/ui/templates.js:138-143`            | 列表行网格与按钮组令牌化              |
-| `src/ui/templates.js:200`                | 首页内容断行与截断                 |
-| `src/ui/templates.js:206-241`            | 断点重写为 1024 / 767 / 520 三档 |
-| `src/ui/templates.js:524-533`、`:544-553` | 行模板去重复标签 + 新增表头           |
-| `src/ui/templates.js:333`、`:337`         | 空状态文案补按钮                  |
+| 位置                                      | 动作                             |
+| ----------------------------------------- | -------------------------------- |
+| `src/ui/templates.js:129-131`             | 内容区限宽 + 页头令牌化          |
+| `src/ui/templates.js:138-143`             | 列表行网格与按钮组令牌化         |
+| `src/ui/templates.js:200`                 | 首页内容断行与截断               |
+| `src/ui/templates.js:206-241`             | 断点重写为 1024 / 767 / 520 三档 |
+| `src/ui/templates.js:524-533`、`:544-553` | 行模板去重复标签 + 新增表头      |
+| `src/ui/templates.js:333`、`:337`         | 空状态文案补按钮                 |
 
 验收：390 / 768 / 1440 三档无横向滚动、无断词、1440 首屏可见 ≥6 行。
 
 ### P3 交互打磨（约半天）
 
-| 位置                           | 动作                                         |
-| ---------------------------- | ------------------------------------------ |
-| `src/ui/templates.js:143`    | 按钮层级与危险按钮 hover 上色                         |
-| `src/ui/templates.js:146`    | 状态改徽标                                      |
+| 位置                         | 动作                                        |
+| ---------------------------- | ------------------------------------------- |
+| `src/ui/templates.js:143`    | 按钮层级与危险按钮 hover 上色               |
+| `src/ui/templates.js:146`    | 状态改徽标                                  |
 | `src/ui/templates.js:147`    | Toast 加 `role="status" aria-live="polite"` |
-| `src/ui/templates.js:464`    | Tooltip 浮层 + footer 对齐                     |
-| `src/ui/templates.js:76-111` | 装饰精简 + `prefers-reduced-motion`            |
-| 全局                           | `:focus-visible` 统一 2px 主色描边               |
+| `src/ui/templates.js:464`    | Tooltip 浮层 + footer 对齐                  |
+| `src/ui/templates.js:76-111` | 装饰精简 + `prefers-reduced-motion`         |
+| 全局                         | `:focus-visible` 统一 2px 主色描边          |
 
 验收：禁用按钮 ≥4.5:1、所有可交互元素 ≥44×44、键盘 Tab 可见焦点。
 
@@ -456,13 +492,13 @@ bsk emulate --session $sid --off
 
 ## 8. 风险与回滚
 
-| 风险                              | 缓解                                                       |
-| ------------------------------- | -------------------------------------------------------- |
-| Pico 变量名随版本变动导致覆盖失效             | CDN 锁 `@2`；升级前用 `getComputedStyle` 复测主色                  |
+| 风险                                     | 缓解                                                                     |
+| ---------------------------------------- | ------------------------------------------------------------------------ |
+| Pico 变量名随版本变动导致覆盖失效        | CDN 锁 `@2`；升级前用 `getComputedStyle` 复测主色                        |
 | `data-theme` 与 `.dark` 双写出现一处分叉 | 只保留 `applyTheme()` 单一入口，禁止其它地方直接 `classList.add('dark')` |
-| 列表行结构改动打断单条同步                   | 保留 `.card-actions` 与首个 button 选择器，改完手动点一次「同步」            |
-| 视觉回归无法自动断言                      | 每批改完用同一浏览器会话重截三档视口对照                                     |
-| 改动误触业务逻辑                        | 全部改动限制在 `src/ui/templates.js`；不碰 API、路由、D1、`env.WUYA`    |
+| 列表行结构改动打断单条同步               | 保留 `.card-actions` 与首个 button 选择器，改完手动点一次「同步」        |
+| 视觉回归无法自动断言                     | 每批改完用同一浏览器会话重截三档视口对照                                 |
+| 改动误触业务逻辑                         | 全部改动限制在 `src/ui/templates.js`；不碰 API、路由、D1、`env.WUYA`     |
 
 回滚：`git checkout -- src/ui/templates.js` 一步还原（单文件改动）。
 
@@ -482,11 +518,11 @@ bsk emulate --session $sid --off
 
 三批均已落地，改动仍全部限制在 `src/ui/templates.js`（外加一处测试断言同步），`pnpm typecheck` 与 `pnpm test`（136 项）全绿。
 
-| 批次 | 提交 | 关键改动 | 实测结果 |
-| --- | --- | --- | --- |
-| P1 令牌 | `6e78547` | 令牌收口、Pico 组件色映射、暗色双写出 0,2,0 权重、后台页首帧主题脚本、去硬编码色 | 静音字 4.18:1 → 5.33:1；暗色侧栏主色 3.11:1 → 6.03:1；主色 `#0b64d8` 白底 5.48:1 |
-| P2 结构 | 同上批一并提交 | 内容区限宽 1180px、行网格与表头共用 `row-grid`、标签窄屏可见/宽屏隐藏、断点 1024/1023/767/520、首页断行改 `overflow-wrap:anywhere` + 3 行截断 | 390/768/1440 三档 `scrollWidth - clientWidth = 0`；1440 列表行高约 87px，首屏可见 4 行（原 3 行） |
-| P3 打磨 | 同上批一并提交 | 移除双色光斑/噪点/玻璃态/静止阴影/hover 位移/标题色条/装饰图标；状态改徽标；删除改红色幽灵底；弹窗底部等宽 + 取消幽灵底 + tooltip 浮层；`:focus-visible`、`prefers-reduced-motion`、toast `role=status`、主题按钮中文 aria | 弹窗按钮 311/311 等宽；状态徽标底色 `color-mix(in srgb, 语义色 12%, transparent)` |
+| 批次    | 提交           | 关键改动                                                                                                                                                                                                                   | 实测结果                                                                                          |
+| ------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| P1 令牌 | `6e78547`      | 令牌收口、Pico 组件色映射、暗色双写出 0,2,0 权重、后台页首帧主题脚本、去硬编码色                                                                                                                                           | 静音字 4.18:1 → 5.33:1；暗色侧栏主色 3.11:1 → 6.03:1；主色 `#0b64d8` 白底 5.48:1                  |
+| P2 结构 | 同上批一并提交 | 内容区限宽 1180px、行网格与表头共用 `row-grid`、标签窄屏可见/宽屏隐藏、断点 1024/1023/767/520、首页断行改 `overflow-wrap:anywhere` + 3 行截断                                                                              | 390/768/1440 三档 `scrollWidth - clientWidth = 0`；1440 列表行高约 87px，首屏可见 4 行（原 3 行） |
+| P3 打磨 | 同上批一并提交 | 移除双色光斑/噪点/玻璃态/静止阴影/hover 位移/标题色条/装饰图标；状态改徽标；删除改红色幽灵底；弹窗底部等宽 + 取消幽灵底 + tooltip 浮层；`:focus-visible`、`prefers-reduced-motion`、toast `role=status`、主题按钮中文 aria | 弹窗按钮 311/311 等宽；状态徽标底色 `color-mix(in srgb, 语义色 12%, transparent)`                 |
 
 实施中发现的额外缺陷（原诊断未列出）：
 
@@ -500,12 +536,12 @@ bsk emulate --session $sid --off
 
 上一节列出的三条「可选做」已全部落地，另按审查结论补了两处一致性修正。
 
-| 项 | 提交 | 改动 | 实测 |
-| --- | --- | --- | --- |
-| 中档密度 | `57851e3` | 新增 `@media (min-width:768px) and (max-width:1023px)`：`#domain-list-container` / `#ip-source-list-container` 两列网格，卡片自身仍是单列堆叠 | 1023 每列 349px、900 288px、768 222px；三档无横向溢出，3 个 58px 按钮仍在一行（内容宽 190px）；行距 12px 与单列档一致 |
-| 阴影收敛 | `8fd6850` | 三档 `--pico-shadow-*` 收敛为单档 `--shadow-overlay`（浅色 12% / 暗色 60%），只服务弹窗与 toast；toast 文字色改引用 `--c-button-text` | 弹窗阴影浅色 `rgba(0,0,0,0.12)`、暗色 `rgba(0,0,0,0.6)`；卡片与侧栏仍 `none` |
-| 系统行区分 | `1249346` | `.domain-card.system-domain` 用主色 4% 浅染底 + 32% 描边；补 `.card-actions button.contrast[disabled]` 改静音字（原先被 `.contrast` 特异性压过，禁用态仍带红边） | 浅色底 `rgb(245,249,253)` / 边 `#9ebde7`；暗色底 `rgb(30,33,39)` / 边 `#364f71`；禁用「删除」文字 `rgb(91,100,114)` |
-| 文案统一 | `c1892cc` | 列表表头「我的域名 → 克隆源」→「克隆目标」，与窄屏行内标签一致（该单元格主值就是克隆目标，副行是克隆源） | 表头读出 `克隆目标｜当前解析｜上次同步` |
+| 项         | 提交      | 改动                                                                                                                                                             | 实测                                                                                                                  |
+| ---------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 中档密度   | `57851e3` | 新增 `@media (min-width:768px) and (max-width:1023px)`：`#domain-list-container` / `#ip-source-list-container` 两列网格，卡片自身仍是单列堆叠                    | 1023 每列 349px、900 288px、768 222px；三档无横向溢出，3 个 58px 按钮仍在一行（内容宽 190px）；行距 12px 与单列档一致 |
+| 阴影收敛   | `8fd6850` | 三档 `--pico-shadow-*` 收敛为单档 `--shadow-overlay`（浅色 12% / 暗色 60%），只服务弹窗与 toast；toast 文字色改引用 `--c-button-text`                            | 弹窗阴影浅色 `rgba(0,0,0,0.12)`、暗色 `rgba(0,0,0,0.6)`；卡片与侧栏仍 `none`                                          |
+| 系统行区分 | `1249346` | `.domain-card.system-domain` 用主色 4% 浅染底 + 32% 描边；补 `.card-actions button.contrast[disabled]` 改静音字（原先被 `.contrast` 特异性压过，禁用态仍带红边） | 浅色底 `rgb(245,249,253)` / 边 `#9ebde7`；暗色底 `rgb(30,33,39)` / 边 `#364f71`；禁用「删除」文字 `rgb(91,100,114)`   |
+| 文案统一   | `c1892cc` | 列表表头「我的域名 → 克隆源」→「克隆目标」，与窄屏行内标签一致（该单元格主值就是克隆目标，副行是克隆源）                                                         | 表头读出 `克隆目标｜当前解析｜上次同步`                                                                               |
 
 中档两列同时把行内标签文案缩短为「克隆目标」——222px 的窄卡片里原长文案会折行。
 
@@ -538,10 +574,10 @@ bsk emulate --session $sid --off
 
 用户反馈：界面只占中间一条，两侧留一大块空白。实测确认是两个独立的限宽，不是同一个原因：
 
-| 页面 | 元素 | 原规则 | 1920 下实测 |
-| --- | --- | --- | --- |
-| `/admin` | `.main-content` | `max-width: 1180px; margin-inline: auto` | 内容区 1180px，左侧空白 237.5px、右侧 237.5px（`250 → 487.5` 与 `1667.5 → 1905`） |
-| `/` | `.public-container`、`.public-nav` | `max-width: 1200px; margin: 0 auto` | 内容区 1200px，两侧各 352.5px（**用户要求前台保持原样，不改**） |
+| 页面     | 元素                               | 原规则                                   | 1920 下实测                                                                       |
+| -------- | ---------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------- |
+| `/admin` | `.main-content`                    | `max-width: 1180px; margin-inline: auto` | 内容区 1180px，左侧空白 237.5px、右侧 237.5px（`250 → 487.5` 与 `1667.5 → 1905`） |
+| `/`      | `.public-container`、`.public-nav` | `max-width: 1200px; margin: 0 auto`      | 内容区 1200px，两侧各 352.5px（**用户要求前台保持原样，不改**）                   |
 
 后台那条是 P2 我自己加的（当时为了限制行宽、降低扫读成本），首页那条是改造前就有的。宽屏上"限宽居中"是合理的排版手段，但这个站的主界面是高密度表格式列表，用户希望一眼看全，所以改为铺满。
 
@@ -566,12 +602,12 @@ bsk emulate --session $sid --off
 实测（1920 / 1440 / 1024 / 768 / 390 五档）：
 
 | 视口 | 表单宽 | 输入框宽 | 提交按钮 | 按钮中线偏移 | 横向溢出 |
-| --- | --- | --- | --- | --- | --- |
-| 1920 | 1591 | 1525 | 192×59.6 | 0 | 0 |
-| 1440 | 1111 | 1045 | 192×59.6 | 0 | 0 |
-| 1024 | 711 | 645 | 192×59.6 | 0 | 0 |
-| 768 | 455 | 389 | 192×59.6 | 0 | 0 |
-| 390 | 351 | 285 | 192×59.6 | 0 | 0 |
+| ---- | ------ | -------- | -------- | ------------ | -------- |
+| 1920 | 1591   | 1525     | 192×59.6 | 0            | 0        |
+| 1440 | 1111   | 1045     | 192×59.6 | 0            | 0        |
+| 1024 | 711    | 645      | 192×59.6 | 0            | 0        |
+| 768  | 455    | 389      | 192×59.6 | 0            | 0        |
+| 390  | 351    | 285      | 192×59.6 | 0            | 0        |
 
 表单宽度始终等于内容区宽度（`formFillRatio = 1`），五档均无横向溢出。已知代价：1920 下输入框宽 1525px、`<details>` 的 summary 与 chevron 相距较远——这是"单列铺满"的必然结果，记录下来，等用户看过真实大屏再决定是否给控件单独设上限。
 
@@ -579,11 +615,11 @@ bsk emulate --session $sid --off
 
 三轮用户反馈都落在同一对 `<pre>` 上（去重进度 → 贴按钮 → 圆角压字），根因各不相同，合并记录：
 
-| 轮次 | 用户反馈 | 根因 | 改动（`src/ui/templates.js`） |
-| --- | --- | --- | --- |
-| 1 | 点「同步」后按钮显示「同步中」，日志框又刷一遍进度，出现两个进度 | `handleStreamingRequest` 同时写按钮文案与日志框 | 按钮只置 `disabled` + `aria-busy`，文案不动；进度只走日志框 |
-| 2 | 按钮与日志框贴在一起 | 没有自定义 `pre` 规则，Pico 默认外边距为 0 | 两个 `<pre>` 挂 `.sync-log`，`margin-top: var(--space-8)`（32px） |
-| 3 | 日志文字贴着边框、圆角压住首行 | 计算样式 `padding: 0px` 撞上 `border-radius: 10px` | `.sync-log` 补 `padding: var(--space-4)`（16px） |
+| 轮次 | 用户反馈                                                         | 根因                                               | 改动（`src/ui/templates.js`）                                     |
+| ---- | ---------------------------------------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------- |
+| 1    | 点「同步」后按钮显示「同步中」，日志框又刷一遍进度，出现两个进度 | `handleStreamingRequest` 同时写按钮文案与日志框    | 按钮只置 `disabled` + `aria-busy`，文案不动；进度只走日志框       |
+| 2    | 按钮与日志框贴在一起                                             | 没有自定义 `pre` 规则，Pico 默认外边距为 0         | 两个 `<pre>` 挂 `.sync-log`，`margin-top: var(--space-8)`（32px） |
+| 3    | 日志文字贴着边框、圆角压住首行                                   | 计算样式 `padding: 0px` 撞上 `border-radius: 10px` | `.sync-log` 补 `padding: var(--space-4)`（16px）                  |
 
 **改这块之前的三条契约**：
 
