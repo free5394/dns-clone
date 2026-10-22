@@ -2,12 +2,12 @@ const CHECKED_PATTERNS = [
     {
         kind: "测试标题",
         pattern:
-            /\b(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails))*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
+            /(?<![\w$.])(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails)|\.(?:skipIf|runIf)[ \t]*\([^)]*\))*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
     },
     {
         kind: "测试标题",
         pattern:
-            /\b(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails))*\.each(?:<[^>\r\n]*>)?[ \t\r\n]*(?:\[[\s\S]*?\]|\{[\s\S]*?\}|`[\s\S]*?`|\([\s\S]*?\))[ \t\r\n]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
+            /(?<![\w$.])(?:it|test|describe)(?:\.(?:skip|only|todo|concurrent|fails)|\.(?:skipIf|runIf)[ \t]*\([^)]*\))*\.(?:each|for)(?:<[^>\r\n]*>)?[ \t\r\n]*(?:\[[\s\S]*?\]|\{[\s\S]*?\}|`[\s\S]*?`|\([\s\S]*?\))[ \t\r\n]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
     },
     {
         kind: "错误消息",
@@ -15,10 +15,11 @@ const CHECKED_PATTERNS = [
     },
     {
         kind: "日志消息",
-        pattern: /\bconsole\.[A-Za-z_$][\w$]*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
+        pattern: /\bconsole\??\.[A-Za-z_$][\w$]*[ \t]*\([ \t\r\n]*(["'`])([\s\S]*?)\1/dg,
     },
 ];
 const HAN_PATTERN = /\p{Script=Han}/u;
+const INLINE_SCRIPT_PATTERN = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/dgi;
 
 function maskRange(characters, start, end) {
     for (let index = start; index < end; index += 1) {
@@ -93,6 +94,17 @@ function maskNonCode(source) {
         if (source[index] === "'" || source[index] === '"' || source[index] === "`") {
             const next = findQuotedEnd(source, index, source[index]);
             maskRange(characters, index + 1, next - 1);
+            if (source[index] === "`") {
+                const templateContent = source.slice(index + 1, next - 1);
+                for (const match of templateContent.matchAll(INLINE_SCRIPT_PATTERN)) {
+                    const [bodyStart, bodyEnd] = match.indices[1];
+                    const scriptBody = templateContent.slice(bodyStart, bodyEnd);
+                    const maskedScript = maskNonCode(scriptBody);
+                    for (let offset = 0; offset < maskedScript.length; offset += 1) {
+                        characters[index + 1 + bodyStart + offset] = maskedScript[offset];
+                    }
+                }
+            }
             index = next;
             continue;
         }

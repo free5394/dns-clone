@@ -168,7 +168,7 @@ describe("语言门禁解析", () => {
         const diff = `diff --git a/src/example.ts b/src/example.ts
 --- a/src/example.ts
 +++ b/src/example.ts
-@@ -1,0 +1,10 @@
+@@ -1,0 +1,12 @@
 +if (ready) console.warn("English warning");
 +if (ready) throw new Error("English error");
 +if (ready) { console.warn("English warning with brace"); }
@@ -176,6 +176,8 @@ describe("语言门禁解析", () => {
 +const warn = () => console.warn("English arrow");
 +void console.error("English void");
 +foo(); console.log("English same line");
++const optional = console?.warn("English optional");
++hostnamePattern.test("English");
 +const warning = "console.warn('English')";
 +const error = "throw new Error('English')";
 +const pattern = /console\\.warn\\("English"\\)/;
@@ -224,6 +226,12 @@ describe("语言门禁解析", () => {
                 kind: "日志消息",
                 text: 'foo(); console.log("English same line");',
             },
+            {
+                file: "src/example.ts",
+                line: 8,
+                kind: "日志消息",
+                text: 'const optional = console?.warn("English optional");',
+            },
         ]);
     });
 
@@ -231,7 +239,7 @@ describe("语言门禁解析", () => {
         const diff = `diff --git a/test/example.test.ts b/test/example.test.ts
 --- a/test/example.test.ts
 +++ b/test/example.test.ts
-@@ -1,0 +1,7 @@
+@@ -1,0 +1,10 @@
 +it.each([1, 2])("English title", () => {});
 +describe.each([1, 2])("English suite", () => {});
 +it.each([
@@ -239,6 +247,9 @@ describe("语言门禁解析", () => {
 +])("English multiline", () => {});
 +it.concurrent.each([1])("English concurrent", () => {});
 +test.skip.each({ a: 1 })("English skipped", () => {});
++it.skipIf(condition)("English skipIf", () => {});
++describe.runIf(condition)("English runIf", () => {});
++describe.for([1])("English for", () => {});
 `;
 
         expect(findLanguageViolations(diff)).toEqual([
@@ -271,6 +282,55 @@ describe("语言门禁解析", () => {
                 line: 7,
                 kind: "测试标题",
                 text: 'test.skip.each({ a: 1 })("English skipped", () => {});',
+            },
+            {
+                file: "test/example.test.ts",
+                line: 8,
+                kind: "测试标题",
+                text: 'it.skipIf(condition)("English skipIf", () => {});',
+            },
+            {
+                file: "test/example.test.ts",
+                line: 9,
+                kind: "测试标题",
+                text: 'describe.runIf(condition)("English runIf", () => {});',
+            },
+            {
+                file: "test/example.test.ts",
+                line: 10,
+                kind: "测试标题",
+                text: 'describe.for([1])("English for", () => {});',
+            },
+        ]);
+    });
+
+    it("识别 HTML 模板内联脚本中的英文日志与错误消息", () => {
+        const diff = [
+            "diff --git a/src/ui/templates.js b/src/ui/templates.js",
+            "--- a/src/ui/templates.js",
+            "+++ b/src/ui/templates.js",
+            "@@ -1,0 +1,7 @@",
+            "+const page = `",
+            "+<script>",
+            '+console.warn("English inline warning");',
+            '+throw new Error("English inline error");',
+            "+</script>",
+            "+`;",
+            "",
+        ].join("\n");
+
+        expect(findLanguageViolations(diff)).toEqual([
+            {
+                file: "src/ui/templates.js",
+                line: 3,
+                kind: "日志消息",
+                text: 'console.warn("English inline warning");',
+            },
+            {
+                file: "src/ui/templates.js",
+                line: 4,
+                kind: "错误消息",
+                text: 'throw new Error("English inline error");',
             },
         ]);
     });
