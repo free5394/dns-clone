@@ -20,8 +20,8 @@
         "check": "pnpm typecheck && pnpm lint && pnpm format:check",
         "prepare": "node scripts/install-git-hooks.cjs",
         "lint": "oxlint",
-        "format": "prettier --write \"src/**/*.{ts,js}\" \"test/**/*.ts\" \"scripts/**/*.{mjs,cjs}\" \".github/**/*.yml\" \"*.ts\" \"*.{js,json}\"",
-        "format:check": "prettier --check \"src/**/*.{ts,js}\" \"test/**/*.ts\" \"scripts/**/*.{mjs,cjs}\" \".github/**/*.yml\" \"*.ts\" \"*.{js,json}\"",
+        "format": "prettier --write --ignore-unknown .",
+        "format:check": "prettier --check --ignore-unknown .",
         "test": "vitest run",
         "test:watch": "vitest",
         "test:coverage": "vitest run --coverage"

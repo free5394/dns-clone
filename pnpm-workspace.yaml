@@ -1,12 +1,12 @@
 # pnpm 11 配置文件
 # 允许 esbuild / workerd 的原生构建脚本（wrangler 运行必需）
 allowBuilds:
-  esbuild: true
-  workerd: true
+    esbuild: true
+    workerd: true
 minimumReleaseAgeExclude:
-  - '@vitest/coverage-istanbul@5.0.5'
-  - '@vitest/mocker@5.0.5'
-  - '@vitest/spy@5.0.5'
-  - miniflare@5.20261012.1-beta
-  - vitest@5.0.5
-  - wrangler@4.151.1
+    - "@vitest/coverage-istanbul@5.0.5"
+    - "@vitest/mocker@5.0.5"
+    - "@vitest/spy@5.0.5"
+    - miniflare@5.20261012.1-beta
+    - vitest@5.0.5
+    - wrangler@4.151.1

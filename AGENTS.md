@@ -8,20 +8,22 @@ Cloudflare Worker 项目：域名克隆（DNS 同步） + IP 聚合（推送到 
 - **唯一入口**：`src/index.ts`，导出 `fetch` 与 `scheduled` 两个 handler，组装 8 个模块。
 - **唯一绑定**：`env.WUYA` → D1 数据库。**变量名必须为 `WUYA`（全大写）**，参见 `src/index.ts:12`。缺失会返回 `500`。
 - **三个路由分支**（`src/index.ts:22-30`）：
-  - `/api/*` → `handleApiRequest`（`src/routes/api.ts`）
-  - 其它非根路径（除 `/login`、`/admin`）→ `handleGitHubFileProxy`（订阅器直读，`src/routes/github-proxy.ts`）
-  - `/`、`/login`、`/admin` → `handleUiRequest`（`src/routes/ui.ts`）
+    - `/api/*` → `handleApiRequest`（`src/routes/api.ts`）
+    - 其它非根路径（除 `/login`、`/admin`）→ `handleGitHubFileProxy`（订阅器直读，`src/routes/github-proxy.ts`）
+    - `/`、`/login`、`/admin` → `handleUiRequest`（`src/routes/ui.ts`）
 - **定时任务**：Cron `* * * * *`（每分钟）触发 `scheduled` handler，通过 `settings.next_sync_task` 在 `domains` ↔ `ip_sources` 两种批任务间**轮转**，每批处理 `BATCH_SIZE` 条（默认 10，由 `settings.BATCH_SIZE` 配置，非数值回退到 10）且失败优先（`src/sync/domains.ts:62-80`、`src/sync/ip-sources.ts:57-76`）。**无论同步成功或失败都翻转 `next_sync_task`**，避免单点失败永久卡死。
 - **数据表**（5 张）：`settings` / `domains` / `ip_sources` / `sessions` / `login_attempts`，由 `initializeAndMigrateDatabase` 幂等创建，24h 门控（`last_migrated_at`）。
 
 ## 本地开发
 
 - **提交前门禁（钩子）**：`prepare` 会在 `pnpm install` 时把 `core.hooksPath` 设为 `.githooks`，提交前跑 `pnpm check`（约 2 秒，不含 test）。pnpm 在 `Already up to date` 时**不跑** `prepare`，所以已有 `node_modules` 的老 clone 钩子可能没生效——执行 `git config core.hooksPath .githooks`（或 `pnpm install --force`）恢复。
+- **评审顺序**：实现完成先 `git commit`，再交 `/code-review`，评审期间冻结改动——skill 自带的「先评审后提交」会让复审跑在移动靶上。派发评审子代理时写明「只读 + 纯文本报告 + 禁止 dsh-ui 围栏」。
 - **脚本清单见 `package.json` 的 `scripts`**，本文件不再抄一份。日常只有三个：`pnpm dev`（本机 workerd，8787）/ `pnpm test`（vitest run，约 19 秒）/ `pnpm check`（钩子跑的那三条）。
 - 本地 D1 数据在 `.wrangler/state/d1/`，可用 `wrangler d1 execute --local` 查询。
 - 测试用 D1 迁移在 `src/db/migrations/`（`.sql` 文件），由 `vitest.config.ts` 通过 `readD1Migrations` 加载。
 - **测试串行约束**：`maxWorkers: 1` + `fileParallelism: true`，避免 D1 SQLite 多进程锁冲突（`vitest.config.ts:21-22`）。
 - **测试与 dev server 共存**：`pnpm test` 与本机 `pnpm dev` 同时跑时，`cloudflare-pool` 的 worker 偶发起不来（`Failed to start cloudflare-pool worker for test files …`，结果是「1 error」而不是断言失败），重跑即绿；要确定性就先停 `pnpm dev`。
+- **行尾归一化**：提交内容按 `.gitattributes` 归一（默认 `* text=auto eol=lf`；`*.csv` 与 `*.bat|cmd|ps1` 显式 CRLF、`*.patch` 不处理，目前都没有受管文件）。Prettier 不认的文件（`.gitignore` / `.nvmrc` / `wrangler.toml` / `*.sql`）没有 parser，`pnpm format` 会跳过，门禁发现不了它们工作树里的 CRLF；要统一提交内容用 `git add --renormalize <path>`（只改索引，工作树下次检出才变）。有未提交改动时**不要**跑整树 `git restore .` / `git checkout .`——会把改动一起回滚。
 - `vitest.config.ts` 用 `defineProject`（multi-project），**不是** `defineConfig`。
 - **类型配置**：`tsconfig.json` 排除了 `src/ui/templates.js`（不参与 tsc 检查，走纯 JS 路径）。
 

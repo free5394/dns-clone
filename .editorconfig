@@ -17,13 +17,9 @@ indent_size = 4
 [*.json]
 indent_size = 4
 
-# 根目录的 yaml（如 pnpm-workspace.yaml）沿用 2 空格；Prettier 的 format glob 不覆盖它们
+# Prettier 3.9 不再读 .editorconfig（editorconfig 选项已移除，显式传会告警 unknown），
+# 全仓 yaml 由 Prettier 按 .prettierrc 的 tabWidth: 4 排版；这里写 4 只为编辑器行为一致
 [*.{yaml,yml}]
-indent_size = 2
-
-# .github 下的 yml 是 4 空格且被 format:check 覆盖，单独抬到 4：
-# Prettier 会读 .editorconfig，这里定 4 才能让它按 tabWidth: 4 处理
-[.github/**/*.yml]
 indent_size = 4
 
 # 针对 Markdown 文件的特殊规则
