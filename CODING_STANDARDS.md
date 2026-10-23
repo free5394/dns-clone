@@ -2,9 +2,9 @@
 
 评审期规则（review-judgement rules）的单一真相之源。
 
-`/code-review` 的 Standards 轴、以及任何要替人做「这行代码合规吗」判断的 agent，规则都从这里取——不要在别处重述，也不要从 `AGENTS.md` 手工摘抄。实现期导航与部署红线仍在 `AGENTS.md`。
+`/code-review` 的 Standards 轴、以及任何要替人做「这行代码合规吗」判断的 agent，规则都从这里取——不要在别处重述，也不要从 `AGENTS.md` 手工摘抄。实现期导航与部署红线、评审流程（含长评审报告怎么传递）仍在 `AGENTS.md`。
 
-这里判的是**判断类**问题（该用哪种语言、日志与错误该怎么写）。新增代码中的测试标题、`console.*()` 与 `throw new Error()` 消息由 `pnpm check:language` 做机械兜底；其余规则仍靠评审判断。
+这里判的是**判断类**问题（该用哪种语言、日志与错误该怎么写）。新增代码中的测试标题、`console.*()` 与 `throw new Error()` 消息由 `pnpm check:language` 做机械兜底；UI 模板里的静态可见文案、注释与断言文本不在机械范围内，仍靠评审判断。
 
 ## 语言三档
 
