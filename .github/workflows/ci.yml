@@ -22,7 +22,7 @@ jobs:
             # "Node.js 20 is deprecated" 警告（v4 自带 node20，被强制跑在 node24 上）。
             - uses: actions/checkout@v7
               with:
-                  # RETRO-1 语言检查需要能解析 PR 的 base commit。
+                  # 语言检查需要能解析 PR 的 base commit。
                   fetch-depth: 0
 
             # pnpm 版本取自 package.json 的 packageManager 字段，不在此处重复声明
@@ -46,15 +46,15 @@ jobs:
             - name: 类型检查
               run: pnpm typecheck
 
-            # RETRO-1 只检查本次变更新增的中文档代码，存量英文测试标题不触发告警。
+            # 只检查本次变更新增的中文档代码，存量英文测试标题不触发告警。
             - name: 语言检查
               env:
                   LANGUAGE_CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-                  # RETRO-1 首次 push 的 before 全零，传入最早提交以覆盖同批全部提交。
+                  # 首次 push 的 before 全零，传入最早提交以覆盖同批全部提交。
                   LANGUAGE_CHECK_FIRST_COMMIT: ${{ github.event.commits[0].id }}
               run: pnpm check:language
 
-            # RETRO-4 检查纳入版本控制或待提交的全部文本文件，阻止 BOM 与非法字节。
+            # 检查纳入版本控制或待提交的全部文本文件，阻止 BOM 与非法字节。
             - name: UTF-8 检查
               run: pnpm check:utf8
 

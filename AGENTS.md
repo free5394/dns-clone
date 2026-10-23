@@ -28,6 +28,8 @@ Cloudflare Worker：域名克隆（DNS 同步）+ IP 聚合（推送 GitHub）�
 ## 验证
 
 - `pnpm test` 与本机 `pnpm dev` 同跑时，worker 偶发启动失败；需要确定性结果时先停 dev server。
+- 提交前跑 `pnpm check`（typecheck、语言门禁、UTF-8 门禁、lint、format check）；pre-commit 钩子与 CI 覆盖同一套检查。
+- 语言门禁与 UTF-8 门禁只看本次改动：有暂存内容看暂存，否则看工作树；存量历史问题不在范围内。
 - 标语言的 Markdown 围栏会被 Prettier 重排；需要原样保留时删除语言标注或加 `<!-- prettier-ignore -->`。
 - Prettier 没有 parser 的文件不受行尾门禁覆盖；需要归一索引时使用 `git add --renormalize <path>`。
 
