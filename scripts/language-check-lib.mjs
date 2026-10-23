@@ -185,6 +185,12 @@ function maskNonCode(source, options = {}) {
             continue;
         }
 
+        if (source[index] === "\\") {
+            // 反斜杠转义的下一字符不会开启字符串：内联脚本模板里写 \` 与 \${ 是常规写法
+            index += 2;
+            continue;
+        }
+
         index += 1;
     }
 

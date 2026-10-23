@@ -14,6 +14,10 @@ describe("UTF-8 检查", () => {
         expect(inspectUtf8(new Uint8Array([0xef, 0xbb, 0xbf, 0x61]))).toBe("包含 UTF-8 BOM");
     });
 
+    it("接受合法的 U+FFFD 替换字符", () => {
+        expect(inspectUtf8(new TextEncoder().encode("合法替换符 \ufffd"))).toBeNull();
+    });
+
     it("有暂存内容时只检查暂存文件", () => {
         expect(getFilesToCheck(true, ["staged.ts"], "staged.ts\0unstaged.bin\0")).toEqual(["staged.ts"]);
     });

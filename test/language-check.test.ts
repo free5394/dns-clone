@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findLanguageViolations, resolveLanguageCheckBase } from "../scripts/language-check-lib.mjs";
+import { EMPTY_TREE, findLanguageViolations, resolveLanguageCheckBase } from "../scripts/language-check-lib.mjs";
 
 describe("语言门禁解析", () => {
     it("只报告新增行中的英文测试标题与错误消息", () => {
@@ -480,6 +480,12 @@ describe("语言门禁解析", () => {
         expect(calls).toEqual(["最早提交"]);
     });
 
+    it("首次提交没有父提交时从空树开始检查", () => {
+        const base = resolveLanguageCheckBase("0".repeat(40), "最早提交", () => "最早提交\n");
+
+        expect(base).toBe(EMPTY_TREE);
+    });
+
     it("识别 HTML 模板内联脚本中的英文日志与错误消息", () => {
         const diff = [
             "diff --git a/src/ui/templates.js b/src/ui/templates.js",
@@ -507,6 +513,31 @@ describe("语言门禁解析", () => {
                 line: 4,
                 kind: "错误消息",
                 text: 'throw new Error("English inline error");',
+            },
+        ]);
+    });
+
+    it("识别内联脚本模板中转义反引号之后的英文日志", () => {
+        const diff = [
+            "diff --git a/src/ui/templates.js b/src/ui/templates.js",
+            "--- a/src/ui/templates.js",
+            "+++ b/src/ui/templates.js",
+            "@@ -1,0 +1,6 @@",
+            "+const script = `",
+            "+<script>",
+            "+toast.className = \\`toast \\${type}\\`;",
+            '+console.warn("English after escaped backtick");',
+            "+</script>",
+            "+`;",
+            "",
+        ].join("\n");
+
+        expect(findLanguageViolations(diff)).toEqual([
+            {
+                file: "src/ui/templates.js",
+                line: 4,
+                kind: "日志消息",
+                text: 'console.warn("English after escaped backtick");',
             },
         ]);
     });
