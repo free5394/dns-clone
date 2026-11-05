@@ -317,7 +317,7 @@ pnpm deploy
 ├── README.md            # 本文档
 ├── CLAUDE.md            # 给 AI 助手的代码事实摘要
 ├── package.json         # 脚本：dev / test / typecheck / deploy / cf-typegen
-├── wrangler.toml       # Worker 配置（compatibility_date 2026-01-15，keep_vars）
+├── wrangler.toml       # Worker 配置（compatibility_date 2026-05-20，keep_vars）
 ├── tsconfig.json        # TypeScript strict 配置
 ├── vitest.config.ts     # vitest-pool-workers 测试配置
 ├── scripts/
@@ -331,7 +331,7 @@ pnpm deploy
 │   ├── sync/            # domains.ts / ip-sources.ts / github.ts
 │   ├── ui/              # templates.js（UI 模板，纯 JS，tsc 不参与）
 │   └── util/            # auth / http / log / sse / fetch / cf / url-safety / http-error / run-with-log
-├── test/                # vitest-pool-workers 测试（16 文件，workerd 内跑）
+├── test/                # vitest-pool-workers 测试（22 文件，workerd 内跑）
 └── img/                 # README 截图
 ```
 

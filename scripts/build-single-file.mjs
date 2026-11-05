@@ -1,6 +1,5 @@
 // build-single-file.mjs — 把模块化的 src/index.ts 打包成单文件 Worker bundle
 // 用途：网页部署路径（README 第 4 步）用户可直接把 dist/worker.bundle.js 整段粘贴到 Cloudflare Dashboard 编辑器。
-// 与 src/index.js（手写单文件版）并存：后者是历史遗留，本脚本输出"模块化源码的构建产物"。
 
 import { build } from "esbuild";
 import { mkdirSync } from "node:fs";
