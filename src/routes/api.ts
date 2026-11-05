@@ -536,9 +536,7 @@ async function apiProbeIpSource(request: Request): Promise<Response> {
                 });
             }
         } catch (e) {
-            console.log(
-                `Strategy '${strategyName}' failed for URL '${url}': ${e instanceof Error ? e.message : String(e)}`
-            );
+            console.log(`IP 源探测失败：URL '${url}'，策略 '${strategyName}'：${e instanceof Error ? e.stack : e}`);
         }
     }
 

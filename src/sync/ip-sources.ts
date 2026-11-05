@@ -69,7 +69,7 @@ export async function syncScheduledIpSources(env: { WUYA: D1Database }): Promise
 
     const githubSettings = await getGitHubSettings(db);
     if (!githubSettings.token || !githubSettings.owner || !githubSettings.repo) {
-        log("Cannot run scheduled IP source sync: GitHub settings are missing.");
+        log("GitHub 配置缺失，跳过本轮 IP 源同步。");
         return;
     }
 
@@ -84,14 +84,14 @@ export async function syncScheduledIpSources(env: { WUYA: D1Database }): Promise
     const sourcesToSync = await queryAll<{ id: number }>(db, query, BATCH_SIZE);
 
     if (sourcesToSync.length === 0) {
-        log("No IP sources to sync in this batch.");
+        log("本轮没有需要同步的 IP 源。");
         return;
     }
 
-    log(`Found ${sourcesToSync.length} IP sources for this sync batch (failure-first).`);
+    log(`本轮按失败优先选取 ${sourcesToSync.length} 个 IP 源。`);
     for (const source of sourcesToSync) {
         await syncSingleIpSource(source.id, env, false).catch((e) => {
-            log(`Error processing IP source ID ${source.id} in batch: ${e instanceof Error ? e.message : String(e)}`);
+            log(`批量处理 IP 源 ID ${source.id} 失败: ${e instanceof Error ? e.stack : e}`);
         });
     }
 }

@@ -66,7 +66,7 @@ export async function syncScheduledDomains(env: { WUYA: D1Database }): Promise<v
 
     const { token, zoneId } = await getCfApiSettings(db);
     if (!token || !zoneId) {
-        log("Cannot run scheduled domain sync: Cloudflare settings are missing.");
+        log("Cloudflare 配置缺失，跳过本轮域名同步。");
         return;
     }
 
@@ -81,19 +81,17 @@ export async function syncScheduledDomains(env: { WUYA: D1Database }): Promise<v
     const domainsToSync = await queryAll<DomainRow>(db, query, BATCH_SIZE);
 
     if (domainsToSync.length === 0) {
-        log("No domains to sync in this batch.");
+        log("本轮没有需要同步的域名。");
         return;
     }
 
-    log(`Found ${domainsToSync.length} domains for this sync batch (failure-first).`);
+    log(`本轮按失败优先选取 ${domainsToSync.length} 个域名。`);
     const syncContext: SyncContext = {};
     for (const domain of domainsToSync) {
         try {
             await syncDomainLogic(domain, token, zoneId, db, log, syncContext);
         } catch (e) {
-            log(
-                `Error processing domain ${domain.target_domain} in batch: ${e instanceof Error ? e.message : String(e)}`
-            );
+            log(`批量处理域名 ${domain.target_domain} 失败: ${e instanceof Error ? e.stack : e}`);
         }
     }
 }
