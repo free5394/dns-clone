@@ -20,8 +20,7 @@ import { syncAllDomains, syncSystemDomains, syncSingleDomain } from "../sync/dom
 import { syncSingleIpSource, syncAllIpSources } from "../sync/ip-sources.ts";
 import { assertSafeHttpUrl } from "../util/url-safety.ts";
 import { fetchWithTimeout } from "../util/fetch.ts";
-import { MAX_BATCH_SIZE } from "../util/batch-size.ts";
-import { CONFIG_SETTING_KEYS, SECRET_SETTING_KEYS, WRITABLE_SETTING_KEYS } from "../db/settings.ts";
+import { CONFIG_SETTING_KEYS, normalizeSettingsInput, validateEffectiveSettings } from "../db/settings.ts";
 
 /** 检测 D1/SQLite UNIQUE 约束违例（D1 同时支持 message 与 code 两种错误呈现方式） */
 const isUniqueViolation = (e: unknown): boolean =>
@@ -218,47 +217,19 @@ async function apiGetSettings(request: Request, db: D1Database): Promise<Respons
 async function apiSetSettings(request: Request, db: D1Database): Promise<Response> {
     const rawBody = await readJsonBody<Record<string, unknown>>(request);
     if (rawBody === null || typeof rawBody !== "object") return BAD_JSON();
-    const rawSettings = rawBody;
-
-    // 白名单：Secret Token 的空字符串表示保持不变，其它字段沿用空串清除语义。
-
-    const settings: Record<string, string | null> = {};
-    for (const [key, value] of Object.entries(rawSettings)) {
-        if (!WRITABLE_SETTING_KEYS.has(key)) continue;
-        if (value === null || value === undefined) {
-            settings[key] = null;
-        } else {
-            const text = (typeof value === "string" ? value : String(value)).trim();
-            if (text === "") {
-                if (SECRET_SETTING_KEYS.has(key)) continue;
-                settings[key] = null;
-            } else {
-                settings[key] = text;
-            }
-        }
-        // I5: BATCH_SIZE 必须是 1..100 的整数——负数在 SQLite LIMIT 中等于无上限
-        if (key === "BATCH_SIZE") {
-            const n = Number(settings[key]);
-            if (settings[key] === null || !Number.isInteger(n) || n < 1 || n > MAX_BATCH_SIZE) {
-                return jsonResponse({ error: `BATCH_SIZE 必须为 1 到 ${MAX_BATCH_SIZE} 之间的整数。` }, 400);
-            }
-        }
-    }
+    const normalized = normalizeSettingsInput(rawBody);
+    if (!normalized.ok) return jsonResponse({ error: normalized.error }, 400);
+    const settings = normalized.settings;
 
     const currentConfig = Object.fromEntries(
         await Promise.all(CONFIG_SETTING_KEYS.map(async (key) => [key, await getSetting(db, key)]))
     ) as Record<(typeof CONFIG_SETTING_KEYS)[number], string | null>;
     const effective = { ...currentConfig, ...settings };
-    const { CF_API_TOKEN, CF_ZONE_ID, GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO } = effective;
+    const { CF_API_TOKEN, CF_ZONE_ID } = effective;
 
     // 配对校验基于合并现有配置后的有效配置，允许保留旧 Token 只修改其它字段。
-    if (Boolean(CF_API_TOKEN) !== Boolean(CF_ZONE_ID)) {
-        return jsonResponse({ error: "Cloudflare API 令牌和区域 ID 必须同时配置。" }, 400);
-    }
-    const githubValues = [GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO];
-    if (githubValues.some(Boolean) && githubValues.some((value) => !value)) {
-        return jsonResponse({ error: "GitHub Token、Owner、Repo 必须同时配置。" }, 400);
-    }
+    const pairingError = validateEffectiveSettings(effective);
+    if (pairingError !== null) return jsonResponse({ error: pairingError }, 400);
 
     const cfConfigChanged = settings.CF_API_TOKEN !== undefined || settings.CF_ZONE_ID !== undefined;
     if (CF_API_TOKEN && CF_ZONE_ID && cfConfigChanged) {
