@@ -923,3 +923,123 @@ describe("手动全量同步并发防护 (M-8)", () => {
         }
     });
 });
+
+// M-12：补齐缺少直接测试的端点（logout / ip_sources 列表与删除 / probe 成功与非法 URL）
+describe("端点直测补齐 (M-12)", () => {
+    it("logout 后原会话立即失效并清空 Cookie", async () => {
+        const cookie = await loginAndGetCookie();
+
+        const logoutRes = await handleApiRequest(
+            new Request("https://example.com/api/logout", { method: "POST", headers: { Cookie: cookie } }),
+            env
+        );
+        expect(logoutRes.status).toBe(200);
+        expect(logoutRes.headers.get("Set-Cookie")).toContain("session=;");
+        expect(logoutRes.headers.get("Set-Cookie")).toContain("Expires=Thu, 01 Jan 1970");
+
+        const after = await handleApiRequest(
+            new Request("https://example.com/api/domains", { method: "GET", headers: { Cookie: cookie } }),
+            env
+        );
+        expect(after.status).toBe(401);
+    });
+
+    it("GET /api/ip_sources 按 github_path 排序返回已存条目", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/m12/b.txt", "m12/b.txt", "M12 测试", "direct_regex")
+            .run();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/m12/a.txt", "m12/a.txt", "M12 测试", "direct_regex")
+            .run();
+
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/ip_sources", { method: "GET", headers: { Cookie: cookie } }),
+                env
+            );
+            expect(res.status).toBe(200);
+            const rows = (await res.json()) as Array<{ github_path: string }>;
+            const paths = rows.map((row) => row.github_path);
+            expect(paths).toContain("m12/a.txt");
+            expect(paths).toContain("m12/b.txt");
+            expect(paths.indexOf("m12/a.txt")).toBeLessThan(paths.indexOf("m12/b.txt"));
+        } finally {
+            await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm12/%'").run();
+        }
+    });
+
+    it("DELETE /api/ip_sources/:id 删除后列表中不再出现", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/m12/del.txt", "m12/del.txt", "M12 删除", "direct_regex")
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = 'm12/del.txt'").first()) as {
+            id: number;
+        };
+
+        const res = await handleApiRequest(
+            new Request(`https://example.com/api/ip_sources/${row.id}`, {
+                method: "DELETE",
+                headers: { Cookie: cookie },
+            }),
+            env
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { success?: boolean };
+        expect(body.success).toBe(true);
+
+        const left = await env.WUYA.prepare("SELECT COUNT(*) AS n FROM ip_sources WHERE id = ?")
+            .bind(row.id)
+            .first<{ n: number }>();
+        expect(left?.n).toBe(0);
+    });
+
+    it("probe 命中文本中的 IPv4 时返回成功与策略名", async () => {
+        const cookie = await loginAndGetCookie();
+        const origFetch = globalThis.fetch;
+        globalThis.fetch = (() =>
+            Promise.resolve(
+                new Response("1.1.1.1\n8.8.8.8\n", { status: 200, headers: { "Content-Type": "text/plain" } })
+            )) as typeof fetch;
+
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/ip_sources/probe", {
+                    method: "POST",
+                    headers: { Cookie: cookie, "Content-Type": "application/json" },
+                    body: JSON.stringify({ url: "https://example.com/m12/ips.txt" }),
+                }),
+                env
+            );
+            expect(res.status).toBe(200);
+            const body = (await res.json()) as { success?: boolean; strategy?: string; ipCount?: number };
+            expect(body.success).toBe(true);
+            expect(body.strategy).toBe("direct_regex");
+            expect(body.ipCount).toBe(2);
+        } finally {
+            globalThis.fetch = origFetch;
+        }
+    });
+
+    it("probe 拒绝非 HTTP(S) 协议", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await handleApiRequest(
+            new Request("https://example.com/api/ip_sources/probe", {
+                method: "POST",
+                headers: { Cookie: cookie, "Content-Type": "application/json" },
+                body: JSON.stringify({ url: "file:///etc/passwd" }),
+            }),
+            env
+        );
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error?: string };
+        expect(body.error).toBeTruthy();
+    });
+});
