@@ -160,8 +160,8 @@ describe("getDashboardPage 仪表盘转义 (I2)", () => {
 
     it("客户端渲染器源码对 DB 字段一律经过 esc()，通知改用 textContent (I2)", () => {
         const html = getDashboardPage([{ ...baseDomain }], [], baseSettings);
-        // 客户端 esc 助手存在
-        expect(html).toMatch(/function esc\(s\)/);
+        // 客户端 esc 助手由 ./dashboard-helpers.js 注入（行为测试见 dashboard-helpers.test.ts）
+        expect(html).toContain("const esc = function escapeHtmlClient");
         // renderStatus 的 title 属性
         expect(html).toMatch(/title="\$\{esc\(item\.last_sync_error/);
         // renderDomainCard：notes / target_domain / source_domain（notes 用 .domain-notes 区别行内标签）

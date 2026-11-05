@@ -1,4 +1,5 @@
 // templates.js — UI 模板函数（阶段 E 从 index.legacy.js 拆出）
+import { escapeHtmlClient } from "./dashboard-helpers.js";
 // 纯 JS 文件（tsc 不参与）：内含大量浏览器端 JS 模板字符串
 
 // HTML 实体转义：所有插值到模板字符串的用户控制字段必须经过 escapeHtml
@@ -631,7 +632,8 @@ function getDashboardScript(domains, ipSources, settings) {
   let successfulProbeStrategy = null;
 
   // I2: 客户端渲染统一转义助手（与服务器端 escapeHtml 同语义）
-  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  // 客户端转义助手来自 ./dashboard-helpers.js，注入后可直接被行为测试覆盖。
+  const esc = ${escapeHtmlClient.toString()};
 
   const formatBeijingTime = (isoStr) => { if (!isoStr) return '从未'; const d = new Date(isoStr); return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(d).replace(/\\//g, '-'); };
 ` +
