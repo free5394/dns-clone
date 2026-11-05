@@ -7,6 +7,7 @@ import { beijingTimeLog } from "../util/log.ts";
 import { runWithOptionalLog } from "../util/run-with-log.ts";
 import { fetchWithTimeout, fetchWithRetry } from "../util/fetch.ts";
 import { normalizeBatchSize } from "../util/batch-size.ts";
+import { forEachIsolated } from "../util/batch-sync.ts";
 
 interface DomainRow {
     id: number;
@@ -87,13 +88,11 @@ export async function syncScheduledDomains(env: { WUYA: D1Database }): Promise<v
 
     log(`本轮按失败优先选取 ${domainsToSync.length} 个域名。`);
     const syncContext: SyncContext = {};
-    for (const domain of domainsToSync) {
-        try {
-            await syncDomainLogic(domain, token, zoneId, db, log, syncContext);
-        } catch (e) {
-            log(`批量处理域名 ${domain.target_domain} 失败: ${e instanceof Error ? e.stack : e}`);
-        }
-    }
+    await forEachIsolated(
+        domainsToSync,
+        (domain) => syncDomainLogic(domain, token, zoneId, db, log, syncContext),
+        (domain, e) => log(`批量处理域名 ${domain.target_domain} 失败: ${e instanceof Error ? e.stack : e}`)
+    );
 }
 
 /** 单个域名同步入口 */
@@ -140,13 +139,12 @@ export async function syncAllDomains(
             }
             log(`发现 ${domains.length} 个已启用的目标需要同步。`);
             const syncContext: SyncContext = {};
-            for (const domain of domains) {
-                try {
-                    await syncDomainLogic(domain, token, zoneId, db, log, syncContext);
-                } catch (e) {
-                    log(`处理域名 ${domain.target_domain} 失败: ${e instanceof Error ? e.message : String(e)}`);
-                }
-            }
+            await forEachIsolated(
+                domains,
+                (domain) => syncDomainLogic(domain, token, zoneId, db, log, syncContext),
+                (domain, e) =>
+                    log(`处理域名 ${domain.target_domain} 失败: ${e instanceof Error ? e.message : String(e)}`)
+            );
             log("所有目标同步任务执行完毕。");
         } finally {
             if (lockToken) await releaseManualSyncLock(db, lockToken);
@@ -179,11 +177,12 @@ export async function syncSystemDomains(
             }
             log(`发现 ${domains.length} 个已启用的系统域名需要同步。`);
             const syncContext: SyncContext = {};
-            for (const domain of domains) {
-                await syncDomainLogic(domain, token, zoneId, db, log, syncContext).catch((e) => {
-                    log(`系统域名 ${domain.target_domain} 同步失败: ${e instanceof Error ? e.message : String(e)}`);
-                });
-            }
+            await forEachIsolated(
+                domains,
+                (domain) => syncDomainLogic(domain, token, zoneId, db, log, syncContext),
+                (domain, e) =>
+                    log(`系统域名 ${domain.target_domain} 同步失败: ${e instanceof Error ? e.message : String(e)}`)
+            );
             log("系统域名同步任务执行完毕。");
         } finally {
             if (lockToken) await releaseManualSyncLock(db, lockToken);

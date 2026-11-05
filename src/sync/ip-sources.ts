@@ -9,6 +9,7 @@ import { runWithOptionalLog } from "../util/run-with-log.ts";
 import { fetchWithTimeout } from "../util/fetch.ts";
 import { assertSafeHttpUrl } from "../util/url-safety.ts";
 import { normalizeBatchSize } from "../util/batch-size.ts";
+import { forEachIsolated } from "../util/batch-sync.ts";
 
 interface IpSourceRow {
     id: number;
@@ -89,11 +90,13 @@ export async function syncScheduledIpSources(env: { WUYA: D1Database }): Promise
     }
 
     log(`本轮按失败优先选取 ${sourcesToSync.length} 个 IP 源。`);
-    for (const source of sourcesToSync) {
-        await syncSingleIpSource(source.id, env, false).catch((e) => {
-            log(`批量处理 IP 源 ID ${source.id} 失败: ${e instanceof Error ? e.stack : e}`);
-        });
-    }
+    await forEachIsolated(
+        sourcesToSync,
+        async (source) => {
+            await syncSingleIpSource(source.id, env, false);
+        },
+        (source, e) => log(`批量处理 IP 源 ID ${source.id} 失败: ${e instanceof Error ? e.stack : e}`)
+    );
 }
 
 /** 单个 IP 源同步入口 */
@@ -183,11 +186,13 @@ export async function syncAllIpSources(
                 log("没有已启用的IP源需要同步。");
                 return;
             }
-            for (const source of sources) {
-                await syncSingleIpSource(source.id, env, false).catch((e) =>
-                    log(`处理ID ${source.id} 失败: ${e instanceof Error ? e.message : String(e)}`)
-                );
-            }
+            await forEachIsolated(
+                sources,
+                async (source) => {
+                    await syncSingleIpSource(source.id, env, false);
+                },
+                (source, e) => log(`处理ID ${source.id} 失败: ${e instanceof Error ? e.message : String(e)}`)
+            );
             log("所有IP源同步任务执行完毕。");
         } finally {
             if (lockToken) await releaseManualSyncLock(db, lockToken);
