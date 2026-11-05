@@ -17,6 +17,62 @@ const SUBSCRIBER_FETCH_ERROR = "无法获取对应文件，请稍后重试。";
 /** 延迟写回调（路由传入 ExecutionContext.waitUntil）；缺省不等待、但吞掉写失败 */
 type WaitUntil = (promise: Promise<unknown>) => void;
 
+/** GitHub owner / repo 路径段白名单：字母、数字、下划线、点、连字符 */
+const GITHUB_SEGMENT_PATTERN = /^[A-Za-z0-9_.-]+$/;
+
+/** GitHub 用户名（含组织名）长度上限 */
+const GITHUB_OWNER_MAX_LENGTH = 39;
+
+/** GitHub 仓库名长度上限 */
+const GITHUB_REPO_MAX_LENGTH = 100;
+
+/** Contents API 路径单段长度上限 */
+const GITHUB_PATH_SEGMENT_MAX_LENGTH = 255;
+
+/**
+ * 校验 owner / repo 路径段并原样返回。
+ * 严格白名单 + 长度上限，避免外部输入改写 API 路径结构（如 `/`、`?`、`#`、`..`）。
+ */
+function assertSafeGitHubSegment(value: string, field: "owner" | "repo"): string {
+    const maxLength = field === "owner" ? GITHUB_OWNER_MAX_LENGTH : GITHUB_REPO_MAX_LENGTH;
+    if (!value || value.length > maxLength || !GITHUB_SEGMENT_PATTERN.test(value) || value === "." || value === "..") {
+        throw new Error(
+            `GitHub ${field} 参数非法：仅允许字母、数字、下划线、点和连字符，长度不超过 ${maxLength} 个字符，且不能是 "." 或 ".."。`
+        );
+    }
+    return value;
+}
+
+/**
+ * 编码 Contents API 的内容路径：保留 `/` 作为分段，逐段 encodeURIComponent。
+ * 拒绝绝对路径、空段、`..` 段、反斜杠、控制字符与超长段。
+ */
+function encodeContentPath(path: string): string {
+    if (!path) throw new Error("GitHub 文件路径不能为空。");
+    if (path.startsWith("/")) throw new Error('GitHub 文件路径不能以 "/" 开头。');
+    if (path.includes("\\")) throw new Error("GitHub 文件路径不能包含反斜杠。");
+    if ([...path].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f)) {
+        throw new Error("GitHub 文件路径不能包含控制字符。");
+    }
+    const segments = path.split("/");
+    if (segments.some((segment) => segment.length === 0)) throw new Error("GitHub 文件路径不能包含空路径段。");
+    if (segments.some((segment) => segment === "..")) throw new Error('GitHub 文件路径不能包含 ".." 段。');
+    if (segments.some((segment) => segment.length > GITHUB_PATH_SEGMENT_MAX_LENGTH)) {
+        throw new Error(`GitHub 文件路径单段长度不能超过 ${GITHUB_PATH_SEGMENT_MAX_LENGTH} 个字符。`);
+    }
+    return segments.map((segment) => encodeURIComponent(segment)).join("/");
+}
+
+/** 仓库级 API URL（统一校验 owner / repo） */
+function buildRepoApiUrl(owner: string, repo: string): string {
+    return `https://api.github.com/repos/${assertSafeGitHubSegment(owner, "owner")}/${assertSafeGitHubSegment(repo, "repo")}`;
+}
+
+/** Contents API URL（统一校验 owner / repo 并逐段编码 path） */
+function buildContentsApiUrl(owner: string, repo: string, path: string): string {
+    return `${buildRepoApiUrl(owner, repo)}/contents/${encodeContentPath(path)}`;
+}
+
 /** GitHub API 请求统一封装（非 2xx 由 fetchWithRetry 抛出 HttpError） */
 async function githubApiRequest(url: string, token: string, options: RequestInit = {}): Promise<Response> {
     const headers = {
@@ -35,7 +91,7 @@ export async function ensureRepoExists(
     repo: string,
     log: (msg: string) => void
 ): Promise<void> {
-    const repoUrl = `https://api.github.com/repos/${owner}/${repo}`;
+    const repoUrl = buildRepoApiUrl(owner, repo);
     try {
         await githubApiRequest(repoUrl, token);
         log(`仓库 '${owner}/${repo}' 已存在。`);
@@ -70,7 +126,7 @@ export async function getCurrentGitHubContent({
     path: string;
     log: (msg: string) => void;
 }): Promise<string | null> {
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    const apiUrl = buildContentsApiUrl(owner, repo, path);
     try {
         const response = await githubApiRequest(apiUrl, token, {
             headers: { Accept: "application/vnd.github.v3.raw" },
@@ -120,7 +176,7 @@ export async function updateFileOnGitHub({
 }): Promise<void> {
     await ensureRepoExists(token, owner, repo, log);
 
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    const apiUrl = buildContentsApiUrl(owner, repo, path);
     let sha: string | undefined;
     try {
         const getFileResponse = await githubApiRequest(apiUrl, token);
@@ -154,13 +210,15 @@ export async function readFileForSubscriber(
     path: string,
     waitUntil?: WaitUntil
 ): Promise<Response> {
+    // 先校验并构造上游 URL：非法 path 不得命中或写入缓存
+    const apiUrl = buildContentsApiUrl(owner, repo, path);
+
     // Cloudflare Workers 运行时的 caches.default（标准 DOM 的 CacheStorage 接口不含此字段）。
     const cache = (caches as unknown as { default: Cache }).default;
     const cacheKey = subscriberCacheKey(path);
     const cached = await cache.match(cacheKey);
     if (cached) return cached;
 
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
     let upstream: Response;
     try {
         upstream = await githubApiRequest(apiUrl, token, {

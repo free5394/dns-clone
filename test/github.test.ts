@@ -1,7 +1,12 @@
 // github.test.ts — src/sync/github.ts 覆盖
 // 重点：404 分支（仓库自动创建 / 文件不存在走新建）——此前因 fetchWithRetry 抛普通 Error 而完全不可达
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { ensureRepoExists, getCurrentGitHubContent, updateFileOnGitHub } from "../src/sync/github.ts";
+import {
+    ensureRepoExists,
+    getCurrentGitHubContent,
+    updateFileOnGitHub,
+    readFileForSubscriber,
+} from "../src/sync/github.ts";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -196,5 +201,87 @@ describe("updateFileOnGitHub", () => {
         expect(putCall).toBeDefined();
         const encoded = JSON.parse(putCall![1]!.body as string).content as string;
         expect(atob(encoded)).toBe(largeContent);
+    });
+});
+
+// H-1 回归：Contents API 路径必须按段编码，owner / repo 必须走白名单校验
+describe("GitHub API URL 构造与路径校验 (H-1)", () => {
+    it("path 含空格与中文时按段 encodeURIComponent", async () => {
+        const spy = mockFetch(() => new Response("1.1.1.1", { status: 200 }));
+
+        await getCurrentGitHubContent({
+            token: "token",
+            owner: "owner",
+            repo: "repo",
+            path: "优选 IP/列表.txt",
+            log: () => {},
+        });
+
+        expect(spy.mock.calls[0][0]).toBe(
+            "https://api.github.com/repos/owner/repo/contents/%E4%BC%98%E9%80%89%20IP/%E5%88%97%E8%A1%A8.txt"
+        );
+    });
+
+    it("path 中的 ? 与 # 被编码，不会改写查询串或片段", async () => {
+        const spy = mockFetch((url, init) => {
+            if (url === "https://api.github.com/repos/owner/repo") return json({ name: "repo" });
+            if (init?.method === "PUT") return json({});
+            return json({ message: "Not Found" }, 404);
+        });
+
+        await updateFileOnGitHub({
+            token: "token",
+            owner: "owner",
+            repo: "repo",
+            path: "a?b#c.txt",
+            content: "x",
+            message: "m",
+            log: () => {},
+        });
+
+        const contentsCall = spy.mock.calls.find((c) => String(c[0]).includes("/contents/"));
+        expect(contentsCall?.[0]).toBe("https://api.github.com/repos/owner/repo/contents/a%3Fb%23c.txt");
+    });
+
+    it("非法 owner / repo 直接拒绝，且不发出任何请求", async () => {
+        for (const badOwner of ["../evil", "a/b", "a?b", "", "x".repeat(40)]) {
+            const spy = mockFetch(() => json({ name: "repo" }));
+            await expect(ensureRepoExists("token", badOwner, "repo", () => {})).rejects.toThrow(/GitHub owner/);
+            expect(spy, `owner=${JSON.stringify(badOwner)} 不应触网`).not.toHaveBeenCalled();
+        }
+
+        const spy = mockFetch(() => json({ name: "repo" }));
+        await expect(ensureRepoExists("token", "owner", "a/b", () => {})).rejects.toThrow(/GitHub repo/);
+        expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("绝对路径、.. 段、空段、反斜杠均被拒绝且不触网", async () => {
+        for (const badPath of ["/etc/passwd", "a/../b.txt", "a//b.txt", "a\\b.txt"]) {
+            const spy = mockFetch(() => new Response("x", { status: 200 }));
+            await expect(
+                getCurrentGitHubContent({
+                    token: "token",
+                    owner: "owner",
+                    repo: "repo",
+                    path: badPath,
+                    log: () => {},
+                })
+            ).rejects.toThrow(/GitHub 文件路径/);
+            expect(spy, `path=${JSON.stringify(badPath)} 不应触网`).not.toHaveBeenCalled();
+        }
+    });
+
+    it("readFileForSubscriber 非法路径不读缓存也不触网", async () => {
+        const cacheMatch = vi.fn(async () => undefined);
+        const cachePut = vi.fn(async () => undefined);
+        vi.stubGlobal("caches", { default: { match: cacheMatch, put: cachePut } });
+        const spy = mockFetch(() => new Response("x", { status: 200 }));
+
+        await expect(
+            readFileForSubscriber({ token: "token", owner: "owner", repo: "repo" }, "../etc/passwd")
+        ).rejects.toThrow(/GitHub 文件路径/);
+
+        expect(cacheMatch).not.toHaveBeenCalled();
+        expect(spy).not.toHaveBeenCalled();
     });
 });
