@@ -676,3 +676,142 @@ describe("GET /api/settings (Task 2.5 敏感字段过滤)", () => {
         expect(body.GITHUB_TOKEN).toBeUndefined();
     });
 });
+
+// M-7 回归：IP 源输入必须在信任边界做结构校验（策略白名单、路径形态、消息长度）
+describe("POST/PUT /api/ip_sources 输入校验 (M-7)", () => {
+    const valid = {
+        url: "https://example.com/m7/valid.txt",
+        github_path: "m7/valid.txt",
+        commit_message: "同步 IP 列表",
+        fetch_strategy: "direct_regex",
+    };
+
+    afterAll(async () => {
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm7/%'").run();
+    });
+
+    it("合法输入可保存（回归保护）", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(valid),
+        });
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as { success?: boolean }).success).toBe(true);
+    });
+
+    it("拒绝未登记的 fetch_strategy，且不落库", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                ...valid,
+                url: "https://example.com/m7/bad-strategy.txt",
+                github_path: "m7/bad-strategy.txt",
+                fetch_strategy: "no_such_strategy",
+            }),
+        });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toContain("策略");
+
+        const row = await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind("m7/bad-strategy.txt")
+            .first();
+        expect(row).toBeNull();
+    });
+
+    it("拒绝首尾带空白的 github_path", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                ...valid,
+                url: "https://example.com/m7/space.txt",
+                github_path: " m7/space.txt",
+            }),
+        });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toContain("路径");
+    });
+
+    it("拒绝包含 .. 段的 github_path", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                ...valid,
+                url: "https://example.com/m7/dotdot.txt",
+                github_path: "m7/../escape.txt",
+            }),
+        });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toContain("路径");
+    });
+
+    it("拒绝以 / 开头或含反斜杠的 github_path", async () => {
+        const cookie = await loginAndGetCookie();
+        for (const badPath of ["/m7/abs.txt", "m7\\win.txt"]) {
+            const res = await SELF.fetch("https://example.com/api/ip_sources", {
+                method: "POST",
+                headers: { Cookie: cookie, "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    ...valid,
+                    url: "https://example.com/m7/shape.txt",
+                    github_path: badPath,
+                }),
+            });
+            expect(res.status, `github_path=${JSON.stringify(badPath)} 应被拒绝`).toBe(400);
+            expect(((await res.json()) as { error?: string }).error).toContain("路径");
+        }
+    });
+
+    it("拒绝超过 200 字符的 commit_message", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                ...valid,
+                url: "https://example.com/m7/long-msg.txt",
+                github_path: "m7/long-msg.txt",
+                commit_message: "同".repeat(201),
+            }),
+        });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toContain("提交");
+    });
+
+    it("PUT 更新同样拒绝非法 fetch_strategy，且不改变原记录", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/m7/put.txt", "m7/put.txt", "更新前", "direct_regex")
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind("m7/put.txt")
+            .first()) as { id: number };
+
+        const res = await SELF.fetch(`https://example.com/api/ip_sources/${row.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                ...valid,
+                url: "https://example.com/m7/put.txt",
+                github_path: "m7/put.txt",
+                fetch_strategy: "no_such_strategy",
+            }),
+        });
+        expect(res.status).toBe(400);
+
+        const after = (await env.WUYA.prepare("SELECT fetch_strategy, commit_message FROM ip_sources WHERE id = ?")
+            .bind(row.id)
+            .first()) as { fetch_strategy: string; commit_message: string };
+        expect(after.fetch_strategy).toBe("direct_regex");
+        expect(after.commit_message).toBe("更新前");
+    });
+});

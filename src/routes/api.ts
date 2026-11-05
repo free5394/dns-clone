@@ -403,6 +403,65 @@ async function apiGetIpSources(db: D1Database): Promise<Response> {
     return jsonResponse(results);
 }
 
+/** IP 源输入（新增与更新共用），所有字段通过结构校验后才允许落库 */
+interface IpSourceInput {
+    url: string;
+    github_path: string;
+    commit_message: string;
+    fetch_strategy: string;
+}
+
+type IpSourceValidation = { ok: true; input: IpSourceInput } | { ok: false; error: string };
+
+/** 校验 GitHub 文件路径形态；返回 null 表示合法 */
+function validateGithubPath(path: string): string | null {
+    if (path.length === 0) return "GitHub 文件路径不能为空。";
+    if (path.length > 512) return "GitHub 文件路径总长必须在 1–512 个字符之间。";
+    if (path.trim() !== path) return "GitHub 文件路径首尾不能包含空白。";
+    if (path.startsWith("/")) return "GitHub 文件路径不能以 / 开头。";
+    if (path.includes("\\")) return "GitHub 文件路径不能包含反斜杠。";
+    if (Array.from(path).some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f))
+        return "GitHub 文件路径不能包含控制字符。";
+    const segments = path.split("/");
+    if (segments.some((seg) => seg.length === 0)) return "GitHub 文件路径不能包含空路径段。";
+    if (segments.some((seg) => seg === "..")) return "GitHub 文件路径不能包含 .. 段。";
+    if (segments.some((seg) => seg.length > 255)) return "GitHub 文件路径的每一段不能超过 255 个字符。";
+    return null;
+}
+
+/** 信任边界校验：URL 先走 SSRF 防护再限长；路径、提交信息与策略逐一约束 */
+function validateIpSourceInput(body: {
+    url?: string;
+    github_path?: string;
+    commit_message?: string;
+    fetch_strategy?: string;
+}): IpSourceValidation {
+    const { url, github_path, commit_message, fetch_strategy } = body;
+
+    if (typeof url !== "string" || url.length === 0) return { ok: false, error: "URL 不能为空。" };
+    try {
+        assertSafeHttpUrl(url);
+    } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : "URL 校验失败。" };
+    }
+    if (url.length > 2048) return { ok: false, error: "URL 长度不能超过 2048 个字符。" };
+
+    if (typeof github_path !== "string") return { ok: false, error: "GitHub 文件路径不能为空。" };
+    const pathError = validateGithubPath(github_path);
+    if (pathError !== null) return { ok: false, error: pathError };
+
+    if (typeof commit_message !== "string") return { ok: false, error: "提交信息不能为空。" };
+    const trimmedMessage = commit_message.trim();
+    if (trimmedMessage.length < 1 || trimmedMessage.length > 200)
+        return { ok: false, error: "提交信息长度必须在 1–200 个字符之间。" };
+
+    const strategyNames = Object.keys(FETCH_STRATEGIES);
+    if (typeof fetch_strategy !== "string" || !strategyNames.includes(fetch_strategy))
+        return { ok: false, error: `抓取策略非法：仅支持 ${strategyNames.join("、")}。` };
+
+    return { ok: true, input: { url, github_path, commit_message, fetch_strategy } };
+}
+
 async function apiAddIpSource(request: Request, db: D1Database): Promise<Response> {
     const body = await readJsonBody<{
         url?: string;
@@ -411,15 +470,9 @@ async function apiAddIpSource(request: Request, db: D1Database): Promise<Respons
         fetch_strategy?: string;
     }>(request);
     if (body === null) return BAD_JSON();
-    const { url, github_path, commit_message, fetch_strategy } = body;
-    if (!url || !github_path || !commit_message || !fetch_strategy) {
-        return jsonResponse({ error: "缺少必填字段或尚未成功探测获取策略。" }, 400);
-    }
-    try {
-        assertSafeHttpUrl(url);
-    } catch (e) {
-        return jsonResponse({ error: e instanceof Error ? e.message : "URL 校验失败" }, 400);
-    }
+    const validation = validateIpSourceInput(body);
+    if (!validation.ok) return jsonResponse({ error: validation.error }, 400);
+    const { url, github_path, commit_message, fetch_strategy } = validation.input;
     try {
         await db
             .prepare("INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)")
@@ -440,15 +493,9 @@ async function apiUpdateIpSource(request: Request, db: D1Database, id: number): 
         fetch_strategy?: string;
     }>(request);
     if (body === null) return BAD_JSON();
-    const { url, github_path, commit_message, fetch_strategy } = body;
-    if (!url || !github_path || !commit_message || !fetch_strategy) {
-        return jsonResponse({ error: "缺少必填字段或尚未成功探测获取策略。" }, 400);
-    }
-    try {
-        assertSafeHttpUrl(url);
-    } catch (e) {
-        return jsonResponse({ error: e instanceof Error ? e.message : "URL 校验失败" }, 400);
-    }
+    const validation = validateIpSourceInput(body);
+    if (!validation.ok) return jsonResponse({ error: validation.error }, 400);
+    const { url, github_path, commit_message, fetch_strategy } = validation.input;
     try {
         await db
             .prepare("UPDATE ip_sources SET url=?, github_path=?, commit_message=?, fetch_strategy=? WHERE id=?")
