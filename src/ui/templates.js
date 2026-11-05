@@ -582,7 +582,10 @@ export function consumeSseEvents(buffer, chunk) {
  * 模板字符串中的 settings 仅渲染为可读视图，敏感字段已被剔除
  */
 function getDashboardScript(domains, ipSources, settings) {
-    return `
+    // 分四段拼装客户端脚本：数据准备 + 渲染 + 交互 + 同步/启动。
+    // 每个分段函数只返回字符串片段，拼装结果与拆分前逐字一致。
+    return (
+        `
   const consumeSseEvents = ${consumeSseEvents.toString()};
   function showNotification(message, type = 'info', duration = 5000) {
       const container = document.getElementById('notifications');
@@ -601,7 +604,26 @@ function getDashboardScript(domains, ipSources, settings) {
           }, { once: true });
       }, duration);
   }
-  async function apiFetch(url, options = {}) { const res = await fetch(url, { headers: { "Content-Type": "application/json", ...options.headers }, ...options }); if (!res.ok) { const errData = await res.json().catch(() => ({ error: \`HTTP 错误: \${res.status}\` })); if (res.status === 401) { showNotification('会话已过期，请重新登录。', 'error'); setTimeout(() => window.location.href = '/login', 2000); } throw new Error(errData.error); } try { return await res.json(); } catch (e) { return {}; } }
+  // 统一请求封装：401 一律提示并跳登录，业务错误直接抛出后端文案。
+  async function apiFetch(url, options = {}) {
+      const res = await fetch(url, {
+          headers: { "Content-Type": "application/json", ...options.headers },
+          ...options,
+      });
+      if (!res.ok) {
+          const errData = await res.json().catch(() => ({ error: \`HTTP 错误: \${res.status}\` }));
+          if (res.status === 401) {
+              showNotification('会话已过期，请重新登录。', 'error');
+              setTimeout(() => window.location.href = '/login', 2000);
+          }
+          throw new Error(errData.error);
+      }
+      try {
+          return await res.json();
+      } catch (e) {
+          return {};
+      }
+  }
   let currentDomains = ${safeJsonForScript(domains)};
   let currentIpSources = ${safeJsonForScript(ipSources)};
   let currentSettings = ${safeJsonForScript(settings)};
@@ -612,7 +634,17 @@ function getDashboardScript(domains, ipSources, settings) {
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
   const formatBeijingTime = (isoStr) => { if (!isoStr) return '从未'; const d = new Date(isoStr); return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(d).replace(/\\//g, '-'); };
+` +
+        getDashboardRenderScript() +
+        getDashboardInteractionScript() +
+        getDashboardSyncScript() +
+        getDashboardBootstrapScript()
+    );
+}
 
+// 仪表盘脚本 · 渲染段（M-1）：纯展示助手，输入行数据输出 HTML
+function getDashboardRenderScript() {
+    return `
   function renderLiveRecords(records) {
       if (!records || records.length === 0) return '无记录';
       const first = records[0];
@@ -671,7 +703,12 @@ function getDashboardScript(domains, ipSources, settings) {
         container.innerHTML = '<div class="empty-state"><p>暂无 IP 源，点右上角「添加IP源」新建一条（需先在「系统设置」填好 GitHub Token / 用户名 / 仓库）。</p></div>';
       }
   }
+`;
+}
 
+// 仪表盘脚本 · 交互段（M-1）：弹窗、表单保存、列表刷新
+function getDashboardInteractionScript() {
+    return `
   window.copyToClipboard = (text) => { navigator.clipboard.writeText(text).then(() => { showNotification(\`已复制: \${text}\`, 'success', 3000); }, () => { showNotification(\`复制失败，请检查浏览器权限。\`, 'error'); }); };
 
   window.openModal = (modalId, id = null) => {
@@ -766,7 +803,12 @@ function getDashboardScript(domains, ipSources, settings) {
   }
     window.deleteIpSource = async (id) => { if (!confirm('确定要删除这个IP源吗？')) return; try { await apiFetch(\`/api/ip_sources/\${id}\`, { method: 'DELETE' }); showNotification('IP源已删除', 'success'); await refreshIpSources(); } catch(e) { showNotification(\`删除失败: \${e.message}\`, 'error'); } }
     async function refreshIpSources() { try { currentIpSources = await apiFetch('/api/ip_sources'); renderIpSourceList(); } catch (e) { showNotification(\`更新IP源列表失败: \${e.message}\`, 'error'); } }
+`;
+}
 
+// 仪表盘脚本 · 同步段（M-1）：流式同步、单条同步、设置保存
+function getDashboardSyncScript() {
+    return `
   async function handleStreamingRequest(url, btn, logOutputElem) {
       const allButtons = document.querySelectorAll('button'); allButtons.forEach(b => b.disabled = true); if (btn) btn.setAttribute('aria-busy', 'true'); // 进度只由日志面板呈现，按钮只禁用不改文案
       logOutputElem.style.display = 'block';
@@ -878,7 +920,12 @@ function getDashboardScript(domains, ipSources, settings) {
           btn.disabled = false; btn.removeAttribute('aria-busy');
       }
   }
+`;
+}
 
+// 仪表盘脚本 · 启动段（M-1）：DOMContentLoaded 绑定与首屏加载
+function getDashboardBootstrapScript() {
+    return `
   document.addEventListener('DOMContentLoaded', async () => {
       renderDomainList();
       renderIpSourceList();
