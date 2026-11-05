@@ -21,17 +21,7 @@ import { syncSingleIpSource, syncAllIpSources } from "../sync/ip-sources.ts";
 import { assertSafeHttpUrl } from "../util/url-safety.ts";
 import { fetchWithTimeout } from "../util/fetch.ts";
 import { MAX_BATCH_SIZE } from "../util/batch-size.ts";
-
-/** 允许写入的 settings 白名单 */
-const ALLOWED_SETTINGS_KEYS = new Set([
-    "CF_API_TOKEN",
-    "CF_ZONE_ID",
-    "GITHUB_TOKEN",
-    "GITHUB_OWNER",
-    "GITHUB_REPO",
-    "THREE_NETWORK_SOURCE",
-    "BATCH_SIZE",
-]);
+import { CONFIG_SETTING_KEYS, SECRET_SETTING_KEYS, WRITABLE_SETTING_KEYS } from "../db/settings.ts";
 
 /** 检测 D1/SQLite UNIQUE 约束违例（D1 同时支持 message 与 code 两种错误呈现方式） */
 const isUniqueViolation = (e: unknown): boolean =>
@@ -231,16 +221,16 @@ async function apiSetSettings(request: Request, db: D1Database): Promise<Respons
     const rawSettings = rawBody;
 
     // 白名单：Secret Token 的空字符串表示保持不变，其它字段沿用空串清除语义。
-    const secretSettingKeys = new Set(["CF_API_TOKEN", "GITHUB_TOKEN"]);
+
     const settings: Record<string, string | null> = {};
     for (const [key, value] of Object.entries(rawSettings)) {
-        if (!ALLOWED_SETTINGS_KEYS.has(key)) continue;
+        if (!WRITABLE_SETTING_KEYS.has(key)) continue;
         if (value === null || value === undefined) {
             settings[key] = null;
         } else {
             const text = (typeof value === "string" ? value : String(value)).trim();
             if (text === "") {
-                if (secretSettingKeys.has(key)) continue;
+                if (SECRET_SETTING_KEYS.has(key)) continue;
                 settings[key] = null;
             } else {
                 settings[key] = text;
@@ -255,10 +245,9 @@ async function apiSetSettings(request: Request, db: D1Database): Promise<Respons
         }
     }
 
-    const configKeys = ["CF_API_TOKEN", "CF_ZONE_ID", "GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO"];
     const currentConfig = Object.fromEntries(
-        await Promise.all(configKeys.map(async (key) => [key, await getSetting(db, key)]))
-    ) as Record<(typeof configKeys)[number], string | null>;
+        await Promise.all(CONFIG_SETTING_KEYS.map(async (key) => [key, await getSetting(db, key)]))
+    ) as Record<(typeof CONFIG_SETTING_KEYS)[number], string | null>;
     const effective = { ...currentConfig, ...settings };
     const { CF_API_TOKEN, CF_ZONE_ID, GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO } = effective;
 

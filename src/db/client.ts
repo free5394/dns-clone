@@ -1,6 +1,8 @@
 // client.ts — D1 数据库统一访问层
 // 后续所有 sync 的唯一 DB 入口（阶段 D 起使用）；本阶段先承载 settings 读取
 
+import { SENSITIVE_SETTINGS_KEYS } from "./settings.ts";
+
 /** 查询全部结果（泛型版） */
 export async function queryAll<T = unknown>(db: D1Database, sql: string, ...bind: unknown[]): Promise<T[]> {
     const { results } = await db
@@ -33,14 +35,6 @@ export async function getFullSettings(db: D1Database) {
     }
     return settings;
 }
-
-/** 敏感字段：序列化到前端前过滤（Token、密码哈希等） */
-export const SENSITIVE_SETTINGS_KEYS = new Set([
-    "ADMIN_PASSWORD_HASH",
-    "PASSWORD_SALT",
-    "CF_API_TOKEN",
-    "GITHUB_TOKEN",
-]);
 
 /** 手动同步互斥锁的 settings 键：仅供内部互斥，不进入用户可见设置、也不在写入白名单里 */
 export const MANUAL_SYNC_LOCK_KEY = "MANUAL_SYNC_RUNNING";
