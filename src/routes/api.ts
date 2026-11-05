@@ -1,7 +1,14 @@
 // api.ts — API 路由层（handleApiRequest + 所有 /api/* 处理函数）
 // 从 index.legacy.js 提取（原 104-302、227-302、1085-1148 行区域）
 
-import { getSetting, setSetting, getCfApiSettings, getGitHubSettings, getSafeSettings } from "../db/client.ts";
+import {
+    getSetting,
+    setSetting,
+    getCfApiSettings,
+    getGitHubSettings,
+    getSafeSettings,
+    acquireManualSyncLock,
+} from "../db/client.ts";
 import { ensureInitialData } from "../db/migrations.ts";
 import { jsonResponse, getCookie } from "../util/http.ts";
 import { hashPassword, isAuthenticated, verifyPassword } from "../util/auth.ts";
@@ -61,9 +68,9 @@ export async function handleApiRequest(request: Request, env: { WUYA: D1Database
     if (method === "GET" && path === "/api/domains") return await apiGetDomains(request, db);
     if (method === "POST" && path === "/api/domains") return await apiAddDomain(request, db);
     if (method === "POST" && path === "/api/sync")
-        return syncAllDomains(env, true, request.signal) as Promise<Response>;
+        return withManualSyncLock(db, (lockToken) => syncAllDomains(env, true, request.signal, lockToken));
     if (method === "POST" && path === "/api/domains/sync_system")
-        return syncSystemDomains(env, true, request.signal) as Promise<Response>;
+        return withManualSyncLock(db, (lockToken) => syncSystemDomains(env, true, request.signal, lockToken));
 
     const domainMatch = path.match(/^\/api\/domains\/(\d+)$/);
     if (domainMatch) {
@@ -88,7 +95,7 @@ export async function handleApiRequest(request: Request, env: { WUYA: D1Database
     if (method === "POST" && path === "/api/ip_sources") return await apiAddIpSource(request, db);
     if (method === "POST" && path === "/api/ip_sources/probe") return await apiProbeIpSource(request);
     if (method === "POST" && path === "/api/ip_sources/sync_all")
-        return syncAllIpSources(env, true, request.signal) as Promise<Response>;
+        return withManualSyncLock(db, (lockToken) => syncAllIpSources(env, true, request.signal, lockToken));
 
     const ipSourceMatch = path.match(/^\/api\/ip_sources\/(\d+)$/);
     if (ipSourceMatch) {
@@ -104,6 +111,19 @@ export async function handleApiRequest(request: Request, env: { WUYA: D1Database
     }
 
     return jsonResponse({ error: "API 端点未找到" }, 404);
+}
+
+/**
+ * 手动全量同步的互斥入口：抢不到锁直接 409，避免重复点击把同一批任务跑两遍。
+ * 锁在任务流内部（`finally`）释放，覆盖成功、异常与中断三种结束方式。
+ */
+async function withManualSyncLock(
+    db: D1Database,
+    run: (lockToken: string) => Promise<Response | void>
+): Promise<Response> {
+    const lockToken = await acquireManualSyncLock(db);
+    if (!lockToken) return jsonResponse({ error: "手动同步任务正在执行，请稍后再试。" }, 409);
+    return (await run(lockToken)) as Response;
 }
 
 async function apiSetup(request: Request, db: D1Database): Promise<Response> {

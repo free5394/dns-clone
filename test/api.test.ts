@@ -861,3 +861,65 @@ describe("POST /api/ip_sources/probe 总时长预算 (M-9)", () => {
         }
     });
 });
+
+// M-8：手动全量同步的并发防护（第二个请求应被拒绝，陈旧锁不应永久阻塞）
+describe("手动全量同步并发防护 (M-8)", () => {
+    const LOCK_KEY = "MANUAL_SYNC_RUNNING";
+
+    async function writeLock(value: number): Promise<void> {
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
+            .bind(LOCK_KEY, String(value))
+            .run();
+    }
+
+    async function clearLock(): Promise<void> {
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = ?").bind(LOCK_KEY).run();
+    }
+
+    it("已有任务运行时返回 409 并提示稍后再试", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        await writeLock(Date.now() + 60000);
+
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/sync", { method: "POST", headers: { Cookie: cookie } }),
+                env
+            );
+            expect(res.status).toBe(409);
+            const body = (await res.json()) as { error?: string };
+            expect(body.error).toContain("手动同步任务正在执行");
+        } finally {
+            await clearLock();
+        }
+    });
+
+    it("陈旧锁不阻塞新的手动同步", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        await writeLock(Date.now() - 60000);
+
+        // 不读取响应体，避免真正驱动 SSE 流去请求上游
+        const origFetch = globalThis.fetch;
+        globalThis.fetch = (() =>
+            Promise.resolve(
+                new Response(JSON.stringify({ success: true, result: [] }), {
+                    status: 200,
+                    headers: { "Content-Type": "application/json" },
+                })
+            )) as typeof fetch;
+
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/sync", { method: "POST", headers: { Cookie: cookie } }),
+                env
+            );
+            expect(res.status).not.toBe(409);
+        } finally {
+            globalThis.fetch = origFetch;
+            await clearLock();
+        }
+    });
+});

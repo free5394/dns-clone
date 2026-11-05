@@ -1,7 +1,7 @@
 // domains.ts — 域名克隆同步逻辑
 // 从 index.legacy.js 提取（原 syncScheduledDomains / syncDomainLogic / syncSingleDomain / syncAllDomains / syncSystemDomains / resolveRecursively / processInChunks / updateCloudflareDns / getDnsFromDoh）
 
-import { getSetting, getCfApiSettings, queryAll } from "../db/client.ts";
+import { getSetting, getCfApiSettings, queryAll, releaseManualSyncLock } from "../db/client.ts";
 import { fetchThreeNetworkIps } from "./ip-sources.ts";
 import { beijingTimeLog } from "../util/log.ts";
 import { runWithOptionalLog } from "../util/run-with-log.ts";
@@ -120,61 +120,74 @@ export async function syncSingleDomain(
     return await runWithOptionalLog(syncLogic, returnLogs, signal);
 }
 
-/** 批量同步全部启用域名 */
+/** 批量同步全部启用域名（lockToken 由路由层抢占，任务结束后在此释放） */
 export async function syncAllDomains(
     env: { WUYA: D1Database },
     returnLogs: boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    lockToken?: string
 ): Promise<Response | void> {
     const db = env.WUYA;
     const syncLogic = async (log: LogFn) => {
-        log("开始批量同步任务...");
-        const { token, zoneId } = await getCfApiSettings(db);
-        if (!token || !zoneId) throw new Error("尚未配置 Cloudflare API 令牌或区域 ID。");
-        const domains = await queryAll<DomainRow>(db, "SELECT * FROM domains WHERE is_enabled = 1");
-        if (domains.length === 0) {
-            log("没有需要同步的已启用目标。");
-            return;
-        }
-        log(`发现 ${domains.length} 个已启用的目标需要同步。`);
-        const syncContext: SyncContext = {};
-        for (const domain of domains) {
-            try {
-                await syncDomainLogic(domain, token, zoneId, db, log, syncContext);
-            } catch (e) {
-                log(`处理域名 ${domain.target_domain} 失败: ${e instanceof Error ? e.message : String(e)}`);
+        try {
+            log("开始批量同步任务...");
+            const { token, zoneId } = await getCfApiSettings(db);
+            if (!token || !zoneId) throw new Error("尚未配置 Cloudflare API 令牌或区域 ID。");
+            const domains = await queryAll<DomainRow>(db, "SELECT * FROM domains WHERE is_enabled = 1");
+            if (domains.length === 0) {
+                log("没有需要同步的已启用目标。");
+                return;
             }
+            log(`发现 ${domains.length} 个已启用的目标需要同步。`);
+            const syncContext: SyncContext = {};
+            for (const domain of domains) {
+                try {
+                    await syncDomainLogic(domain, token, zoneId, db, log, syncContext);
+                } catch (e) {
+                    log(`处理域名 ${domain.target_domain} 失败: ${e instanceof Error ? e.message : String(e)}`);
+                }
+            }
+            log("所有目标同步任务执行完毕。");
+        } finally {
+            if (lockToken) await releaseManualSyncLock(db, lockToken);
         }
-        log("所有目标同步任务执行完毕。");
     };
 
     return runWithOptionalLog(syncLogic, returnLogs, signal);
 }
 
-/** 批量同步系统预设域名 */
+/** 批量同步系统预设域名（lockToken 由路由层抢占，任务结束后在此释放） */
 export async function syncSystemDomains(
     env: { WUYA: D1Database },
     returnLogs: boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    lockToken?: string
 ): Promise<Response | void> {
     const db = env.WUYA;
     const syncLogic = async (log: LogFn) => {
-        log("开始同步系统预设域名...");
-        const { token, zoneId } = await getCfApiSettings(db);
-        if (!token || !zoneId) throw new Error("尚未配置 Cloudflare API 令牌或区域 ID。");
-        const domains = await queryAll<DomainRow>(db, "SELECT * FROM domains WHERE is_enabled = 1 AND is_system = 1");
-        if (domains.length === 0) {
-            log("没有需要同步的已启用系统域名。");
-            return;
+        try {
+            log("开始同步系统预设域名...");
+            const { token, zoneId } = await getCfApiSettings(db);
+            if (!token || !zoneId) throw new Error("尚未配置 Cloudflare API 令牌或区域 ID。");
+            const domains = await queryAll<DomainRow>(
+                db,
+                "SELECT * FROM domains WHERE is_enabled = 1 AND is_system = 1"
+            );
+            if (domains.length === 0) {
+                log("没有需要同步的已启用系统域名。");
+                return;
+            }
+            log(`发现 ${domains.length} 个已启用的系统域名需要同步。`);
+            const syncContext: SyncContext = {};
+            for (const domain of domains) {
+                await syncDomainLogic(domain, token, zoneId, db, log, syncContext).catch((e) => {
+                    log(`系统域名 ${domain.target_domain} 同步失败: ${e instanceof Error ? e.message : String(e)}`);
+                });
+            }
+            log("系统域名同步任务执行完毕。");
+        } finally {
+            if (lockToken) await releaseManualSyncLock(db, lockToken);
         }
-        log(`发现 ${domains.length} 个已启用的系统域名需要同步。`);
-        const syncContext: SyncContext = {};
-        for (const domain of domains) {
-            await syncDomainLogic(domain, token, zoneId, db, log, syncContext).catch((e) => {
-                log(`系统域名 ${domain.target_domain} 同步失败: ${e instanceof Error ? e.message : String(e)}`);
-            });
-        }
-        log("系统域名同步任务执行完毕。");
     };
 
     return runWithOptionalLog(syncLogic, returnLogs, signal);

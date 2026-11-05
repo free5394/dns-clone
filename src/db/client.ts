@@ -42,10 +42,54 @@ export const SENSITIVE_SETTINGS_KEYS = new Set([
     "GITHUB_TOKEN",
 ]);
 
+/** 手动同步互斥锁的 settings 键：仅供内部互斥，不进入用户可见设置、也不在写入白名单里 */
+export const MANUAL_SYNC_LOCK_KEY = "MANUAL_SYNC_RUNNING";
+
+/** 锁最长有效时间：超过即视为上次任务异常中断，允许接管，避免异常后永久锁死 */
+const MANUAL_SYNC_LOCK_TTL_MS = 180000;
+
+/**
+ * 抢占手动同步锁，成功返回本次持有令牌（过期时间戳字符串），失败返回 null。
+ * 先 `INSERT OR IGNORE` 抢新锁；已存在时判断是否陈旧，再用 CAS（比对原值）接管，
+ * 避免两个请求同时判定「已过期」后双跑。
+ */
+export async function acquireManualSyncLock(db: D1Database): Promise<string | null> {
+    const now = Date.now();
+    const token = String(now + MANUAL_SYNC_LOCK_TTL_MS);
+
+    const inserted = await db
+        .prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)")
+        .bind(MANUAL_SYNC_LOCK_KEY, token)
+        .run();
+    if ((inserted.meta.changes ?? 0) === 1) return token;
+
+    const row = await db
+        .prepare("SELECT value FROM settings WHERE key = ?")
+        .bind(MANUAL_SYNC_LOCK_KEY)
+        .first<{ value: string }>();
+    if (!row) return null; // 竞态：对方刚释放，交给调用方下一轮再抢
+
+    const current = Number(row.value);
+    if (Number.isFinite(current) && current > now) return null; // 仍在运行中
+
+    const takenOver = await db
+        .prepare("UPDATE settings SET value = ? WHERE key = ? AND value = ?")
+        .bind(token, MANUAL_SYNC_LOCK_KEY, row.value)
+        .run();
+    return (takenOver.meta.changes ?? 0) === 1 ? token : null;
+}
+
+/** 释放手动同步锁：只有令牌一致（仍是本次持有时）才删除，避免陈旧持有者误删新锁 */
+export async function releaseManualSyncLock(db: D1Database, token: string): Promise<void> {
+    await db.prepare("DELETE FROM settings WHERE key = ? AND value = ?").bind(MANUAL_SYNC_LOCK_KEY, token).run();
+}
+
 /** 读取安全的 settings（前端可见，已剔除敏感字段） */
 export async function getSafeSettings(db: D1Database): Promise<Record<string, string>> {
     const all = await getFullSettings(db);
     for (const key of SENSITIVE_SETTINGS_KEYS) delete all[key];
+    // 运行标记不是用户设置，不回传给前端
+    delete all[MANUAL_SYNC_LOCK_KEY];
     return all;
 }
 

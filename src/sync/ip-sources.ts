@@ -1,7 +1,7 @@
 // ip-sources.ts — IP 源抓取与同步逻辑
 // 从 index.legacy.js 提取（原 1158-1236、1598-1673 行 + sync 入口函数）
 
-import { getGitHubSettings, getSetting, queryAll } from "../db/client.ts";
+import { getGitHubSettings, getSetting, queryAll, releaseManualSyncLock } from "../db/client.ts";
 import { getCurrentGitHubContent, updateFileOnGitHub } from "./github.ts";
 import { beijingTimeLog } from "../util/log.ts";
 import { createLogStreamResponse } from "../util/sse.ts";
@@ -167,26 +167,31 @@ export async function syncSingleIpSource(
     return await runWithOptionalLog(syncLogic, returnLogs, signal);
 }
 
-/** 批量同步全部启用 IP 源 */
+/** 批量同步全部启用 IP 源（lockToken 由路由层抢占，任务结束后在此释放） */
 export async function syncAllIpSources(
     env: { WUYA: D1Database },
     returnLogs: boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    lockToken?: string
 ): Promise<Response | void> {
     const db = env.WUYA;
     const syncLogic = async (log: LogFn) => {
-        log("开始批量同步IP源...");
-        const sources = await queryAll<IpSourceRow>(db, "SELECT * FROM ip_sources WHERE is_enabled = 1");
-        if (sources.length === 0) {
-            log("没有已启用的IP源需要同步。");
-            return;
+        try {
+            log("开始批量同步IP源...");
+            const sources = await queryAll<IpSourceRow>(db, "SELECT * FROM ip_sources WHERE is_enabled = 1");
+            if (sources.length === 0) {
+                log("没有已启用的IP源需要同步。");
+                return;
+            }
+            for (const source of sources) {
+                await syncSingleIpSource(source.id, env, false).catch((e) =>
+                    log(`处理ID ${source.id} 失败: ${e instanceof Error ? e.message : String(e)}`)
+                );
+            }
+            log("所有IP源同步任务执行完毕。");
+        } finally {
+            if (lockToken) await releaseManualSyncLock(db, lockToken);
         }
-        for (const source of sources) {
-            await syncSingleIpSource(source.id, env, false).catch((e) =>
-                log(`处理ID ${source.id} 失败: ${e instanceof Error ? e.message : String(e)}`)
-            );
-        }
-        log("所有IP源同步任务执行完毕。");
     };
 
     if (returnLogs) return createLogStreamResponse(syncLogic, signal);
