@@ -513,6 +513,27 @@ async function apiDeleteIpSource(db: D1Database, id: number): Promise<Response> 
     return jsonResponse({ success: true, message: "IP源删除成功。" });
 }
 
+/** 探测总预算：三个策略各自 15–20 秒超时，串行最坏约 50 秒，远超一次请求的合理等待时间 */
+const PROBE_TOTAL_TIMEOUT_MS = 25000;
+
+/** 探测总预算耗尽标记，用于把「超时」与「策略自身失败」区分开 */
+class ProbeTimeoutError extends Error {}
+
+/** 用剩余预算包住单次策略调用，超时抛出 ProbeTimeoutError 并清理定时器 */
+async function withProbeTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new ProbeTimeoutError("探测总时长预算已用尽")), ms);
+            }),
+        ]);
+    } finally {
+        if (timer !== undefined) clearTimeout(timer);
+    }
+}
+
 async function apiProbeIpSource(request: Request): Promise<Response> {
     const body = await readJsonBody<{ url?: string }>(request);
     if (body === null) return BAD_JSON();
@@ -524,9 +545,19 @@ async function apiProbeIpSource(request: Request): Promise<Response> {
         return jsonResponse({ error: e instanceof Error ? e.message : "URL 校验失败" }, 400);
     }
 
+    const deadlineAt = Date.now() + PROBE_TOTAL_TIMEOUT_MS;
+    let attempts = 0;
+    let budgetExhausted = false;
+
     for (const [strategyName, strategyFn] of Object.entries(FETCH_STRATEGIES)) {
+        const remaining = deadlineAt - Date.now();
+        if (remaining <= 0) {
+            budgetExhausted = true;
+            break;
+        }
+        attempts += 1;
         try {
-            const ips = await strategyFn(url);
+            const ips = await withProbeTimeout(strategyFn(url), remaining);
             if (ips && ips.length > 0) {
                 return jsonResponse({
                     success: true,
@@ -536,9 +567,18 @@ async function apiProbeIpSource(request: Request): Promise<Response> {
                 });
             }
         } catch (e) {
+            if (e instanceof ProbeTimeoutError) budgetExhausted = true;
             console.log(`IP 源探测失败：URL '${url}'，策略 '${strategyName}'：${e instanceof Error ? e.stack : e}`);
         }
     }
 
+    if (budgetExhausted) {
+        return jsonResponse(
+            {
+                error: `IP 源探测超时：已尝试 ${attempts} 个策略，总时长超过 ${PROBE_TOTAL_TIMEOUT_MS / 1000} 秒预算，未提取到 IP。`,
+            },
+            400
+        );
+    }
     return jsonResponse({ error: "所有探测方案均失败，无法从此URL提取IP。" }, 400);
 }

@@ -815,3 +815,49 @@ describe("POST/PUT /api/ip_sources 输入校验 (M-7)", () => {
         expect(after.commit_message).toBe("更新前");
     });
 });
+
+// M-9 回归：探测必须受总时长预算约束，不能按策略超时逐个串行累加（最坏约 50 秒）
+describe("POST /api/ip_sources/probe 总时长预算 (M-9)", () => {
+    it("所有策略都挂起时，探测在总预算内结束并返回 400", async () => {
+        // 真实计时器下完成登录，避免假定时器卡住 D1 会话查询
+        const cookie = await loginAndGetCookie();
+
+        let fetchCalls = 0;
+        const origFetch = globalThis.fetch;
+        // 所有上游请求永久挂起，直到被 AbortSignal 中断（模拟三个策略都超时）
+        globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+            fetchCalls += 1;
+            return new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+            });
+        }) as typeof fetch;
+
+        try {
+            vi.useFakeTimers();
+            let settled: Response | null = null;
+            handleApiRequest(
+                new Request("https://example.com/api/ip_sources/probe", {
+                    method: "POST",
+                    headers: { Cookie: cookie, "Content-Type": "application/json" },
+                    body: JSON.stringify({ url: "https://example.com/m9/never-responds.txt" }),
+                }),
+                env
+            )
+                .then((response) => {
+                    settled = response;
+                })
+                .catch(() => {});
+
+            await vi.advanceTimersByTimeAsync(30000);
+
+            expect(fetchCalls, "探测应已发起上游请求（否则是鉴权或 D1 未就绪）").toBeGreaterThan(0);
+            expect(settled, "30 秒后探测必须已结束；当前实现按 15+20+15 秒串行累加，此时仍在等待").not.toBeNull();
+            expect((settled as unknown as Response).status).toBe(400);
+            const body = (await (settled as unknown as Response).json()) as { error?: string };
+            expect(body.error).toContain("探测");
+        } finally {
+            vi.useRealTimers();
+            globalThis.fetch = origFetch;
+        }
+    });
+});
