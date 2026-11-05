@@ -84,6 +84,16 @@ export async function initializeAndMigrateDatabase(env: { WUYA: D1Database }): P
     // 索引与清理：登录尝试表 + 索引（计划 FIX-05）
     // I1：必须在 CF 凭据检查之前执行——未配置凭据的实例也需要索引与 login_attempts 清理
     await db.prepare("CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_time ON login_attempts(ip, attempted_at)").run();
+    // M-11：定时取批按「失败优先 + 时间升序」排序。排序键是 CASE 表达式，普通列索引压不住，
+    // 必须建表达式索引，否则每次取批都要全表扫描 + 临时 B 树排序（EXPLAIN QUERY PLAN 已验证）。
+    await db.batch([
+        db.prepare(
+            "CREATE INDEX IF NOT EXISTS idx_domains_batch ON domains(is_enabled, (CASE last_sync_status WHEN 'failed' THEN 0 ELSE 1 END), last_synced_time)"
+        ),
+        db.prepare(
+            "CREATE INDEX IF NOT EXISTS idx_ip_sources_batch ON ip_sources(is_enabled, (CASE last_sync_status WHEN 'failed' THEN 0 ELSE 1 END), last_synced_time)"
+        ),
+    ]);
     await db.prepare("DELETE FROM login_attempts WHERE attempted_at < datetime('now', '-1 hour')").run();
 
     // 记录本次迁移时间，供下次门控使用
