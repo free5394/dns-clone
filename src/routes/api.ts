@@ -258,6 +258,14 @@ async function apiGetDomains(request: Request, db: D1Database): Promise<Response
     return jsonResponse(results);
 }
 
+/** 深解析开关：只接受 0 / 1 与布尔值，字符串与其它数字一律拒绝，避免脏值被 ?. 隐式兜底成 1 写库 */
+function normalizeDeepResolve(value: unknown): { ok: true; value: number | null } | { ok: false } {
+    if (value === undefined || value === null) return { ok: true, value: null };
+    if (value === true || value === 1) return { ok: true, value: 1 };
+    if (value === false || value === 0) return { ok: true, value: 0 };
+    return { ok: false };
+}
+
 async function handleDomainMutation(
     request: Request,
     db: D1Database,
@@ -267,7 +275,7 @@ async function handleDomainMutation(
     const body = await readJsonBody<{
         source_domain?: string;
         target_domain_prefix?: string;
-        is_deep_resolve?: number;
+        is_deep_resolve?: unknown;
         ttl?: number;
         notes?: string;
     }>(request);
@@ -309,6 +317,8 @@ async function handleDomainMutation(
     ) {
         return jsonResponse({ error: "TTL 必须为 1（自动）或 60 到 86400 之间的整数。" }, 400);
     }
+    const deepResolve = normalizeDeepResolve(is_deep_resolve);
+    if (!deepResolve.ok) return jsonResponse({ error: "is_deep_resolve 必须为 0 或 1。" }, 400);
     try {
         const { zoneId, token } = await getCfApiSettings(db);
         if (!token || !zoneId) return jsonResponse({ error: "Cloudflare API 未配置。" }, 400);
@@ -321,7 +331,7 @@ async function handleDomainMutation(
                 .prepare(
                     "UPDATE domains SET source_domain=?, target_domain=?, zone_id=?, is_deep_resolve=?, ttl=?, notes=? WHERE id=?"
                 )
-                .bind(source, target_domain, zoneId, is_deep_resolve ?? 1, effectiveTtl, notes || null, id)
+                .bind(source, target_domain, zoneId, deepResolve.value ?? 1, effectiveTtl, notes || null, id)
                 .run();
             return jsonResponse({ success: true, message: "目标更新成功。" });
         }
@@ -329,7 +339,7 @@ async function handleDomainMutation(
             .prepare(
                 "INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, notes) VALUES (?, ?, ?, ?, ?, ?)"
             )
-            .bind(source, target_domain, zoneId, is_deep_resolve ?? 1, effectiveTtl, notes || null)
+            .bind(source, target_domain, zoneId, deepResolve.value ?? 1, effectiveTtl, notes || null)
             .run();
         return jsonResponse({ success: true, message: "目标添加成功。" });
     } catch (e) {
@@ -368,10 +378,15 @@ async function fetchZoneRecords(token: string, zoneId: string, name: string): Pr
         const url = `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?${q}`;
         const response = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } }, 10000);
         const data = (await response.json()) as { success: boolean; result?: unknown; errors?: unknown[] };
-        if (!data.success) return { ok: false, error: `Cloudflare API 错误: ${JSON.stringify(data.errors)}` };
+        if (!data.success) {
+            // 上游错误详情只进日志：返回体不回传第三方报文，避免把内部细节暴露到浏览器
+            console.error("Cloudflare DNS 记录查询失败", JSON.stringify(data.errors ?? []));
+            return { ok: false, error: "Cloudflare API 返回错误，请稍后重试。" };
+        }
         return { ok: true, records: (data.result ?? []) as unknown[] };
     } catch (e) {
-        return { ok: false, error: `获取记录失败: ${e instanceof Error ? e.message : String(e)}` };
+        console.error("获取 DNS 记录失败", e instanceof Error ? e.stack : e);
+        return { ok: false, error: "获取记录失败，请稍后重试。" };
     }
 }
 

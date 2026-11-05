@@ -1190,7 +1190,7 @@ describe("仪表盘记录批量查询 (M-10)", () => {
             expect(res.status).toBe(200);
             const payload = (await res.json()) as Record<string, { records?: unknown[]; error?: string }>;
             expect(payload[String(okId)].records).toEqual([]);
-            expect(payload[String(badId)].error).toContain("Cloudflare API 错误");
+            expect(payload[String(badId)].error).toContain("Cloudflare API 返回错误");
         } finally {
             vi.unstubAllGlobals();
             for (const id of [okId, badId]) await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(id).run();
@@ -1210,5 +1210,18 @@ describe("仪表盘记录批量查询 (M-10)", () => {
         } finally {
             await seedCfSettings();
         }
+    });
+});
+
+describe("深解析开关类型校验 (L-4)", () => {
+    it.each([["1"], ["true"], [2], [-1]])("is_deep_resolve = %s 时返回 400", async (value) => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/domains", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({ source_domain: "pull.example.com", is_deep_resolve: value }),
+        });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toContain("is_deep_resolve");
     });
 });
