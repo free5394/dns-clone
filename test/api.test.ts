@@ -1043,3 +1043,74 @@ describe("端点直测补齐 (M-12)", () => {
         expect(body.error).toBeTruthy();
     });
 });
+
+// M-3 回归：新增与更新共用同一条写库流水线后，唯一键冲突必须仍然走 409，且不能改动既有数据
+describe("IP 源写库冲突 (M-3)", () => {
+    const m3Payload = {
+        url: "https://example.com/m3/dup.txt",
+        github_path: "m3/dup.txt",
+        commit_message: "新增",
+        fetch_strategy: "direct_regex",
+    };
+
+    afterAll(async () => {
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm3/%'").run();
+    });
+
+    it("新增重复 URL 返回 409 且只保留一条记录", async () => {
+        const cookie = await loginAndGetCookie();
+        const first = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(m3Payload),
+        });
+        expect(first.status).toBe(200);
+
+        const second = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({ ...m3Payload, github_path: "m3/dup-other.txt" }),
+        });
+        expect(second.status).toBe(409);
+        expect(((await second.json()) as { error?: string }).error).toContain("已存在");
+
+        const count = (await env.WUYA.prepare(
+            "SELECT COUNT(*) AS n FROM ip_sources WHERE url = 'https://example.com/m3/dup.txt'"
+        ).first()) as { n: number };
+        expect(count.n).toBe(1);
+    });
+
+    it("更新成已存在的 GitHub 路径返回 409 且原记录不变", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.batch([
+            env.WUYA.prepare(
+                "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+            ).bind("https://example.com/m3/a.txt", "m3/a.txt", "A", "direct_regex"),
+            env.WUYA.prepare(
+                "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+            ).bind("https://example.com/m3/b.txt", "m3/b.txt", "B", "direct_regex"),
+        ]);
+        const target = (await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = 'm3/b.txt'").first()) as {
+            id: number;
+        };
+
+        const res = await SELF.fetch(`https://example.com/api/ip_sources/${target.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m3/b.txt",
+                github_path: "m3/a.txt",
+                commit_message: "改成撞车",
+                fetch_strategy: "direct_regex",
+            }),
+        });
+        expect(res.status).toBe(409);
+        expect(((await res.json()) as { error?: string }).error).toContain("已存在");
+
+        const after = (await env.WUYA.prepare("SELECT github_path, commit_message FROM ip_sources WHERE id = ?")
+            .bind(target.id)
+            .first()) as { github_path: string; commit_message: string };
+        expect(after.github_path).toBe("m3/b.txt");
+        expect(after.commit_message).toBe("B");
+    });
+});

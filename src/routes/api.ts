@@ -433,6 +433,9 @@ interface IpSourceInput {
 
 type IpSourceValidation = { ok: true; input: IpSourceInput } | { ok: false; error: string };
 
+/** 请求体可能缺字段，校验函数负责把缺失当成非法值处理 */
+type IpSourceInputBody = Partial<IpSourceInput>;
+
 /** 校验 GitHub 文件路径形态；返回 null 表示合法 */
 function validateGithubPath(path: string): string | null {
     if (path.length === 0) return "GitHub 文件路径不能为空。";
@@ -450,12 +453,7 @@ function validateGithubPath(path: string): string | null {
 }
 
 /** 信任边界校验：URL 先走 SSRF 防护再限长；路径、提交信息与策略逐一约束 */
-function validateIpSourceInput(body: {
-    url?: string;
-    github_path?: string;
-    commit_message?: string;
-    fetch_strategy?: string;
-}): IpSourceValidation {
+function validateIpSourceInput(body: IpSourceInputBody): IpSourceValidation {
     const { url, github_path, commit_message, fetch_strategy } = body;
 
     if (typeof url !== "string" || url.length === 0) return { ok: false, error: "URL 不能为空。" };
@@ -482,50 +480,46 @@ function validateIpSourceInput(body: {
     return { ok: true, input: { url, github_path, commit_message, fetch_strategy } };
 }
 
-async function apiAddIpSource(request: Request, db: D1Database): Promise<Response> {
-    const body = await readJsonBody<{
-        url?: string;
-        github_path?: string;
-        commit_message?: string;
-        fetch_strategy?: string;
-    }>(request);
+/**
+ * 新增与更新的写库路径只在 SQL、附加绑定与成功文案上不同，
+ * 解析、结构校验与唯一键冲突处理保持同一条流水线，避免两处规则各自漂移。
+ */
+async function writeIpSource(
+    request: Request,
+    db: D1Database,
+    options: { sql: string; bindings: unknown[]; successMessage: string }
+): Promise<Response> {
+    const body = await readJsonBody<IpSourceInputBody>(request);
     if (body === null) return BAD_JSON();
     const validation = validateIpSourceInput(body);
     if (!validation.ok) return jsonResponse({ error: validation.error }, 400);
     const { url, github_path, commit_message, fetch_strategy } = validation.input;
     try {
         await db
-            .prepare("INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)")
-            .bind(url, github_path, commit_message, fetch_strategy)
+            .prepare(options.sql)
+            .bind(url, github_path, commit_message, fetch_strategy, ...options.bindings)
             .run();
-        return jsonResponse({ success: true, message: "IP源添加成功。" });
+        return jsonResponse({ success: true, message: options.successMessage });
     } catch (e) {
         if (isUniqueViolation(e)) return jsonResponse({ error: "该URL或GitHub文件路径已存在。" }, 409);
         throw e;
     }
 }
 
-async function apiUpdateIpSource(request: Request, db: D1Database, id: number): Promise<Response> {
-    const body = await readJsonBody<{
-        url?: string;
-        github_path?: string;
-        commit_message?: string;
-        fetch_strategy?: string;
-    }>(request);
-    if (body === null) return BAD_JSON();
-    const validation = validateIpSourceInput(body);
-    if (!validation.ok) return jsonResponse({ error: validation.error }, 400);
-    const { url, github_path, commit_message, fetch_strategy } = validation.input;
-    try {
-        await db
-            .prepare("UPDATE ip_sources SET url=?, github_path=?, commit_message=?, fetch_strategy=? WHERE id=?")
-            .bind(url, github_path, commit_message, fetch_strategy, id)
-            .run();
-        return jsonResponse({ success: true, message: "IP源更新成功。" });
-    } catch (e) {
-        if (isUniqueViolation(e)) return jsonResponse({ error: "该URL或GitHub文件路径已存在。" }, 409);
-        throw e;
-    }
+function apiAddIpSource(request: Request, db: D1Database): Promise<Response> {
+    return writeIpSource(request, db, {
+        sql: "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)",
+        bindings: [],
+        successMessage: "IP源添加成功。",
+    });
+}
+
+function apiUpdateIpSource(request: Request, db: D1Database, id: number): Promise<Response> {
+    return writeIpSource(request, db, {
+        sql: "UPDATE ip_sources SET url=?, github_path=?, commit_message=?, fetch_strategy=? WHERE id=?",
+        bindings: [id],
+        successMessage: "IP源更新成功。",
+    });
 }
 
 async function apiDeleteIpSource(db: D1Database, id: number): Promise<Response> {
