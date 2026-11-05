@@ -785,12 +785,19 @@ function getDashboardInteractionScript() {
 
   async function fetchLiveRecords() {
     const placeholders = document.querySelectorAll('.records-placeholder');
+    if (!placeholders.length) return;
+    // 一次请求取回全部域名的记录，避免每张卡片各发一次（N+1）
+    let payload = {};
+    try {
+        payload = await apiFetch('/api/domains/records');
+    } catch(e) {
+        payload = {};
+    }
     for (const el of placeholders) {
-        const id = el.dataset.domainId;
-        try {
-            const records = await apiFetch('/api/domains/' + id + '/records');
-            el.innerHTML = renderLiveRecords(records);
-        } catch(e) {
+        const entry = payload[el.dataset.domainId];
+        if (entry && entry.records) {
+            el.innerHTML = renderLiveRecords(entry.records);
+        } else {
             el.innerHTML = '<span class="status-failed">查询失败</span>';
         }
     }

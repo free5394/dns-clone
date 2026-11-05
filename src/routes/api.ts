@@ -57,6 +57,7 @@ export async function handleApiRequest(request: Request, env: { WUYA: D1Database
     if (method === "GET" && path === "/api/settings") return await apiGetSettings(request, db);
     if (method === "POST" && path === "/api/settings") return await apiSetSettings(request, db);
     if (method === "GET" && path === "/api/domains") return await apiGetDomains(request, db);
+    if (method === "GET" && path === "/api/domains/records") return await apiGetDomainsRecords(db);
     if (method === "POST" && path === "/api/domains") return await apiAddDomain(request, db);
     if (method === "POST" && path === "/api/sync")
         return withManualSyncLock(db, (lockToken) => syncAllDomains(env, true, request.signal, lockToken));
@@ -352,24 +353,61 @@ async function apiDeleteDomain(request: Request, db: D1Database, id: string): Pr
     return jsonResponse({ success: true, message: "目标删除成功。" });
 }
 
-async function apiGetDomainRecords(id: string, db: D1Database): Promise<Response> {
+/** 批量取记录时同时发出的 Cloudflare 请求数上限，避免一次把出站额度打满 */
+const RECORDS_FETCH_CONCURRENCY = 4;
+
+type ZoneRecordsResult = { ok: true; records: unknown[] } | { ok: false; error: string };
+
+/**
+ * 拉取单个目标域名在 Cloudflare 上的 DNS 记录。
+ * 单个端点与批量端点共用同一段出站逻辑，保证编码（Suggestion ⑨）、超时与错误文案只有一处定义。
+ */
+async function fetchZoneRecords(token: string, zoneId: string, name: string): Promise<ZoneRecordsResult> {
     try {
-        const { token, zoneId } = await getCfApiSettings(db);
-        if (!token || !zoneId) return jsonResponse({ error: "Cloudflare API 未配置。" }, 400);
-        const domain = (await db.prepare("SELECT target_domain FROM domains WHERE id = ?").bind(id).first()) as {
-            target_domain: string;
-        } | null;
-        if (!domain) return jsonResponse({ error: "目标不存在。" }, 404);
-        // Suggestion ⑨: 查询参数编码（未编码时 " / & / 空格 会破坏或改写 CF API 查询）+ 超时
-        const q = new URLSearchParams({ name: domain.target_domain, per_page: "100" }).toString();
+        const q = new URLSearchParams({ name, per_page: "100" }).toString();
         const url = `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?${q}`;
         const response = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } }, 10000);
         const data = (await response.json()) as { success: boolean; result?: unknown; errors?: unknown[] };
-        if (!data.success) return jsonResponse({ error: `Cloudflare API 错误: ${JSON.stringify(data.errors)}` }, 500);
-        return jsonResponse(data.result);
+        if (!data.success) return { ok: false, error: `Cloudflare API 错误: ${JSON.stringify(data.errors)}` };
+        return { ok: true, records: (data.result ?? []) as unknown[] };
     } catch (e) {
-        return jsonResponse({ error: `获取记录失败: ${e instanceof Error ? e.message : String(e)}` }, 500);
+        return { ok: false, error: `获取记录失败: ${e instanceof Error ? e.message : String(e)}` };
     }
+}
+
+async function apiGetDomainRecords(id: string, db: D1Database): Promise<Response> {
+    const { token, zoneId } = await getCfApiSettings(db);
+    if (!token || !zoneId) return jsonResponse({ error: "Cloudflare API 未配置。" }, 400);
+    const domain = (await db.prepare("SELECT target_domain FROM domains WHERE id = ?").bind(id).first()) as {
+        target_domain: string;
+    } | null;
+    if (!domain) return jsonResponse({ error: "目标不存在。" }, 404);
+    const result = await fetchZoneRecords(token, zoneId, domain.target_domain);
+    if (!result.ok) return jsonResponse({ error: result.error }, 500);
+    return jsonResponse(result.records);
+}
+
+/**
+ * M-10：仪表盘一次性取回所有域名的 DNS 记录。
+ * 旧行为是前端对每张卡片各发一次请求，每个请求都重新鉴权并重读 Cloudflare 配置，
+ * 域名越多请求数与 D1 查询数线性增长（N+1）。
+ */
+async function apiGetDomainsRecords(db: D1Database): Promise<Response> {
+    const { token, zoneId } = await getCfApiSettings(db);
+    if (!token || !zoneId) return jsonResponse({ error: "Cloudflare API 未配置。" }, 400);
+    const { results } = await db.prepare("SELECT id, target_domain FROM domains ORDER BY id").all();
+    const rows = results as Array<{ id: number; target_domain: string }>;
+    const payload: Record<string, { records: unknown[] } | { error: string }> = {};
+    for (let i = 0; i < rows.length; i += RECORDS_FETCH_CONCURRENCY) {
+        const slice = rows.slice(i, i + RECORDS_FETCH_CONCURRENCY);
+        await Promise.all(
+            slice.map(async (row) => {
+                const result = await fetchZoneRecords(token, zoneId, row.target_domain);
+                payload[String(row.id)] = result.ok ? { records: result.records } : { error: result.error };
+            })
+        );
+    }
+    return jsonResponse(payload);
 }
 
 async function apiGetIpSources(db: D1Database): Promise<Response> {

@@ -1114,3 +1114,101 @@ describe("IP 源写库冲突 (M-3)", () => {
         expect(after.commit_message).toBe("B");
     });
 });
+
+describe("仪表盘记录批量查询 (M-10)", () => {
+    /** 插入两个域名并返回 id，测试结束按 id 清理 */
+    async function seedDomains(names: string[]): Promise<number[]> {
+        const ids: number[] = [];
+        for (const name of names) {
+            await env.WUYA.prepare(
+                "INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, is_enabled) VALUES (?, ?, 'test-zone-id', 0, 60, 1)"
+            )
+                .bind("src.example.com", name)
+                .run();
+            const row = (await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+                .bind(name)
+                .first()) as {
+                id: number;
+            };
+            ids.push(row.id);
+        }
+        return ids;
+    }
+
+    it("一次请求返回全部域名的记录，出站调用数等于域名数", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const ids = await seedDomains(["m10/one.example.com", "m10/two.example.com"]);
+        const calls: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                if (String(url).includes("api.cloudflare.com")) calls.push(String(url));
+                return new Response(
+                    JSON.stringify({
+                        success: true,
+                        result: [{ id: "rec-1", name: "x", type: "A", content: "1.1.1.1" }],
+                    }),
+                    { status: 200 }
+                );
+            })
+        );
+        try {
+            const res = await SELF.fetch("https://example.com/api/domains/records", { headers: { Cookie: cookie } });
+            expect(res.status).toBe(200);
+            const payload = (await res.json()) as Record<string, { records?: unknown[]; error?: string }>;
+            for (const id of ids) {
+                expect(payload[String(id)].records).toHaveLength(1);
+            }
+            // 关键语义：域名数 = 出站 Cloudflare 调用数，且整体只发一次前端请求
+            const domainCount = ((await env.WUYA.prepare("SELECT COUNT(*) as n FROM domains").first()) as { n: number })
+                .n;
+            expect(calls).toHaveLength(domainCount);
+        } finally {
+            vi.unstubAllGlobals();
+            for (const id of ids) await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(id).run();
+        }
+    });
+
+    it("单个域名失败不影响其它域名", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const [okId, badId] = await seedDomains(["m10/ok.example.com", "m10/bad.example.com"]);
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                if (String(url).includes("m10%2Fbad.example.com")) {
+                    return new Response(JSON.stringify({ success: false, errors: [{ message: "boom" }] }), {
+                        status: 200,
+                    });
+                }
+                return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
+            })
+        );
+        try {
+            const res = await SELF.fetch("https://example.com/api/domains/records", { headers: { Cookie: cookie } });
+            expect(res.status).toBe(200);
+            const payload = (await res.json()) as Record<string, { records?: unknown[]; error?: string }>;
+            expect(payload[String(okId)].records).toEqual([]);
+            expect(payload[String(badId)].error).toContain("Cloudflare API 错误");
+        } finally {
+            vi.unstubAllGlobals();
+            for (const id of [okId, badId]) await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(id).run();
+        }
+    });
+
+    it("未配置 Cloudflare 凭据时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.batch([
+            env.WUYA.prepare("UPDATE settings SET value = '' WHERE key = 'CF_API_TOKEN'"),
+            env.WUYA.prepare("UPDATE settings SET value = '' WHERE key = 'CF_ZONE_ID'"),
+        ]);
+        try {
+            const res = await SELF.fetch("https://example.com/api/domains/records", { headers: { Cookie: cookie } });
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error?: string }).error).toContain("未配置");
+        } finally {
+            await seedCfSettings();
+        }
+    });
+});
