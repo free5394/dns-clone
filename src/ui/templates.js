@@ -773,7 +773,17 @@ function getDashboardScript(domains, ipSources, settings) {
       logOutputElem.textContent = '开始同步任务...\\n';
       try {
           const response = await fetch(url, { method: 'POST' });
-          if (!response.ok || !response.body) throw new Error(\`服务器错误: \${response.status}\`);
+          if (!response.ok) {
+              let errMessage = '服务器错误: ' + response.status;
+              try {
+                  const errData = await response.clone().json();
+                  if (errData && errData.error) errMessage = errData.error;
+              } catch (e) {
+                  errMessage = '服务器错误: ' + response.status;
+              }
+              throw new Error(errMessage);
+          }
+          if (!response.body) throw new Error('服务器错误: ' + response.status);
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
           let sseBuffer = '';
