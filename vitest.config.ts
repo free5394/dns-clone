@@ -27,12 +27,15 @@ export default defineProject({
             reporter: ["text", "html", "lcov"],
             include: ["src/**/*.ts"],
             exclude: ["src/ui/**", "src/index.js"],
-            // 阶段 2 起始阈值：FIX-10 落地后逐步提升
+            // 阈值按下表的实测基线（2026-11-05，含 test/fetch.test.ts 后）留约 2 个百分点余量，
+            // 目的不是追求高覆盖，而是阻止覆盖率在不被察觉的情况下倒退：
+            // 实测 statements 80.15 / branches 71.56 / functions 85.53 / lines 83.44。
+            // 说明：src/ui/** 与 src/index.js 被 exclude，所以 templates.js 与 worker 入口不在覆盖范围内。
             thresholds: {
-                lines: 0,
-                functions: 0,
-                statements: 0,
-                branches: 0,
+                lines: 81,
+                functions: 83,
+                statements: 78,
+                branches: 69,
             },
         },
     },
