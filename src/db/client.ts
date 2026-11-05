@@ -108,3 +108,17 @@ export async function getGitHubSettings(db: D1Database) {
     ]);
     return { token, owner, repo };
 }
+
+/**
+ * 行投影的单一来源（M-6）：列表接口、UI 与同步路径共用同一份列清单，
+ * 避免同一结构在多处漂移。时间列统一格式化为 ISO 8601（UTC），前端契约不变。
+ */
+export const DOMAIN_COLUMNS =
+    "id, source_domain, target_domain, zone_id, is_deep_resolve, ttl, notes, " +
+    "strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_time) as last_synced_time, " +
+    "last_sync_status, last_sync_error, is_enabled, is_system";
+
+export const IP_SOURCE_COLUMNS =
+    "id, url, github_path, commit_message, fetch_strategy, " +
+    "strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_time) as last_synced_time, " +
+    "last_sync_status, last_sync_error, is_enabled";

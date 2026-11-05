@@ -8,6 +8,8 @@ import {
     getGitHubSettings,
     getSafeSettings,
     acquireManualSyncLock,
+    DOMAIN_COLUMNS,
+    IP_SOURCE_COLUMNS,
 } from "../db/client.ts";
 import { ensureInitialData } from "../db/migrations.ts";
 import { jsonResponse, getCookie } from "../util/http.ts";
@@ -290,11 +292,7 @@ async function apiSetSettings(request: Request, db: D1Database): Promise<Respons
 }
 
 async function apiGetDomains(request: Request, db: D1Database): Promise<Response> {
-    const query = `
-      SELECT id, source_domain, target_domain, zone_id, is_deep_resolve, ttl, notes,
-             strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_time) as last_synced_time,
-             last_sync_status, last_sync_error, is_enabled, is_system
-      FROM domains ORDER BY is_system DESC, target_domain`;
+    const query = `SELECT ${DOMAIN_COLUMNS} FROM domains ORDER BY is_system DESC, target_domain`;
     const { results } = await db.prepare(query).all();
     return jsonResponse(results);
 }
@@ -415,11 +413,7 @@ async function apiGetDomainRecords(id: string, db: D1Database): Promise<Response
 }
 
 async function apiGetIpSources(db: D1Database): Promise<Response> {
-    const { results } = await db
-        .prepare(
-            "SELECT id, url, github_path, commit_message, fetch_strategy, strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_time) as last_synced_time, last_sync_status, last_sync_error, is_enabled FROM ip_sources ORDER BY github_path"
-        )
-        .all();
+    const { results } = await db.prepare(`SELECT ${IP_SOURCE_COLUMNS} FROM ip_sources ORDER BY github_path`).all();
     return jsonResponse(results);
 }
 

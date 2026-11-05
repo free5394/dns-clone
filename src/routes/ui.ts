@@ -2,7 +2,14 @@
 // 从 index.legacy.js 提取（原 handleUiRequest）
 // 注：UI 模板函数（getHtmlLayout / getSetupPage / getPublicHomepage / getDashboardPage / getDashboardScript）仍在 legacy，阶段 E 拆分
 
-import { getSetting, getSafeSettings, getCfApiSettings, getGitHubSettings } from "../db/client.ts";
+import {
+    getSetting,
+    getSafeSettings,
+    getCfApiSettings,
+    getGitHubSettings,
+    DOMAIN_COLUMNS,
+    IP_SOURCE_COLUMNS,
+} from "../db/client.ts";
 import { isAuthenticated } from "../util/auth.ts";
 // UI 模板函数从 templates.js 导入
 import { getHtmlLayout, getSetupPage, getPublicHomepage, getDashboardPage } from "../ui/templates.js";
@@ -36,15 +43,9 @@ export async function handleUiRequest(request: Request, env: { WUYA: D1Database 
         };
 
         const domainsPromise = db
-            .prepare(
-                "SELECT id, source_domain, target_domain, zone_id, is_deep_resolve, ttl, notes, strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_time) as last_synced_time, last_sync_status, last_sync_error, is_enabled, is_system FROM domains ORDER BY is_system DESC, target_domain"
-            )
+            .prepare(`SELECT ${DOMAIN_COLUMNS} FROM domains ORDER BY is_system DESC, target_domain`)
             .all();
-        const ipSourcesPromise = db
-            .prepare(
-                "SELECT id, url, github_path, commit_message, fetch_strategy, strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_time) as last_synced_time, last_sync_status, last_sync_error, is_enabled FROM ip_sources ORDER BY github_path"
-            )
-            .all();
+        const ipSourcesPromise = db.prepare(`SELECT ${IP_SOURCE_COLUMNS} FROM ip_sources ORDER BY github_path`).all();
 
         const [{ results: domains }, { results: ipSources }] = await Promise.all([domainsPromise, ipSourcesPromise]);
 
