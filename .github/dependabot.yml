@@ -1,9 +1,18 @@
-# 只覆盖 github-actions 生态：action 版本漂移目前没有任何机制兜底（2026-10 的 Node 20
-# 弃用警告就是这么撞上的，机理见 .github/workflows/ci.yml 的注释）。npm / pnpm 依赖
-# 更新另议；按周检查，避免给自己刷 PR 噪音。
+# 依赖更新：github-actions 生态兜 action 版本漂移（2026-10 的 Node 20 弃用警告就是这么撞上的，
+# 机理见 .github/workflows/ci.yml 的注释）；npm 生态跟踪 package.json 与 pnpm-lock.yaml 的
+# devDependencies，按 dev-dependencies 分组提交，避免每个补丁版本各开一个 PR。
+# 两类都按周检查，不给自己刷 PR 噪音。
 version: 2
 updates:
     - package-ecosystem: "github-actions"
       directory: "/"
       schedule:
           interval: "weekly"
+    - package-ecosystem: "npm"
+      directory: "/"
+      schedule:
+          interval: "weekly"
+      groups:
+          dev-dependencies:
+              dependency-type: "development"
+      open-pull-requests-limit: 5
