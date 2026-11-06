@@ -1438,3 +1438,56 @@ describe("IP 源更新不存在 id (中-10)", () => {
         expect(((await res.json()) as { message?: string }).message).toBe("IP源更新成功。");
     });
 });
+
+// 中-11：DELETE 不存在的 id 曾返回 200「IP源删除成功。」，与更新路径同类假成功
+describe("IP 源删除不存在 id (中-11)", () => {
+    const MISSING_ID = 987654322;
+
+    afterAll(async () => {
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'mdel/%'").run();
+    });
+
+    it("DELETE 不存在的 id 返回 404 且不改动其他行", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(MISSING_ID), {
+            method: "DELETE",
+            headers: { Cookie: cookie },
+        });
+
+        expect(res.status).toBe(404);
+        const body = (await res.json()) as { error?: string; success?: boolean };
+        expect(body.error).toBe("目标不存在。");
+        expect(body.success).toBeUndefined();
+    });
+
+    it("重复删除同一 id 时第二次返回 404，第一次仍成功", async () => {
+        const cookie = await loginAndGetCookie();
+        const created = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/mdel/once.txt",
+                github_path: "mdel/once.txt",
+                commit_message: "待删除",
+                fetch_strategy: "direct_regex",
+            }),
+        });
+        expect(created.status).toBe(200);
+        const row = await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind("mdel/once.txt")
+            .first<{ id: number }>();
+        expect(row?.id).toBeGreaterThan(0);
+
+        const first = await SELF.fetch("https://example.com/api/ip_sources/" + String(row?.id), {
+            method: "DELETE",
+            headers: { Cookie: cookie },
+        });
+        expect(first.status).toBe(200);
+
+        const second = await SELF.fetch("https://example.com/api/ip_sources/" + String(row?.id), {
+            method: "DELETE",
+            headers: { Cookie: cookie },
+        });
+        expect(second.status).toBe(404);
+    });
+});

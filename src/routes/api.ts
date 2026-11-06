@@ -543,7 +543,9 @@ function apiUpdateIpSource(request: Request, db: D1Database, id: number): Promis
 }
 
 async function apiDeleteIpSource(db: D1Database, id: number): Promise<Response> {
-    await db.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    const result = await db.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    // 删除命中 0 行说明 id 不存在：返回 404，不能把「什么都没删」报成「删除成功」
+    if ((result.meta?.changes ?? 0) === 0) return jsonResponse({ error: "目标不存在。" }, 404);
     return jsonResponse({ success: true, message: "IP源删除成功。" });
 }
 
