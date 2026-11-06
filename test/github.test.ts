@@ -285,3 +285,62 @@ describe("GitHub API URL 构造与路径校验 (H-1)", () => {
         expect(spy).not.toHaveBeenCalled();
     });
 });
+
+describe("GitHub 路径百分号语义 (高-3 / 中-1)", () => {
+    const target = { token: "token", owner: "owner", repo: "repo" };
+
+    function stubCache(cacheUrls: string[]) {
+        vi.stubGlobal("caches", {
+            default: {
+                match: async (req: Request) => {
+                    cacheUrls.push(req.url);
+                    return undefined;
+                },
+                put: async () => undefined,
+            },
+        });
+    }
+
+    it("百分号编码路径按一次解码处理，不产生双重编码", async () => {
+        const cacheUrls: string[] = [];
+        stubCache(cacheUrls);
+        const spy = mockFetch(() => new Response("x", { status: 200 }));
+
+        await readFileForSubscriber(target, "a%20b/c.txt");
+        await readFileForSubscriber(target, "a b/c.txt");
+
+        const urls = spy.mock.calls.map((c) => String(c[0]));
+        expect(urls[0]).toBe("https://api.github.com/repos/owner/repo/contents/a%20b/c.txt");
+        // 同一文件不得被解释成两个不同地址（旧实现会编码成 a%2520b）
+        expect(urls[1]).toBe(urls[0]);
+        // 缓存键也必须同源，否则一份内容会被缓存成两份、或串到别的文件
+        expect(cacheUrls[1]).toBe(cacheUrls[0]);
+    });
+
+    it("非法百分号转义被拒绝且不触网", async () => {
+        stubCache([]);
+        const spy = mockFetch(() => new Response("x", { status: 200 }));
+
+        await expect(readFileForSubscriber(target, "a%zzb.txt")).rejects.toThrow(/GitHub 文件路径/);
+        expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("孤立代理项在信任边界就被拒绝，不留到 encodeURIComponent 才抛 URIError", async () => {
+        stubCache([]);
+        const spy = mockFetch(() => new Response("x", { status: 200 }));
+
+        await expect(readFileForSubscriber(target, "\uD800x.txt")).rejects.toThrow(/GitHub 文件路径/);
+        expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("不同路径的缓存键不同，不会串文件", async () => {
+        const cacheUrls: string[] = [];
+        stubCache(cacheUrls);
+        mockFetch(() => new Response("x", { status: 200 }));
+
+        await readFileForSubscriber(target, "a.txt");
+        await readFileForSubscriber(target, "b.txt");
+
+        expect(cacheUrls[0]).not.toBe(cacheUrls[1]);
+    });
+});

@@ -1225,3 +1225,53 @@ describe("深解析开关类型校验 (L-4)", () => {
         expect(((await res.json()) as { error?: string }).error).toContain("is_deep_resolve");
     });
 });
+
+// 高-3：百分号编码路径的信任边界契约（先解码再校验，非法转义与孤立代理项直接拒绝）
+describe("IP 源路径百分号语义 (高-3)", () => {
+    afterAll(async () => {
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm13/%'").run();
+    });
+
+    function postIpSource(cookie: string, githubPath: string) {
+        return SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m13/source.txt",
+                github_path: githubPath,
+                commit_message: "同步 IP 列表",
+                fetch_strategy: "direct_regex",
+            }),
+        });
+    }
+
+    it("百分号编码路径落库时归一为解码后的同一路径", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postIpSource(cookie, "m13/a%20b.txt");
+        expect(res.status).toBe(200);
+
+        const row = await env.WUYA.prepare("SELECT github_path FROM ip_sources WHERE github_path = ?")
+            .bind("m13/a b.txt")
+            .first<{ github_path: string }>();
+        expect(row?.github_path).toBe("m13/a b.txt");
+    });
+
+    it("非法百分号转义返回 400 且不落库", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postIpSource(cookie, "m13/%zz.txt");
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toContain("GitHub 文件路径");
+
+        const row = await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind("m13/%zz.txt")
+            .first();
+        expect(row).toBeNull();
+    });
+
+    it("孤立代理项返回 400 而不是保存成功", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postIpSource(cookie, "\uD800m13.txt");
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toContain("GitHub 文件路径");
+    });
+});
