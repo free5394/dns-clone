@@ -8,6 +8,14 @@ import { handleApiRequest } from "./routes/api.ts";
 import { handleGitHubFileProxy } from "./routes/github-proxy.ts";
 import { handleUiRequest } from "./routes/ui.ts";
 
+/**
+ * API 全局兜底响应：响应体固定为一条文案，绝不回传异常 message / details / stack。
+ * 完整异常由调用方写入 console.error（`e instanceof Error ? e.stack : e`），只进日志不进响应。
+ */
+export function buildApiErrorResponse(_e: unknown, status: number): Response {
+    return jsonResponse({ error: "发生意外的服务器错误。" }, status);
+}
+
 export default {
     async fetch(request: Request, env: { WUYA: D1Database }, ctx: ExecutionContext): Promise<Response> {
         try {
@@ -34,12 +42,8 @@ export default {
             console.error("全局兜底：", e instanceof Error ? e.stack : e);
             const status = (e as { status?: number }).status || 500;
             if (path.startsWith("/api/")) {
-                // API 路径：返回结构化错误（details 仅含 message，不含 stack）
-                const errorResponse = {
-                    error: "发生意外的服务器错误。",
-                    details: e instanceof Error ? e.message : String(e),
-                };
-                return jsonResponse(errorResponse, status);
+                // API 路径：固定文案，不回传异常 message / details；完整异常只进上面的日志
+                return buildApiErrorResponse(e, status);
             }
             // 非 API 路径：固定文案，杜绝 stack / 凭据泄露
             return new Response("服务器内部错误，请稍后重试。", { status: 500 });

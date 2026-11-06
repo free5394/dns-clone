@@ -44,10 +44,9 @@ function assertSafeGitHubSegment(value: string, field: "owner" | "repo"): string
 }
 
 /**
- * 编码 Contents API 的内容路径：保留 `/` 作为分段，逐段 encodeURIComponent。
- * 拒绝绝对路径、空段、`..` 段、反斜杠、控制字符与超长段。
+ * 内容路径形态校验（解码后执行）：拒绝绝对路径、空段、`..` 段、反斜杠、控制字符与超长段。
  */
-function encodeContentPath(path: string): string {
+function assertValidContentPath(path: string): void {
     if (!path) throw new Error("GitHub 文件路径不能为空。");
     if (path.startsWith("/")) throw new Error('GitHub 文件路径不能以 "/" 开头。');
     if (path.includes("\\")) throw new Error("GitHub 文件路径不能包含反斜杠。");
@@ -60,7 +59,40 @@ function encodeContentPath(path: string): string {
     if (segments.some((segment) => segment.length > GITHUB_PATH_SEGMENT_MAX_LENGTH)) {
         throw new Error(`GitHub 文件路径单段长度不能超过 ${GITHUB_PATH_SEGMENT_MAX_LENGTH} 个字符。`);
     }
-    return segments.map((segment) => encodeURIComponent(segment)).join("/");
+}
+
+/**
+ * 归一化 GitHub 内容路径：含 `%` 时先按一次 `decodeURIComponent` 解码，再用同一套规则校验，
+ * 最后试编码拦截孤立代理项（它只在 `encodeURIComponent` 时才暴露，不能留到同步阶段抛 URIError）。
+ * 契约：`a%20b.txt` 与 `a b.txt` 是同一个文件；URL 编码统一交给调用方在归一化之后完成。
+ */
+export function normalizeGithubPath(path: string): string {
+    let decoded = path;
+    if (path.includes("%")) {
+        try {
+            decoded = decodeURIComponent(path);
+        } catch {
+            throw new Error("GitHub 文件路径包含非法百分号转义。");
+        }
+    }
+    assertValidContentPath(decoded);
+    try {
+        // 试编码整条路径只为触发孤立代理项的 URIError；正式编码仍按段进行
+        encodeURIComponent(decoded);
+    } catch {
+        throw new Error("GitHub 文件路径包含非法字符。");
+    }
+    return decoded;
+}
+
+/**
+ * 编码 Contents API 的内容路径：先归一化（一次解码 + 形态校验），再保留 `/` 作为分段逐段编码。
+ */
+function encodeContentPath(path: string): string {
+    return normalizeGithubPath(path)
+        .split("/")
+        .map((segment) => encodeURIComponent(segment))
+        .join("/");
 }
 
 /** 仓库级 API URL（统一校验 owner / repo） */
@@ -195,9 +227,13 @@ export async function updateFileOnGitHub({
     await githubApiRequest(apiUrl, token, { method: "PUT", body });
 }
 
-/** 订阅器读的合成边缘缓存键（键格式归本模块，路由不再知道缓存怎么拼） */
+/**
+ * 订阅器读的合成边缘缓存键（键格式归本模块，路由不再知道缓存怎么拼）。
+ * 复用 Contents API 的编码结果，保证缓存键与上游文件一一对应：
+ * `a%20b/c.txt` 与 `a b/c.txt` 归一后同键，不同文件不会串缓存。
+ */
 function subscriberCacheKey(path: string): Request {
-    return new Request(new URL(path, SUBSCRIBER_CACHE_NAMESPACE).toString());
+    return new Request(new URL(encodeContentPath(path), SUBSCRIBER_CACHE_NAMESPACE).toString());
 }
 
 /**

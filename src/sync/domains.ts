@@ -1,7 +1,13 @@
 // domains.ts — 域名克隆同步逻辑
 // 从 index.legacy.js 提取（原 syncScheduledDomains / syncDomainLogic / syncSingleDomain / syncAllDomains / syncSystemDomains / resolveRecursively / processInChunks / updateCloudflareDns / getDnsFromDoh）
 
-import { getSetting, getCfApiSettings, queryAll, releaseManualSyncLock } from "../db/client.ts";
+import {
+    getSetting,
+    getCfApiSettings,
+    queryAll,
+    releaseManualSyncLock,
+    createManualSyncLockRenewer,
+} from "../db/client.ts";
 import { fetchThreeNetworkIps } from "./ip-sources.ts";
 import { beijingTimeLog } from "../util/log.ts";
 import { runWithOptionalLog } from "../util/run-with-log.ts";
@@ -139,9 +145,18 @@ export async function syncAllDomains(
             }
             log(`发现 ${domains.length} 个已启用的目标需要同步。`);
             const syncContext: SyncContext = {};
+            const renewLock = createManualSyncLockRenewer(db, lockToken, log);
+            await renewLock();
             await forEachIsolated(
                 domains,
-                (domain) => syncDomainLogic(domain, token, zoneId, db, log, syncContext),
+                async (domain) => {
+                    try {
+                        await syncDomainLogic(domain, token, zoneId, db, log, syncContext);
+                    } finally {
+                        // 单个域名耗时可能很长，每处理完一个条目续租一次（内部按 60 秒节流）
+                        await renewLock();
+                    }
+                },
                 (domain, e) =>
                     log(`处理域名 ${domain.target_domain} 失败: ${e instanceof Error ? e.message : String(e)}`)
             );
@@ -177,9 +192,18 @@ export async function syncSystemDomains(
             }
             log(`发现 ${domains.length} 个已启用的系统域名需要同步。`);
             const syncContext: SyncContext = {};
+            const renewLock = createManualSyncLockRenewer(db, lockToken, log);
+            await renewLock();
             await forEachIsolated(
                 domains,
-                (domain) => syncDomainLogic(domain, token, zoneId, db, log, syncContext),
+                async (domain) => {
+                    try {
+                        await syncDomainLogic(domain, token, zoneId, db, log, syncContext);
+                    } finally {
+                        // 单个域名耗时可能很长，每处理完一个条目续租一次（内部按 60 秒节流）
+                        await renewLock();
+                    }
+                },
                 (domain, e) =>
                     log(`系统域名 ${domain.target_domain} 同步失败: ${e instanceof Error ? e.message : String(e)}`)
             );
