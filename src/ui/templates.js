@@ -1,5 +1,7 @@
 // templates.js — UI 模板函数（阶段 E 从 index.legacy.js 拆出）
 import { escapeHtmlClient } from "./dashboard-helpers.js";
+import { createDashboardRenderers } from "./dashboard-render.js";
+import { createApiFetch } from "./dashboard-api.js";
 // 纯 JS 文件（tsc 不参与）：内含大量浏览器端 JS 模板字符串
 
 // HTML 实体转义：所有插值到模板字符串的用户控制字段必须经过 escapeHtml
@@ -606,25 +608,14 @@ function getDashboardScript(domains, ipSources, settings) {
       }, duration);
   }
   // 统一请求封装：401 一律提示并跳登录，业务错误直接抛出后端文案。
-  async function apiFetch(url, options = {}) {
-      const res = await fetch(url, {
-          headers: { "Content-Type": "application/json", ...options.headers },
-          ...options,
-      });
-      if (!res.ok) {
-          const errData = await res.json().catch(() => ({ error: \`HTTP 错误: \${res.status}\` }));
-          if (res.status === 401) {
-              showNotification('会话已过期，请重新登录。', 'error');
-              setTimeout(() => window.location.href = '/login', 2000);
-          }
-          throw new Error(errData.error);
-      }
-      try {
-          return await res.json();
-      } catch (e) {
-          return {};
-      }
-  }
+  // 实现来自 ./dashboard-api.js，注入后可直接被行为测试覆盖。
+  const createApiFetch = ${createApiFetch.toString()};
+  const apiFetch = createApiFetch({
+      fetchImpl: (input, init) => fetch(input, init),
+      notify: showNotification,
+      redirect: (target) => { window.location.href = target; },
+      schedule: (fn, delay) => setTimeout(fn, delay),
+  });
   let currentDomains = ${safeJsonForScript(domains)};
   let currentIpSources = ${safeJsonForScript(ipSources)};
   let currentSettings = ${safeJsonForScript(settings)};
@@ -647,35 +638,15 @@ function getDashboardScript(domains, ipSources, settings) {
 // 仪表盘脚本 · 渲染段（M-1）：纯展示助手，输入行数据输出 HTML
 function getDashboardRenderScript() {
     return `
-  function renderLiveRecords(records) {
-      if (!records || records.length === 0) return '无记录';
-      const first = records[0];
-      if (records.length === 1) return \`<b>\${esc(first.type)}:</b> \${esc(first.content)}\`;
-      return \`<details class="record-details"><summary><b>\${esc(first.type)}:</b> (共 \${records.length} 条)</summary><ul>\${records.map(r => \`<li><b>\${esc(r.type)}:</b> \${esc(r.content)}</li>\`).join('')}</ul></details>\`;
-  }
-
-  function renderStatus(item) { switch (item.last_sync_status) { case 'success': return \`<span class="status-success">✔ 同步成功</span>\`; case 'failed': return \`<span class="status-failed" title="\${esc(item.last_sync_error || '未知错误')}">✖ 同步失败</span>\`; case 'no_change': return \`<span class="status-no_change">✔ 内容一致</span>\`; default: return '<span class="status-pending">○ 待定</span>'; } }
-
-  function renderDomainCard(domain) {
-      let prefix = domain.target_domain;
-      if (zoneName && domain.target_domain.endsWith('.' + zoneName)) {
-          prefix = domain.target_domain.substring(0, domain.target_domain.length - (zoneName.length + 1));
-      } else if (zoneName && domain.target_domain === zoneName) {
-          prefix = '@';
-      }
-      const displayContent = domain.notes ? \`<strong class="domain-notes">\${esc(domain.notes)}</strong>\` : \`<span class="domain-cell" title="\${esc(domain.target_domain)}">\${esc(prefix)}</span>\`;
-      const isSystem = domain.is_system;
-      const systemClass = isSystem ? 'system-domain' : '';
-      const sourceDisplay = isSystem ? '系统内置' : domain.source_domain;
-
-      return \`
-      <div class="domain-card row-grid \${systemClass}" id="domain-card-\${domain.id}">
-          <div class="card-col"><span class="col-label">克隆目标</span><span class="domain-cell" title="\${esc(domain.target_domain)}" data-target="\${esc(domain.target_domain)}" onclick="window.copyToClipboard(this.dataset.target)">\${displayContent}</span><small class="domain-cell" title="\${esc(domain.source_domain)}">\${esc(sourceDisplay)}</small></div>
-          <div class="card-col"><span class="col-label">当前解析</span><div class="records-placeholder" data-domain-id="\${domain.id}"><i class="fa-solid fa-spinner fa-spin"></i> 正在查询...</div></div>
-          <div class="card-col"><span class="col-label">上次同步</span><div>\${renderStatus(domain)}</div><small>\${formatBeijingTime(domain.last_synced_time)}</small></div>
-          <div class="card-actions"><button class="outline" onclick="window.individualSync(\${domain.id})">同步</button><button class="secondary outline" onclick="window.openModal('domainModal', \${domain.id})" \${isSystem ? 'disabled' : ''}>编辑</button><button class="contrast outline" onclick="window.deleteDomain(\${domain.id})" \${isSystem ? 'disabled' : ''}>删除</button></div>
-      </div>\`;
-  }
+  // 渲染助手来自 ./dashboard-render.js：依赖全部通过参数注入，
+  // 函数体自包含（不引用页面作用域），因此可以被 toString() 注入并单独做行为测试。
+  const createDashboardRenderers = ${createDashboardRenderers.toString()};
+  const { renderLiveRecords, renderStatus, renderDomainCard, renderIpSourceCard } = createDashboardRenderers({
+      escapeHtml: esc,
+      getZoneName: () => zoneName,
+      formatBeijingTime: formatBeijingTime,
+      origin: window.location.origin,
+  });
   function renderDomainList() {
       const container = document.getElementById('domain-list-container');
       if (currentDomains.length > 0) {
@@ -686,17 +657,6 @@ function getDashboardRenderScript() {
       }
   }
 
-   function renderIpSourceCard(source) {
-      // github_path 是 admin 可控值：URL 属性用 encodeURIComponent 阻断 scheme/属性逃逸，展示文本用 esc
-      const fileUrl = \`\${window.location.origin}/\${encodeURIComponent(source.github_path)}\`;
-      return \`
-      <div class="domain-card row-grid" id="ip-source-card-\${source.id}">
-           <div class="card-col"><span class="col-label">GitHub 文件路径</span><a href="\${esc(fileUrl)}" target="_blank" rel="noopener" class="domain-cell" onclick="event.stopPropagation();">\${esc(source.github_path)}</a><small class="domain-cell" title="\${esc(source.url)}">源: \${esc(source.url)}</small></div>
-           <div class="card-col"><span class="col-label">抓取策略</span><span>\${esc(source.fetch_strategy || '尚未探测')}</span></div>
-          <div class="card-col"><span class="col-label">上次同步</span><div>\${renderStatus(source)}</div><small>\${formatBeijingTime(source.last_synced_time)}</small></div>
-          <div class="card-actions"><button class="outline" onclick="window.syncSingleIpSource(\${source.id})">同步</button><button class="secondary outline" onclick="window.openModal('ipSourceModal', \${source.id})">编辑</button><button class="contrast outline" onclick="window.deleteIpSource(\${source.id})">删除</button></div>
-      </div>\`;
-  }
   function renderIpSourceList() {
       const container = document.getElementById('ip-source-list-container');
       if (currentIpSources.length > 0) {

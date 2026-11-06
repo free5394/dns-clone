@@ -158,21 +158,23 @@ describe("getDashboardPage 仪表盘转义 (I2)", () => {
         expect(html).toContain("&quot; onfocus=&quot;alert(1)");
     });
 
-    it("客户端渲染器源码对 DB 字段一律经过 esc()，通知改用 textContent (I2)", () => {
+    it("客户端渲染器源码对 DB 字段一律经过 escapeHtml()，通知改用 textContent (I2)", () => {
         const html = getDashboardPage([{ ...baseDomain }], [], baseSettings);
         // 客户端 esc 助手由 ./dashboard-helpers.js 注入（行为测试见 dashboard-helpers.test.ts）
         expect(html).toContain("const esc = function escapeHtmlClient");
+        // 渲染助手由 ./dashboard-render.js 注入（行为测试见 dashboard-render.test.ts）
+        expect(html).toContain("const createDashboardRenderers = function createDashboardRenderers");
         // renderStatus 的 title 属性
-        expect(html).toMatch(/title="\$\{esc\(item\.last_sync_error/);
+        expect(html).toMatch(/title="\$\{escapeHtml\(item\.last_sync_error/);
         // renderDomainCard：notes / target_domain / source_domain（notes 用 .domain-notes 区别行内标签）
-        expect(html).toMatch(/<strong class="domain-notes">\$\{esc\(domain\.notes\)\}<\/strong>/);
-        expect(html).toMatch(/title="\$\{esc\(domain\.target_domain\)\}"/);
-        expect(html).toMatch(/\$\{esc\(sourceDisplay\)\}/);
+        expect(html).toMatch(/<strong class="domain-notes">\$\{escapeHtml\(domain\.notes\)\}<\/strong>/);
+        expect(html).toMatch(/title="\$\{escapeHtml\(domain\.target_domain\)\}"/);
+        expect(html).toMatch(/\$\{escapeHtml\(sourceDisplay\)\}/);
         // renderIpSourceCard：url / github_path
-        expect(html).toMatch(/\$\{esc\(source\.url\)\}/);
-        expect(html).toMatch(/>\$\{esc\(source\.github_path\)\}<\/a>/);
+        expect(html).toMatch(/\$\{escapeHtml\(source\.url\)\}/);
+        expect(html).toMatch(/>\$\{escapeHtml\(source\.github_path\)\}<\/a>/);
         // renderLiveRecords：record type/content
-        expect(html).toMatch(/\$\{esc\(first\.content\)\}/);
+        expect(html).toMatch(/\$\{escapeHtml\(first\.content\)\}/);
         // showNotification 不再走 innerHTML
         expect(html).not.toMatch(/toast\.innerHTML/);
         expect(html).toMatch(/toast\.appendChild\(msg\)/);

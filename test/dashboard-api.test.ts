@@ -34,9 +34,11 @@ describe("仪表盘请求封装 (M-1)", () => {
         await apiFetch("/api/x");
         await apiFetch("/api/y", { method: "POST", headers: { "Content-Type": "text/plain" } });
 
-        expect((seen[0]?.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
-        expect((seen[1]?.headers as Record<string, string>)["Content-Type"]).toBe("text/plain");
-        expect(seen[1]?.method).toBe("POST");
+        const firstHeaders = seen[0]?.headers as Record<string, string>;
+        const secondHeaders = seen[1]?.headers as Record<string, string>;
+        expect(firstHeaders["Content-Type"]).toBe("application/json");
+        expect(secondHeaders["Content-Type"]).toBe("text/plain");
+        expect(seen[1]).toMatchObject({ method: "POST" });
     });
 
     it("401 提示会话过期、延迟跳转登录，并抛出后端文案", async () => {
