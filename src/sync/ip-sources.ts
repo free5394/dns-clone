@@ -1,7 +1,13 @@
 // ip-sources.ts — IP 源抓取与同步逻辑
 // 从 index.legacy.js 提取（原 1158-1236、1598-1673 行 + sync 入口函数）
 
-import { getGitHubSettings, getSetting, queryAll, releaseManualSyncLock } from "../db/client.ts";
+import {
+    getGitHubSettings,
+    getSetting,
+    queryAll,
+    releaseManualSyncLock,
+    createManualSyncLockRenewer,
+} from "../db/client.ts";
 import { getCurrentGitHubContent, updateFileOnGitHub } from "./github.ts";
 import { beijingTimeLog } from "../util/log.ts";
 import { createLogStreamResponse } from "../util/sse.ts";
@@ -186,10 +192,17 @@ export async function syncAllIpSources(
                 log("没有已启用的IP源需要同步。");
                 return;
             }
+            const renewLock = createManualSyncLockRenewer(db, lockToken, log);
+            await renewLock();
             await forEachIsolated(
                 sources,
                 async (source) => {
-                    await syncSingleIpSource(source.id, env, false);
+                    try {
+                        await syncSingleIpSource(source.id, env, false);
+                    } finally {
+                        // 单个 IP 源的三策略回退可能接近 1 分钟，每处理完一个条目续租一次（内部按 60 秒节流）
+                        await renewLock();
+                    }
                 },
                 (source, e) => log(`处理ID ${source.id} 失败: ${e instanceof Error ? e.message : String(e)}`)
             );

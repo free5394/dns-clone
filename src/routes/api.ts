@@ -16,6 +16,7 @@ import { jsonResponse, getCookie } from "../util/http.ts";
 import { hashPassword, isAuthenticated, verifyPassword } from "../util/auth.ts";
 import { getZoneName } from "../util/cf.ts";
 import { FETCH_STRATEGIES } from "../sync/ip-sources.ts";
+import { normalizeGithubPath } from "../sync/github.ts";
 import { syncAllDomains, syncSystemDomains, syncSingleDomain } from "../sync/domains.ts";
 import { syncSingleIpSource, syncAllIpSources } from "../sync/ip-sources.ts";
 import { assertSafeHttpUrl } from "../util/url-safety.ts";
@@ -443,20 +444,21 @@ type IpSourceValidation = { ok: true; input: IpSourceInput } | { ok: false; erro
 /** 请求体可能缺字段，校验函数负责把缺失当成非法值处理 */
 type IpSourceInputBody = Partial<IpSourceInput>;
 
-/** 校验 GitHub 文件路径形态；返回 null 表示合法 */
-function validateGithubPath(path: string): string | null {
-    if (path.length === 0) return "GitHub 文件路径不能为空。";
-    if (path.length > 512) return "GitHub 文件路径总长必须在 1–512 个字符之间。";
-    if (path.trim() !== path) return "GitHub 文件路径首尾不能包含空白。";
-    if (path.startsWith("/")) return "GitHub 文件路径不能以 / 开头。";
-    if (path.includes("\\")) return "GitHub 文件路径不能包含反斜杠。";
-    if (Array.from(path).some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f))
-        return "GitHub 文件路径不能包含控制字符。";
-    const segments = path.split("/");
-    if (segments.some((seg) => seg.length === 0)) return "GitHub 文件路径不能包含空路径段。";
-    if (segments.some((seg) => seg === "..")) return "GitHub 文件路径不能包含 .. 段。";
-    if (segments.some((seg) => seg.length > 255)) return "GitHub 文件路径的每一段不能超过 255 个字符。";
-    return null;
+/**
+ * 校验 GitHub 文件路径并返回归一后的落库值。
+ * 复用同步层的 normalizeGithubPath（一次解码 + 同一套形态校验 + 孤立代理项拦截），
+ * 再叠加接口侧的总长与首尾空白约束，避免两处规则各自漂移。
+ */
+function validateGithubPath(path: string): { ok: true; value: string } | { ok: false; error: string } {
+    let normalized: string;
+    try {
+        normalized = normalizeGithubPath(path);
+    } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : "GitHub 文件路径非法。" };
+    }
+    if (normalized.length > 512) return { ok: false, error: "GitHub 文件路径总长必须在 1–512 个字符之间。" };
+    if (normalized.trim() !== normalized) return { ok: false, error: "GitHub 文件路径首尾不能包含空白。" };
+    return { ok: true, value: normalized };
 }
 
 /** 信任边界校验：URL 先走 SSRF 防护再限长；路径、提交信息与策略逐一约束 */
@@ -472,8 +474,8 @@ function validateIpSourceInput(body: IpSourceInputBody): IpSourceValidation {
     if (url.length > 2048) return { ok: false, error: "URL 长度不能超过 2048 个字符。" };
 
     if (typeof github_path !== "string") return { ok: false, error: "GitHub 文件路径不能为空。" };
-    const pathError = validateGithubPath(github_path);
-    if (pathError !== null) return { ok: false, error: pathError };
+    const pathValidation = validateGithubPath(github_path);
+    if (!pathValidation.ok) return { ok: false, error: pathValidation.error };
 
     if (typeof commit_message !== "string") return { ok: false, error: "提交信息不能为空。" };
     const trimmedMessage = commit_message.trim();
@@ -484,7 +486,7 @@ function validateIpSourceInput(body: IpSourceInputBody): IpSourceValidation {
     if (typeof fetch_strategy !== "string" || !strategyNames.includes(fetch_strategy))
         return { ok: false, error: `抓取策略非法：仅支持 ${strategyNames.join("、")}。` };
 
-    return { ok: true, input: { url, github_path, commit_message, fetch_strategy } };
+    return { ok: true, input: { url, github_path: pathValidation.value, commit_message, fetch_strategy } };
 }
 
 /**

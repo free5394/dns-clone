@@ -39,8 +39,16 @@ export async function getFullSettings(db: D1Database) {
 /** 手动同步互斥锁的 settings 键：仅供内部互斥，不进入用户可见设置、也不在写入白名单里 */
 export const MANUAL_SYNC_LOCK_KEY = "MANUAL_SYNC_RUNNING";
 
-/** 锁最长有效时间：超过即视为上次任务异常中断，允许接管，避免异常后永久锁死 */
-const MANUAL_SYNC_LOCK_TTL_MS = 180000;
+/**
+ * 锁最长有效时间：超过即视为上次任务异常中断，允许接管，避免异常后永久锁死。
+ * 取 10 分钟而不是 3 分钟：域名全量同步串行处理，每个域名至少有 8 秒 DoH 与 15 秒列表请求；
+ * IP 源的三策略回退最坏为 15 + 20 + 15 秒，两者都可能超过 3 分钟。长任务期间由
+ * touchManualSyncLock 定期续租，固定 TTL 只负责兜底异常中断。
+ */
+export const MANUAL_SYNC_LOCK_TTL_MS = 600_000;
+
+/** 续租节流窗口：距上次续租不足 60 秒就跳过，避免每个条目都多写一次 D1 */
+const MANUAL_SYNC_LOCK_RENEW_INTERVAL_MS = 60_000;
 
 /**
  * 抢占手动同步锁，成功返回本次持有令牌（过期时间戳字符串），失败返回 null。
@@ -76,6 +84,40 @@ export async function acquireManualSyncLock(db: D1Database): Promise<string | nu
 /** 释放手动同步锁：只有令牌一致（仍是本次持有时）才删除，避免陈旧持有者误删新锁 */
 export async function releaseManualSyncLock(db: D1Database, token: string): Promise<void> {
     await db.prepare("DELETE FROM settings WHERE key = ? AND value = ?").bind(MANUAL_SYNC_LOCK_KEY, token).run();
+}
+
+/**
+ * 续租手动同步锁：仅当锁值仍是本次令牌时，把到期时间推到 TTL 之后。
+ * 令牌不匹配（锁已过期并被接管）时返回 false 且不改动锁值，避免把别人的锁改回自己。
+ */
+export async function touchManualSyncLock(db: D1Database, token: string): Promise<boolean> {
+    const renewed = String(Date.now() + MANUAL_SYNC_LOCK_TTL_MS);
+    const result = await db
+        .prepare("UPDATE settings SET value = ? WHERE key = ? AND value = ?")
+        .bind(renewed, MANUAL_SYNC_LOCK_KEY, token)
+        .run();
+    return (result.meta.changes ?? 0) === 1;
+}
+
+/**
+ * 为一次全量同步创建带节流的续租函数：流开始时调用一次，之后每处理完一个条目调用。
+ * 未持锁（token 为空）时为空操作；续租失败只记录「锁已易主」，不抛错中断同步。
+ */
+export function createManualSyncLockRenewer(
+    db: D1Database,
+    token: string | undefined,
+    log: (msg: string) => void
+): () => Promise<void> {
+    let lastRenewedAt = 0;
+    return async () => {
+        if (!token) return;
+        const now = Date.now();
+        if (now - lastRenewedAt < MANUAL_SYNC_LOCK_RENEW_INTERVAL_MS) return;
+        lastRenewedAt = now;
+        if (!(await touchManualSyncLock(db, token))) {
+            log("手动同步锁已易主（可能被判定为陈旧后被接管），本次同步继续执行，但结果可能被其他任务覆盖。");
+        }
+    };
 }
 
 /** 读取安全的 settings（前端可见，已剔除敏感字段） */
