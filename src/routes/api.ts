@@ -496,7 +496,13 @@ function validateIpSourceInput(body: IpSourceInputBody): IpSourceValidation {
 async function writeIpSource(
     request: Request,
     db: D1Database,
-    options: { sql: string; bindings: unknown[]; successMessage: string }
+    options: {
+        sql: string;
+        bindings: unknown[];
+        successMessage: string;
+        /** 更新路径专用：id 不存在时 UPDATE 影响 0 行，此时不能报成功 */
+        notFoundWhenNoRows?: boolean;
+    }
 ): Promise<Response> {
     const body = await readJsonBody<IpSourceInputBody>(request);
     if (body === null) return BAD_JSON();
@@ -504,10 +510,14 @@ async function writeIpSource(
     if (!validation.ok) return jsonResponse({ error: validation.error }, 400);
     const { url, github_path, commit_message, fetch_strategy } = validation.input;
     try {
-        await db
+        const result = await db
             .prepare(options.sql)
             .bind(url, github_path, commit_message, fetch_strategy, ...options.bindings)
             .run();
+        // UPDATE 命中 0 行说明 id 不存在：返回 404，避免把失败包装成「更新成功」
+        if (options.notFoundWhenNoRows && (result.meta?.changes ?? 0) === 0) {
+            return jsonResponse({ error: "目标不存在。" }, 404);
+        }
         return jsonResponse({ success: true, message: options.successMessage });
     } catch (e) {
         if (isUniqueViolation(e)) return jsonResponse({ error: "该URL或GitHub文件路径已存在。" }, 409);
@@ -528,6 +538,7 @@ function apiUpdateIpSource(request: Request, db: D1Database, id: number): Promis
         sql: "UPDATE ip_sources SET url=?, github_path=?, commit_message=?, fetch_strategy=? WHERE id=?",
         bindings: [id],
         successMessage: "IP源更新成功。",
+        notFoundWhenNoRows: true,
     });
 }
 

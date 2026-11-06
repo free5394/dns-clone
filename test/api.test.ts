@@ -1373,3 +1373,68 @@ describe("IP 源写库成功路径 (中-7)", () => {
         expect(await readRow("m12p/anonymous.txt")).toBeNull();
     });
 });
+
+// 中-10：PUT 不存在的 id 曾返回 200「IP源更新成功。」，属假成功
+describe("IP 源更新不存在 id (中-10)", () => {
+    const MISSING_ID = 987654321;
+
+    afterAll(async () => {
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm404/%'").run();
+    });
+
+    it("PUT 不存在的 id 返回 404 且不落库", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(MISSING_ID), {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m404/missing.txt",
+                github_path: "m404/missing.txt",
+                commit_message: "不该落库",
+                fetch_strategy: "direct_regex",
+            }),
+        });
+
+        expect(res.status).toBe(404);
+        const body = (await res.json()) as { error?: string; success?: boolean };
+        expect(body.error).toBe("目标不存在。");
+        expect(body.success).toBeUndefined();
+
+        const created = await env.WUYA.prepare(
+            "SELECT COUNT(*) as total FROM ip_sources WHERE github_path LIKE 'm404/%'"
+        ).first<{
+            total: number;
+        }>();
+        expect(created?.total).toBe(0);
+    });
+
+    it("PUT 已存在 id 且提交值未变时仍返回 200，不被误判为不存在", async () => {
+        const cookie = await loginAndGetCookie();
+        const payload = {
+            url: "https://example.com/m404/same.txt",
+            github_path: "m404/same.txt",
+            commit_message: "内容不变",
+            fetch_strategy: "direct_regex",
+        };
+
+        const created = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        expect(created.status).toBe(200);
+        const row = await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind("m404/same.txt")
+            .first<{ id: number }>();
+        expect(row?.id).toBeGreaterThan(0);
+
+        const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(row?.id), {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as { message?: string }).message).toBe("IP源更新成功。");
+    });
+});
