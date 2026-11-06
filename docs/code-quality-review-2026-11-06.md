@@ -267,9 +267,11 @@ URIError: URI malformed
 | 中-8 | 已修 | 新增 `buildApiErrorResponse`，API 全局兜底只回固定文案，不再携带 `details` 或异常 message；完整 stack 仍进日志                                                                              | `2136240` |
 | M-1  | 已修 | 渲染助手与 `apiFetch` 提成可测工厂（`src/ui/dashboard-render.js`、`src/ui/dashboard-api.js`），依赖全部注入后再由 `toString()` 注入浏览器脚本；脚本外 HTML 逐字一致，注入版与模块版行为一致 | `0cd9a41` |
 
-对应测试落在 `test/error-response.test.ts`（新增）、`test/sync-lock.test.ts`、`test/github.test.ts`、`test/api.test.ts`、`test/dashboard-render.test.ts`（新增）、`test/dashboard-api.test.ts`（新增），均由失败起步再转绿。M-1 的测试先以 `74b4307` 单独提交红态（模块尚不存在，`tsc` 必红，故用 `--no-verify` 并写明原因），实现提交 `0cd9a41` 再跑完整门禁。合并后主分支全量 **25 文件 / 303 例通过**，`tsc --noEmit`、语言门禁、UTF-8 门禁、oxlint、Prettier 五项全绿。
+对应测试落在 `test/error-response.test.ts`（新增）、`test/sync-lock.test.ts`、`test/github.test.ts`、`test/api.test.ts`、`test/dashboard-render.test.ts`（新增）、`test/dashboard-api.test.ts`（新增），均由失败起步再转绿。M-1 的测试先以 `74b4307` 单独提交红态（模块尚不存在，`tsc` 必红，故用 `--no-verify` 并写明原因），实现提交 `0cd9a41` 再跑完整门禁。合并后主分支全量 **25 文件 / 305 例通过**，`tsc --noEmit`、语言门禁、UTF-8 门禁、oxlint、Prettier 五项全绿。
+
+**`apiUpdateIpSource` 假成功已在 `b1d98e9` 关闭**：写库流水线判断 `result.meta.changes`，更新路径命中 0 行时返回 404 `目标不存在。`，与同文件 `PUT /api/domains/:id`（`src/routes/api.ts:293`）的既有语义一致；新增两条直测（不存在 id → 404 且不落库、提交值未变仍 200）先红后绿。
 
 仍未关闭的项：
 
 1. **解码残留歧义**：落库改为解码值后，若用户提交 `a%25b`，库里存 `a%b`，同步时再按"解码一次"会得到另一种解释。要彻底消除，需要在 `normalizeGithubPath` 里拒绝解码后仍含 `%` 的值，但这会拒绝既有数据，需单独决定。
-2. **`apiUpdateIpSource` 不检查 rowcount**（`src/routes/api.ts:524-530`）：不存在的 id 仍返回 200 与"IP源更新成功。"，属假成功，建议改成 404；本次未动，因为会改变既有契约。
+2. **`apiDeleteIpSource` 同样不检查 rowcount**（`src/routes/api.ts:534-537`）：删除不存在的 id 仍返回 200 与"IP源删除成功。"，与刚修的更新路径属同类假成功，是否一并改成 404 需确认（会再动一次既有契约）。
