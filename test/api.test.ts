@@ -1275,3 +1275,101 @@ describe("IP 源路径百分号语义 (高-3)", () => {
         expect(((await res.json()) as { error?: string }).error).toContain("GitHub 文件路径");
     });
 });
+
+// 中-7：M-3 合并写库路径后，新增与更新的成功分支缺少端点级直测
+describe("IP 源写库成功路径 (中-7)", () => {
+    type Row = {
+        id: number;
+        url: string;
+        github_path: string;
+        commit_message: string;
+        fetch_strategy: string;
+    };
+
+    async function readRow(githubPath: string): Promise<Row | null> {
+        return await env.WUYA.prepare(
+            "SELECT id, url, github_path, commit_message, fetch_strategy FROM ip_sources WHERE github_path = ?"
+        )
+            .bind(githubPath)
+            .first<Row>();
+    }
+
+    function payload(overrides: Record<string, unknown> = {}) {
+        return {
+            url: "https://example.com/m12p/source.txt",
+            github_path: "m12p/source.txt",
+            commit_message: "首次同步",
+            fetch_strategy: "direct_regex",
+            ...overrides,
+        };
+    }
+
+    afterAll(async () => {
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm12p/%'").run();
+    });
+
+    it("POST 成功后按提交值落库并返回中文成功文案", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(payload()),
+        });
+
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { success?: boolean; message?: string };
+        expect(body.success).toBe(true);
+        expect(body.message).toBe("IP源添加成功。");
+
+        const row = await readRow("m12p/source.txt");
+        expect(row).not.toBeNull();
+        expect(row?.url).toBe("https://example.com/m12p/source.txt");
+        expect(row?.commit_message).toBe("首次同步");
+        expect(row?.fetch_strategy).toBe("direct_regex");
+    });
+
+    it("PUT 成功会真的改掉字段，且 id 不变", async () => {
+        const cookie = await loginAndGetCookie();
+        const created = await readRow("m12p/source.txt");
+        expect(created).not.toBeNull();
+
+        const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(created?.id), {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(
+                payload({
+                    url: "https://example.com/m12p/updated.txt",
+                    commit_message: "更新后的提交信息",
+                    fetch_strategy: "phantomjs_cloud",
+                })
+            ),
+        });
+
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { success?: boolean; message?: string };
+        expect(body.success).toBe(true);
+        expect(body.message).toBe("IP源更新成功。");
+
+        const row = await readRow("m12p/source.txt");
+        expect(row?.id).toBe(created?.id);
+        expect(row?.url).toBe("https://example.com/m12p/updated.txt");
+        expect(row?.commit_message).toBe("更新后的提交信息");
+        expect(row?.fetch_strategy).toBe("phantomjs_cloud");
+    });
+
+    it("未登录时新增被拒，且不落库", async () => {
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(
+                payload({
+                    url: "https://example.com/m12p/anonymous.txt",
+                    github_path: "m12p/anonymous.txt",
+                })
+            ),
+        });
+
+        expect(res.status).toBe(401);
+        expect(await readRow("m12p/anonymous.txt")).toBeNull();
+    });
+});
