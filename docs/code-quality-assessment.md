@@ -1,5 +1,9 @@
 # 代码质量评估报告
 
+> 状态提示（2026-11-07）：本文是评审当日的快照，问题清单本身不回填修复状态，避免"边改边改历史"。
+> 当前状态与偏差以 [`docs/code-quality-review-2026-11-06.md`](code-quality-review-2026-11-06.md) 第七至九节为准，
+> 执行拆解见 [`docs/code-quality-fix-plan.md`](code-quality-fix-plan.md)。
+
 - 评估日期：2026-11-05
 - 评估范围：当前工作树（`git status` 显示 `main...origin/main [ahead 23]`，无未提交改动）
 - 评估方式：只读静态审查 + 只读统计命令；未运行测试、未安装依赖、未格式化、未执行任何 git 写操作

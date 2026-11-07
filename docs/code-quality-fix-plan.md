@@ -1,5 +1,11 @@
 # 代码质量修复计划
 
+> 状态提示（2026-11-07）：P0–P5 已执行完毕，逐项落地与偏差见
+> [`docs/code-quality-review-2026-11-06.md`](code-quality-review-2026-11-06.md) 第七至九节。
+> 阅读本文时请注意：M-1 的"可导出纯函数"已达成（渲染与请求封装提成工厂），
+> M-6 的 `mapDomainRow` / `mapIpSourceRow` 与 M-5 的 `pickFailureFirst` 经评估属纯 churn，未实现，
+> 理由写在对应提交说明与报告第七节里。
+
 - 生成日期：2026-11-05
 - 输入：`docs/code-quality-assessment.md`、`AGENTS.md`、`CODING_STANDARDS.md` 与当前工作树源码
 - 状态：计划文档；本文所有代码均为草案，不随本计划落地

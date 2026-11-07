@@ -276,16 +276,19 @@ pnpm dev
 
 ### 常用脚本
 
-| 命令                 | 作用                                                                 |
-| -------------------- | -------------------------------------------------------------------- |
-| `pnpm dev`           | 启动本地 workerd 调试环境（默认 8787 端口）                          |
-| `pnpm test`          | 运行 vitest-pool-workers 测试套件（workerd 内执行）                  |
-| `pnpm test:coverage` | 运行测试并生成覆盖率报告（istanbul 插桩）                            |
-| `pnpm typecheck`     | TypeScript 严格模式检查（`tsc --noEmit`）                            |
-| `pnpm build:single`  | 用 esbuild 打包 `src/index.ts` → `dist/worker.bundle.js`             |
-| `pnpm predeploy`     | 部署前校验：检查 `wrangler.toml` 中 `database_id` 是否替换           |
-| `pnpm deploy`        | CLI 部署到 Cloudflare（自动注入 `.env` 中的 `CLOUDFLARE_API_TOKEN`） |
-| `pnpm cf-typegen`    | 重新生成 `worker-configuration.d.ts`（gitignore）                    |
+| 命令                   | 作用                                                                 |
+| ---------------------- | -------------------------------------------------------------------- |
+| `pnpm dev`             | 启动本地 workerd 调试环境（默认 8787 端口）                          |
+| `pnpm test`            | 运行 `@cloudflare/vitest-plugin` 测试套件（workerd 内执行）          |
+| `pnpm test:coverage`   | 运行测试并生成覆盖率报告（istanbul 插桩）                            |
+| `pnpm check`           | 静态门禁：typecheck、语言、UTF-8、lint、格式（pre-commit 跑的这条）  |
+| `pnpm verify`          | `pnpm check` + 全量测试，想一次跑完时用                              |
+| `pnpm check:dashboard` | 渲染仪表盘并解析注入的客户端脚本（Node 侧语法闸门，不进 CI）         |
+| `pnpm typecheck`       | TypeScript 严格模式检查（`tsc --noEmit`）                            |
+| `pnpm build:single`    | 用 esbuild 打包 `src/index.ts` → `dist/worker.bundle.js`             |
+| `pnpm predeploy`       | 部署前校验：检查 `wrangler.toml` 中 `database_id` 是否替换           |
+| `pnpm deploy`          | CLI 部署到 Cloudflare（自动注入 `.env` 中的 `CLOUDFLARE_API_TOKEN`） |
+| `pnpm cf-typegen`      | 重新生成 `worker-configuration.d.ts`（gitignore）                    |
 
 ### CLI 部署（`pnpm deploy`）
 
@@ -320,7 +323,7 @@ pnpm deploy
 ├── package.json         # 脚本：dev / test / typecheck / deploy / cf-typegen
 ├── wrangler.toml       # Worker 配置（compatibility_date 2026-05-20，keep_vars）
 ├── tsconfig.json        # TypeScript strict 配置
-├── vitest.config.ts     # vitest-pool-workers 测试配置
+├── vitest.config.ts     # @cloudflare/vitest-plugin 测试配置
 ├── scripts/
 │   ├── build-single-file.mjs  # esbuild 打包 → dist/worker.bundle.js
 │   ├── predeploy.cjs          # 部署前占位符校验
@@ -332,7 +335,7 @@ pnpm deploy
 │   ├── sync/            # domains.ts / ip-sources.ts / github.ts
 │   ├── ui/              # templates.js（UI 模板，纯 JS，tsc 不参与）
 │   └── util/            # auth / http / log / sse / fetch / cf / url-safety / http-error / run-with-log
-├── test/                # vitest-pool-workers 测试（22 文件，workerd 内跑）
+├── test/                # @cloudflare/vitest-plugin 测试（25 文件，workerd 内跑）
 └── img/                 # README 截图
 ```
 
