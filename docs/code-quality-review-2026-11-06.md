@@ -273,6 +273,14 @@ URIError: URI malformed
 
 **`apiDeleteIpSource` 同类假成功已在 `0a83b6d` 关闭**：删除命中 0 行返回 404 `目标不存在。`；重复删除同一 id 第二次 404、第一次仍 200，两条直测先红后绿。
 
-仍未关闭的项：
+**解码残留歧义已按「解码后仍含 `%` 一律拒绝」定案并落地（`86c8f99`）**：`normalizeGithubPath` 只解码一次，解码后若仍残留 `%`（`a%25b` → `a%b`、`a%2520b` → `a%20b`）即抛「GitHub 文件路径解码后仍包含百分号，请直接填写真实路径。」；判定只有一处，API 校验（`validateGithubPath`）与订阅者读取（`readFileForSubscriber`）都复用同一函数，因此写库前就拒、读缓存前就拒。新增 5 例（`test/github.test.ts` 3 例、`test/api.test.ts` 2 例）先红后绿：`a%25b`、`a%2520b`、`100%25` 被拒且不落库，`a%20b` 与 `a b` 仍归一为同一路径。定案后全量 **25 文件 / 312 例通过**，五项门禁全绿。
 
-1. **解码残留歧义**：落库改为解码值后，若用户提交 `a%25b`，库里存 `a%b`，同步时再按"解码一次"会得到另一种解释。要彻底消除，需要在 `normalizeGithubPath` 里拒绝解码后仍含 `%` 的值，但这会拒绝既有数据，需单独决定。
+存量数据这一侧需要在部署前确认一次：库里已有的 `ip_sources.github_path` 若含 `%`，同步时会命中新校验并在该条上失败（`forEachIsolated` 保证只失败这一条，不影响其它条目），错误以中文写进 `last_sync_error`，不会静默。排查语句：
+
+```sql
+SELECT id, github_path, last_sync_status, last_sync_error
+FROM ip_sources
+WHERE github_path LIKE '%\%%' ESCAPE '\';
+```
+
+命中行需人工确认后按解码后的真实路径重填或直接删除；不做自动迁移，因为 `a%b` 无法反推用户原本想指向哪个文件。
