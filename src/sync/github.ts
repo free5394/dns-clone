@@ -65,6 +65,7 @@ function assertValidContentPath(path: string): void {
  * 归一化 GitHub 内容路径：含 `%` 时先按一次 `decodeURIComponent` 解码，再用同一套规则校验，
  * 最后试编码拦截孤立代理项（它只在 `encodeURIComponent` 时才暴露，不能留到同步阶段抛 URIError）。
  * 契约：`a%20b.txt` 与 `a b.txt` 是同一个文件；URL 编码统一交给调用方在归一化之后完成。
+ * 解码一次后仍含 `%` 的一律拒绝：`a%25b` 解码是 `a%b`，再解码就变义，属语义不确定输入。
  */
 export function normalizeGithubPath(path: string): string {
     let decoded = path;
@@ -76,6 +77,10 @@ export function normalizeGithubPath(path: string): string {
         }
     }
     assertValidContentPath(decoded);
+    if (decoded.includes("%")) {
+        // 只解码一次：剩余 `%` 意味着再解码会改变含义（如 `a%25b` → `a%b`），拒绝而不是猜
+        throw new Error("GitHub 文件路径解码后仍包含百分号，请直接填写真实路径。");
+    }
     try {
         // 试编码整条路径只为触发孤立代理项的 URIError；正式编码仍按段进行
         encodeURIComponent(decoded);

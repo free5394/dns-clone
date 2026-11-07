@@ -6,6 +6,7 @@ import {
     getCurrentGitHubContent,
     updateFileOnGitHub,
     readFileForSubscriber,
+    normalizeGithubPath,
 } from "../src/sync/github.ts";
 
 afterEach(() => {
@@ -342,5 +343,41 @@ describe("GitHub 路径百分号语义 (高-3 / 中-1)", () => {
         await readFileForSubscriber(target, "b.txt");
 
         expect(cacheUrls[0]).not.toBe(cacheUrls[1]);
+    });
+});
+
+describe("GitHub 路径解码残留百分号 (Q1)", () => {
+    const target = { token: "token", owner: "owner", repo: "repo" };
+
+    it("解码后仍含百分号的路径一律拒绝", () => {
+        // a%25b 解码一次得到 a%b，再解码就会变义，属于无法确定语义的输入
+        expect(() => normalizeGithubPath("a%25b/c.txt")).toThrow(/GitHub 文件路径/);
+        // 双重编码同理：解码一次后仍是 a%20b，再解一次才成为空格
+        expect(() => normalizeGithubPath("a%2520b/c.txt")).toThrow(/GitHub 文件路径/);
+        expect(() => normalizeGithubPath("100%25/plan.txt")).toThrow(/GitHub 文件路径/);
+    });
+
+    it("解码一次后不含百分号的合法路径仍然接受", () => {
+        expect(normalizeGithubPath("a%20b/c.txt")).toBe("a b/c.txt");
+        expect(normalizeGithubPath("a b/c.txt")).toBe("a b/c.txt");
+        expect(normalizeGithubPath("目录/文件.txt")).toBe("目录/文件.txt");
+    });
+
+    it("订阅者读取时直接拒绝，既不读缓存也不触网", async () => {
+        const cacheHits: string[] = [];
+        vi.stubGlobal("caches", {
+            default: {
+                match: async (req: Request) => {
+                    cacheHits.push(req.url);
+                    return undefined;
+                },
+                put: async () => undefined,
+            },
+        });
+        const spy = mockFetch(() => new Response("x", { status: 200 }));
+
+        await expect(readFileForSubscriber(target, "a%25b.txt")).rejects.toThrow(/GitHub 文件路径/);
+        expect(cacheHits).toHaveLength(0);
+        expect(spy).not.toHaveBeenCalled();
     });
 });

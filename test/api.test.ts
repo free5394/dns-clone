@@ -1491,3 +1491,53 @@ describe("IP 源删除不存在 id (中-11)", () => {
         expect(second.status).toBe(404);
     });
 });
+
+// Q1：解码一次后仍含 % 的路径语义不确定，必须在写库前拒绝，而不是落进数据库留到同步期炸
+describe("IP 源路径解码残留百分号 (Q1)", () => {
+    afterAll(async () => {
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'mq1/%'").run();
+    });
+
+    it("提交解码后仍含百分号的路径被拒绝且不落库", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/mq1/source.txt",
+                github_path: "mq1/a%25b.txt",
+                commit_message: "残留百分号",
+                fetch_strategy: "direct_regex",
+            }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error?: string };
+        expect(body.error).toContain("GitHub 文件路径");
+
+        const count = await env.WUYA.prepare(
+            "SELECT COUNT(*) as n FROM ip_sources WHERE github_path LIKE 'mq1/%'"
+        ).first<{ n: number }>();
+        expect(count?.n).toBe(0);
+    });
+
+    it("普通编码路径仍按一次解码落库", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/mq1/encoded.txt",
+                github_path: "mq1/a%20b.txt",
+                commit_message: "普通编码",
+                fetch_strategy: "direct_regex",
+            }),
+        });
+
+        expect(res.status).toBe(200);
+        const row = await env.WUYA.prepare("SELECT github_path FROM ip_sources WHERE github_path = ?")
+            .bind("mq1/a b.txt")
+            .first<{ github_path: string }>();
+        expect(row?.github_path).toBe("mq1/a b.txt");
+    });
+});
