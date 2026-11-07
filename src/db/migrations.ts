@@ -6,6 +6,9 @@
 import { getSetting, setSetting, getCfApiSettings, queryAll } from "./client.ts";
 import { getZoneName } from "../util/cf.ts";
 
+// 迁移版本：改动 DDL（新增表 / 列 / 索引）时必须一起加一，否则已部署实例会因 24h 时间门控推迟生效。
+export const MIGRATION_VERSION = "2026-11-07-index-guard";
+
 /** 初始化/迁移数据库：幂等，可重复执行 */
 export async function initializeAndMigrateDatabase(env: { WUYA: D1Database }): Promise<void> {
     if (!env.WUYA) {
@@ -16,14 +19,20 @@ export async function initializeAndMigrateDatabase(env: { WUYA: D1Database }): P
     // P1-8 门控：上次迁移在 24h 内则跳过，避免每请求执行整套 DDL
     // FIX-19: 全新空库上 settings 表尚不存在，门控读取必然抛错且发生在建表 DDL 之前，
     // 导致自举死锁（首次访问永远 500）。读失败视为全新库，落入下方幂等 DDL 自举。
+    // 双键门控：版本不一致要立刻跑（新增索引等 DDL 必须部署即生效），
+    // 版本一致且未满 24h 才跳过（保留「每天最多一次整套 DDL」的成本约束）。
     let lastMigratedAt: string | null = null;
+    let appliedVersion: string | null = null;
     try {
         lastMigratedAt = await getSetting(db, "last_migrated_at");
+        appliedVersion = await getSetting(db, "migration_version");
     } catch {
         lastMigratedAt = null;
+        appliedVersion = null;
     }
-    const isStale = !lastMigratedAt || Date.now() - new Date(lastMigratedAt).getTime() > 24 * 60 * 60 * 1000;
-    if (!isStale) return;
+    const timeStale = !lastMigratedAt || Date.now() - new Date(lastMigratedAt).getTime() > 24 * 60 * 60 * 1000;
+    const versionStale = appliedVersion !== MIGRATION_VERSION;
+    if (!timeStale && !versionStale) return;
 
     const expectedSchemas: Record<string, string[]> = {
         settings: ["key TEXT PRIMARY KEY NOT NULL", "value TEXT NOT NULL"],
@@ -99,6 +108,7 @@ export async function initializeAndMigrateDatabase(env: { WUYA: D1Database }): P
     // 记录本次迁移时间，供下次门控使用
     // I1：门控写入不得依赖 CF 凭据，否则未配置凭据时 isStale 恒真，每请求重跑全量 DDL
     await setSetting(db, "last_migrated_at", new Date().toISOString());
+    await setSetting(db, "migration_version", MIGRATION_VERSION);
 
     // invalid domain 修复依赖 CF API（读取 zone 名），仅在有凭据时执行
     const { token, zoneId } = await getCfApiSettings(db);

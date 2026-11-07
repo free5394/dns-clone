@@ -339,4 +339,8 @@ WHERE github_path LIKE '%\%%' ESCAPE '\';
 
 自检证据（临时用例，已删除）：迁移建好三条索引 → `DROP INDEX idx_domains_batch` → 重跑 `initializeAndMigrateDatabase` → 索引**没有**恢复，`sqlite_master` 里仍缺该索引。
 
-建议口径（待确认）：把门控从"纯时间"改成"版本 + 时间"双键——加一个 `MIGRATION_VERSION` 常量写进 settings，版本不一致时立刻重建，版本一致且未满 24h 才跳过。这样部署即生效，同时保留"每天最多一次整套 DDL"的初衷。
+**已修（本条）**：门控改为"版本 + 时间"双键——`MIGRATION_VERSION`（`src/db/migrations.ts:10`）写进 settings 的 `migration_version`，版本不一致立刻重建，版本一致且未满 24h 才跳过；迁移收尾同时写版本与时间（:110-111）。
+
+维护约定：**改动 DDL（表、列、索引）必须同时递增 `MIGRATION_VERSION`**，否则已部署实例仍会受 24h 时间门控影响。
+
+验证：`test/migration-gate.test.ts` 三例——版本不一致时 24h 内也补齐丢失索引、版本一致时跳过整套 DDL、迁移后同时写入版本与时间。
