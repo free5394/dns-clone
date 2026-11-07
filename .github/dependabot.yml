@@ -1,6 +1,14 @@
 # 依赖更新：github-actions 生态兜 action 版本漂移（2026-10 的 Node 20 弃用警告就是这么撞上的，
 # 机理见 .github/workflows/ci.yml 的注释）；npm 生态跟踪 package.json 与 pnpm-lock.yaml 的
-# devDependencies，按 dev-dependencies 分组提交，避免每个补丁版本各开一个 PR。
+# devDependencies，按组分批提交，避免每个补丁版本各开一个 PR。
+#
+# 主版本口径：不设 version-update:semver-major 忽略，主版本升级交给 CI 裁决。
+# 理由：PR #15 已证明主版本可以安全落地（vitest 5 + @cloudflare/vitest-plugin 一次过），
+# 而忽略规则会把迁移窗口永久关掉；反过来，跑不过的升级由门禁拦下即可（PR #14 就是被覆盖率阈值拦住的）。
+#
+# vitest 三件套必须同批升级：vitest、@vitest/coverage-istanbul、@cloudflare/vitest-plugin 之间存在
+# peer 依赖约束（pool-workers 时代只支持 vitest ^4.1.0，升到 5 会直接让测试全不执行、覆盖率 0%）。
+# 单独成组保证它们出现在同一个 PR 里，不会被拆成“插件先升、vitest 后升”的错配组合。
 # 两类都按周检查，不给自己刷 PR 噪音。
 version: 2
 updates:
@@ -13,6 +21,11 @@ updates:
       schedule:
           interval: "weekly"
       groups:
+          vitest-stack:
+              patterns:
+                  - "vitest"
+                  - "@vitest/*"
+                  - "@cloudflare/vitest-plugin"
           dev-dependencies:
               dependency-type: "development"
       open-pull-requests-limit: 5
