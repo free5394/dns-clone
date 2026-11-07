@@ -1,7 +1,7 @@
 // vitest.config.ts — 阶段 F：vitest-pool-workers 测试配置
 // 从 vitest/config 导入 defineProject，用于 multi-project 配置（R1 修订）
 import { defineProject } from "vitest/config";
-import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 import path from "node:path";
 
 const migrationsPath = path.join(import.meta.dirname, "src/db/migrations");
