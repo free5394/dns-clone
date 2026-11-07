@@ -57,3 +57,26 @@ describe("定时取批查询计划 (M-11)", () => {
         expect(order).toEqual(["t4.example.com", "t2.example.com", "t3.example.com", "t1.example.com"]);
     });
 });
+
+// Q7：索引存在性是独立事实，不由 expectedSchemas 表达（那里只有列定义）。
+// EXPLAIN 命中只能证明"用上了"，索引被改名或删除后若查询仍能跑，EXPLAIN 断言会红；
+// 这里再直接查 sqlite_master，让"索引没了"这件事以最直白的方式失败。
+describe("迁移后的取批索引存在性 (Q7)", () => {
+    beforeAll(async () => {
+        await initializeAndMigrateDatabase({ WUYA: env.WUYA });
+    });
+
+    it("三条索引都在 sqlite_master 里", async () => {
+        const expected = ["idx_login_attempts_ip_time", "idx_domains_batch", "idx_ip_sources_batch"];
+        const rows = await env.WUYA.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%' ORDER BY name"
+        ).all();
+        const names = (rows.results as Array<{ name: string }>).map((row) => row.name);
+
+        for (const name of expected) {
+            expect(names).toContain(name);
+        }
+        // 反向确认查询本身有区分力：不存在的名字不会出现在结果里
+        expect(names).not.toContain("idx_domains_batch_missing");
+    });
+});
