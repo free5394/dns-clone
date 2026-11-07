@@ -58,7 +58,8 @@ scripts.forEach((code, index) => {
     total += code.length;
     try {
         // 只解析不执行：new Function 在这里仅用于语法校验
-        new Function(code);
+        const probe = new Function(code);
+        void probe;
     } catch (e) {
         console.error(`第 ${index + 1} 段内联脚本语法错误：${e instanceof Error ? e.message : e}`);
         process.exit(1);
