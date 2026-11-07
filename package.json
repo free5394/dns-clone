@@ -19,6 +19,7 @@
         "typecheck": "tsc --noEmit",
         "check": "pnpm typecheck && pnpm check:language && pnpm check:utf8 && pnpm lint && pnpm format:check",
         "verify": "pnpm check && pnpm test",
+        "check:dashboard": "node scripts/check-dashboard-script.mjs",
         "check:language": "node scripts/check-changed-language.mjs",
         "check:utf8": "node scripts/check-utf8.mjs",
         "prepare": "node scripts/install-git-hooks.cjs",

@@ -297,3 +297,29 @@ WHERE github_path LIKE '%\%%' ESCAPE '\';
 | L-10 | 维持文档约束 | `AGENTS.md:30` 已写明 `pnpm test` 与 `pnpm dev` 同跑会偶发失败；CI 没有 dev 进程，不受影响                                                               | 出现非并发场景下的稳定失败时，按真实缺陷排查而不是归因环境                 |
 
 `pnpm verify` 实测：`25 passed (25)` 文件、`312 passed (312)` 用例，前五道静态门禁全绿（含 `package.json` 格式；首次未过是 `verify` 行缩进，`prettier --write` 后通过）。
+
+## 九、渲染级测试的边界与手工 smoke 清单（2026-11-07 定案）
+
+口径：**不引入浏览器测试、不新增依赖**。客户端脚本用三层保护，各层职责不重叠：
+
+| 层       | 抓手                                                     | 落点                                                                                            | 是否进 CI |
+| -------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------- |
+| 行为     | 被 `toString()` 注入的独立函数可以真调用、真断言         | `test/dashboard-render.test.ts`、`test/dashboard-api.test.ts`、`test/dashboard-helpers.test.ts` | 是        |
+| 语法     | 渲染整页 → 提取 `<script>` → `new Function` 只解析不执行 | `scripts/check-dashboard-script.mjs`（`pnpm check:dashboard`）                                  | 否，手动  |
+| 片段契约 | 关键 HTML 片段与转义结果                                 | `test/templates-escape.test.ts`                                                                 | 是        |
+
+第 2 层不进 CI 的原因写死在脚本头注释里：`workerd` 禁止 `eval` / `new Function`，而这层必须在 Node 里跑；把 Node 与 workerd 行为不一致的东西塞进 CI，只会制造一种"看着有门禁"的假安全感。实测输出：`内联脚本 1 段，共 24870 字符，语法解析通过`。
+
+**已知缺口（不假装覆盖）**：
+
+- `window` 上的事件绑定：`individualSync` / `openModal` / `deleteDomain` / 表单提交回调；
+- SSE 流驱动的进度渲染（`consumeSseEvents`）；
+- 首屏之后的真实交互：展开、二次确认、错误 toast 的实际呈现。
+
+**改动 `src/ui/templates.js` 后的手工 smoke 清单（`pnpm dev` 跑一次，约 3 分钟）**：
+
+1. 登录进仪表盘，首屏无控制台报错，域名与 IP 源两组卡片都渲染出来；
+2. 点"一键同步"，进度区逐行刷新，结束时是终态而不是半截；
+3. 点单个域名同步，进度能对上该卡片，且不影响其它卡片；
+4. 打开新增 / 编辑弹窗，提交后列表立即反映新值；
+5. 删除域名或 IP 源，二次确认生效；对不存在的 id 再删一次，应看到"目标不存在"的提示而不是假成功。
