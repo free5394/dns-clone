@@ -215,6 +215,8 @@ export async function syncAllIpSources(
 ): Promise<Response | void> {
     const db = env.WUYA;
     const syncLogic = async (log: LogFn) => {
+        // 续租器要活到 finally：锁值会被续租改写，释放必须用最新值而不是初始 token
+        const renewLock = createManualSyncLockRenewer(db, lockToken, log);
         try {
             log("开始批量同步IP源...");
             const sources = await queryAll<IpSourceRow>(db, "SELECT * FROM ip_sources WHERE is_enabled = 1");
@@ -222,7 +224,6 @@ export async function syncAllIpSources(
                 log("没有已启用的IP源需要同步。");
                 return;
             }
-            const renewLock = createManualSyncLockRenewer(db, lockToken, log);
             await renewLock();
             await forEachIsolated(
                 sources,
@@ -238,7 +239,7 @@ export async function syncAllIpSources(
             );
             log("所有IP源同步任务执行完毕。");
         } finally {
-            if (lockToken) await releaseManualSyncLock(db, lockToken);
+            await releaseManualSyncLock(db, renewLock.current());
         }
     };
 
