@@ -2,7 +2,7 @@
 // 这两支此前只被 sync 层间接覆盖，超时、退避与「哪些 4xx 不该重试」的分支没有断言。
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { fetchWithTimeout, fetchWithRetry } from "../src/util/fetch.ts";
-import { HttpError } from "../src/util/http-error.ts";
+import { HttpError, TimeoutError } from "../src/util/http-error.ts";
 
 afterEach(() => {
     vi.useRealTimers();
@@ -45,12 +45,23 @@ describe("fetchWithTimeout 超时包装", () => {
         );
 
         const pending = fetchWithTimeout("https://example.com/slow", {}, 1000);
-        const assertion = expect(pending).rejects.toThrow("aborted by timeout");
+        const assertion = expect(pending).rejects.toBeInstanceOf(TimeoutError);
         await vi.advanceTimersByTimeAsync(1000);
         await assertion;
 
         expect(observedSignal?.aborted).toBe(true);
         expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("非超时的请求失败原样透传，不伪装成 TimeoutError", async () => {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => {
+                throw new TypeError("connection refused");
+            })
+        );
+
+        await expect(fetchWithTimeout("https://example.com/refused", {}, 1000)).rejects.toThrow("connection refused");
     });
 
     it("请求立即完成时清掉超时定时器", async () => {

@@ -2,7 +2,7 @@
 // 隐含修正 B4 的载体：引入 AbortController 超时，杜绝外部抓取无界等待
 // 阶段 C 新建；阶段 D 起 sync 层全面使用
 
-import { HttpError } from "./http-error.ts";
+import { HttpError, TimeoutError } from "./http-error.ts";
 
 /**
  * 带超时的 fetch（默认 10s）
@@ -15,6 +15,13 @@ export async function fetchWithTimeout(url: string, init: RequestInit = {}, time
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
         return await fetch(url, { ...init, signal: controller.signal });
+    } catch (e) {
+        // 超时掐断统一转成 TimeoutError，调用方用 instanceof 区分"链路超时"与"源返回错误"；
+        // 用 signal 状态判定而非错误名，规避各运行时 abort 异常形态差异（AbortError/DOMException）
+        if (controller.signal.aborted) {
+            throw new TimeoutError(`请求超时（${timeoutMs}ms）: ${url}`);
+        }
+        throw e;
     } finally {
         clearTimeout(timer);
     }
@@ -25,6 +32,7 @@ export async function fetchWithTimeout(url: string, init: RequestInit = {}, time
  *
  * 非 2xx 抛 HttpError（携带 status），调用方可据此分支处理（如 404 走"资源不存在"路径）。
  * 4xx 属于客户端错误，重试无意义，立即抛出；仅 408/429 与 5xx/网络错误才重试。
+ * 超时以 TimeoutError 形态进入重试循环（视为可重试），重试耗尽后原样抛出。
  *
  * @param url 请求地址
  * @param init fetch init 选项

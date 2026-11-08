@@ -13,6 +13,7 @@ import { beijingTimeLog } from "../util/log.ts";
 import { createLogStreamResponse } from "../util/sse.ts";
 import { runWithOptionalLog } from "../util/run-with-log.ts";
 import { fetchWithTimeout } from "../util/fetch.ts";
+import { HttpError, TimeoutError } from "../util/http-error.ts";
 import { assertSafeHttpUrl } from "../util/url-safety.ts";
 import { normalizeBatchSize } from "../util/batch-size.ts";
 import { forEachIsolated } from "../util/batch-sync.ts";
@@ -38,7 +39,7 @@ function extractIpv4(text: string): string[] {
 export const FETCH_STRATEGIES: Record<string, StrategyFn> = {
     direct_regex: async (url) => {
         const res = await fetchWithTimeout(url, { headers: { "User-Agent": "Mozilla/5.0" } }, 15000);
-        if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+        if (!res.ok) throw new HttpError(res.status, `HTTP ${res.status}: ${url}`);
         const text = await res.text();
         return extractIpv4(text);
     },
@@ -52,14 +53,14 @@ export const FETCH_STRATEGIES: Record<string, StrategyFn> = {
             },
             20000
         );
-        if (!res.ok) throw new Error(`PhantomJsCloud API error ${res.status}`);
+        if (!res.ok) throw new HttpError(res.status, `PhantomJsCloud API HTTP ${res.status}`);
         const text = await res.text();
         return extractIpv4(text);
     },
     proxy_codetabs: async (url) => {
         const proxyUrl = "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(url);
         const res = await fetchWithTimeout(proxyUrl, {}, 15000);
-        if (!res.ok) throw new Error(`CodeTabs Proxy error ${res.status}`);
+        if (!res.ok) throw new HttpError(res.status, `CodeTabs Proxy HTTP ${res.status}`);
         const text = await res.text();
         return extractIpv4(text);
     },
@@ -218,6 +219,24 @@ export async function syncAllIpSources(
     await syncLogic(noOpLog);
 }
 
+/**
+ * 把抓取失败归一成短诊断文案：HttpError → "HTTP <状态码>"，TimeoutError → "超时"，
+ * 其余取 message（超 200 字符截断，防止大响应原文塞爆 last_sync_error）。
+ */
+export function describeFetchError(e: unknown): string {
+    if (e instanceof HttpError) return `HTTP ${e.status}`;
+    if (e instanceof TimeoutError) return "超时";
+    const msg = e instanceof Error ? e.message : String(e);
+    return msg.length > 200 ? `${msg.slice(0, 200)}…` : msg;
+}
+
+/** 聚合错误的类别前缀：仪表盘文案一眼区分"源返回错误"与"链路超时"。 */
+function describeErrorCategory(e: unknown): string {
+    if (e instanceof HttpError) return `HTTP ${e.status}`;
+    if (e instanceof TimeoutError) return "超时";
+    return "抓取失败";
+}
+
 /** 按策略抓取 IP（带排序 + 失败自动回退） */
 export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): Promise<string[]> {
     assertSafeHttpUrl(source.url);
@@ -226,6 +245,7 @@ export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): 
     const orderedNames = [source.fetch_strategy, ...strategyNames.filter((n) => n !== source.fetch_strategy)];
 
     let lastError: unknown;
+    const attempts: string[] = [];
     for (const name of orderedNames) {
         const fn = FETCH_STRATEGIES[name];
         if (!fn) continue;
@@ -254,10 +274,53 @@ export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): 
             }
         } catch (e) {
             lastError = e;
+            attempts.push(`${name}: ${describeFetchError(e)}`);
         }
     }
-    const detail = lastError instanceof Error ? `（最后错误：${lastError.message}）` : "";
-    throw new Error(`所有抓取策略均未能从该URL获取到IP${detail}，请检查URL或在添加/编辑IP源时重新探测。`);
+    // D3 类别化文案：类别前缀 + 每策略摘要，随 last_sync_error 落库（只存 e.message，本文案即 message）
+    const detail = attempts.length > 0 ? `（${attempts.join("; ")}）` : "";
+    const category = describeErrorCategory(lastError);
+    throw new Error(`[${category}] 所有抓取策略均未能从该URL获取到IP${detail}，请检查URL或在添加/编辑IP源时重新探测。`);
+}
+
+/** 解析三网 IP HTML 表格（hostmonit 类页面结构）：按运营商分类，空分类用全集回填。 */
+export async function parseHtmlTableWithOperator(
+    htmlContent: string
+): Promise<{ yd: string[]; dx: string[]; lt: string[] }> {
+    const ips: { yd: Set<string>; dx: Set<string>; lt: Set<string> } = {
+        yd: new Set(),
+        dx: new Set(),
+        lt: new Set(),
+    };
+    const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+    const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}\b/;
+
+    let rowMatch;
+    while ((rowMatch = rowRegex.exec(htmlContent)) !== null) {
+        const cells = Array.from(rowMatch[1].matchAll(cellRegex), (m) => m[1].replace(/<[^>]+>/g, "").trim());
+        if (cells.length >= 2) {
+            const lineCell = cells.find((c) => c.includes("电信") || c.includes("联通") || c.includes("移动"));
+            const ipCell = cells.find((c) => ipRegex.test(c));
+
+            if (lineCell && ipCell) {
+                const ip = ipCell.match(ipRegex)?.[0] as string;
+                if (lineCell.includes("移动")) ips.yd.add(ip);
+                else if (lineCell.includes("电信")) ips.dx.add(ip);
+                else if (lineCell.includes("联通")) ips.lt.add(ip);
+            }
+        }
+    }
+
+    const allIpsArray = [...ips.yd, ...ips.dx, ...ips.lt];
+    if (allIpsArray.length > 0) {
+        const allIps = new Set(allIpsArray);
+        if (ips.yd.size === 0) ips.yd = allIps;
+        if (ips.dx.size === 0) ips.dx = allIps;
+        if (ips.lt.size === 0) ips.lt = allIps;
+    }
+
+    return { yd: Array.from(ips.yd), dx: Array.from(ips.dx), lt: Array.from(ips.lt) };
 }
 
 /** 三大运营商 IP 抓取（hostmonit HTML 表格解析）。失败抛错，由调用方决定是否降级。 */
@@ -266,43 +329,6 @@ export async function fetchThreeNetworkIps(
     log: (msg: string) => void
 ): Promise<{ yd: string[]; dx: string[]; lt: string[] }> {
     log(`正在从源 [${source}] 获取IP...`);
-
-    async function parseHtmlTableWithOperator(htmlContent: string) {
-        const ips: { yd: Set<string>; dx: Set<string>; lt: Set<string> } = {
-            yd: new Set(),
-            dx: new Set(),
-            lt: new Set(),
-        };
-        const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-        const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-        const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}\b/;
-
-        let rowMatch;
-        while ((rowMatch = rowRegex.exec(htmlContent)) !== null) {
-            const cells = Array.from(rowMatch[1].matchAll(cellRegex), (m) => m[1].replace(/<[^>]+>/g, "").trim());
-            if (cells.length >= 2) {
-                const lineCell = cells.find((c) => c.includes("电信") || c.includes("联通") || c.includes("移动"));
-                const ipCell = cells.find((c) => ipRegex.test(c));
-
-                if (lineCell && ipCell) {
-                    const ip = ipCell.match(ipRegex)?.[0] as string;
-                    if (lineCell.includes("移动")) ips.yd.add(ip);
-                    else if (lineCell.includes("电信")) ips.dx.add(ip);
-                    else if (lineCell.includes("联通")) ips.lt.add(ip);
-                }
-            }
-        }
-
-        const allIpsArray = [...ips.yd, ...ips.dx, ...ips.lt];
-        if (allIpsArray.length > 0) {
-            const allIps = new Set(allIpsArray);
-            if (ips.yd.size === 0) ips.yd = allIps;
-            if (ips.dx.size === 0) ips.dx = allIps;
-            if (ips.lt.size === 0) ips.lt = allIps;
-        }
-
-        return { yd: Array.from(ips.yd), dx: Array.from(ips.dx), lt: Array.from(ips.lt) };
-    }
 
     let url: string;
     let usePhantom = false;
@@ -331,7 +357,7 @@ export async function fetchThreeNetworkIps(
               20000
           )
         : await fetchWithTimeout(url, { headers: { "User-Agent": "Mozilla/5.0" } }, 15000);
-    if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+    if (!res.ok) throw new HttpError(res.status, `HTTP ${res.status}: ${url}`);
 
     const htmlContent = await res.text();
     const result = await parseHtmlTableWithOperator(htmlContent);

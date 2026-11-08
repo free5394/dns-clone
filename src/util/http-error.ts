@@ -13,3 +13,14 @@ export class HttpError extends Error {
         this.name = "HttpError";
     }
 }
+
+/**
+ * 本地超时（AbortController 掐断）的类别错误。
+ * 与 HttpError 区分：408 是服务器返回的"请求超时"响应，TimeoutError 是客户端主动掐断链路。
+ */
+export class TimeoutError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "TimeoutError";
+    }
+}
