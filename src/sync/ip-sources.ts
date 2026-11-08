@@ -219,22 +219,23 @@ export async function syncAllIpSources(
     await syncLogic(noOpLog);
 }
 
-/**
- * 把抓取失败归一成短诊断文案：HttpError → "HTTP <状态码>"，TimeoutError → "超时"，
- * 其余取 message（超 200 字符截断，防止大响应原文塞爆 last_sync_error）。
- */
-export function describeFetchError(e: unknown): string {
-    if (e instanceof HttpError) return `HTTP ${e.status}`;
-    if (e instanceof TimeoutError) return "超时";
-    const msg = e instanceof Error ? e.message : String(e);
-    return msg.length > 200 ? `${msg.slice(0, 200)}…` : msg;
-}
-
-/** 聚合错误的类别前缀：仪表盘文案一眼区分"源返回错误"与"链路超时"。 */
+/** 聚合错误的类别前缀：仪表盘文案一眼区分"源返回错误"与"链路超时"。
+ * 前缀取最后一次尝试（lastError）的类别——与历史文案"（最后错误：…）"口径一致；
+ * 各策略明细已逐一列进聚合文案括号内，混合失败时类别信息不丢。 */
 function describeErrorCategory(e: unknown): string {
     if (e instanceof HttpError) return `HTTP ${e.status}`;
     if (e instanceof TimeoutError) return "超时";
     return "抓取失败";
+}
+
+/**
+ * 把抓取失败归一成短诊断文案：已类别化的错误复用类别文案，
+ * 其余取 message（超 200 字符截断，防止大响应原文塞爆 last_sync_error）。
+ */
+export function describeFetchError(e: unknown): string {
+    if (e instanceof HttpError || e instanceof TimeoutError) return describeErrorCategory(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    return msg.length > 200 ? `${msg.slice(0, 200)}…` : msg;
 }
 
 /** 按策略抓取 IP（带排序 + 失败自动回退） */
@@ -283,10 +284,15 @@ export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): 
     throw new Error(`[${category}] 所有抓取策略均未能从该URL获取到IP${detail}，请检查URL或在添加/编辑IP源时重新探测。`);
 }
 
+/** 三网 IP 分类（yd 移动 / dx 电信 / lt 联通），供三网抓取与表格解析共用。 */
+export interface ThreeNetworkIps {
+    yd: string[];
+    dx: string[];
+    lt: string[];
+}
+
 /** 解析三网 IP HTML 表格（hostmonit 类页面结构）：按运营商分类，空分类用全集回填。 */
-export async function parseHtmlTableWithOperator(
-    htmlContent: string
-): Promise<{ yd: string[]; dx: string[]; lt: string[] }> {
+export async function parseHtmlTableWithOperator(htmlContent: string): Promise<ThreeNetworkIps> {
     const ips: { yd: Set<string>; dx: Set<string>; lt: Set<string> } = {
         yd: new Set(),
         dx: new Set(),
@@ -324,10 +330,7 @@ export async function parseHtmlTableWithOperator(
 }
 
 /** 三大运营商 IP 抓取（hostmonit HTML 表格解析）。失败抛错，由调用方决定是否降级。 */
-export async function fetchThreeNetworkIps(
-    source: string,
-    log: (msg: string) => void
-): Promise<{ yd: string[]; dx: string[]; lt: string[] }> {
+export async function fetchThreeNetworkIps(source: string, log: (msg: string) => void): Promise<ThreeNetworkIps> {
     log(`正在从源 [${source}] 获取IP...`);
 
     let url: string;
