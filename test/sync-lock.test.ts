@@ -5,6 +5,7 @@ import {
     MANUAL_SYNC_LOCK_KEY,
     MANUAL_SYNC_LOCK_TTL_MS,
     acquireManualSyncLock,
+    createManualSyncLockRenewer,
     releaseManualSyncLock,
     touchManualSyncLock,
 } from "../src/db/client.ts";
@@ -88,16 +89,29 @@ describe("手动同步锁续租 (高-1)", () => {
         const token = String(Date.now() + 1_000);
         await writeLock(Number(token));
 
-        expect(await touchManualSyncLock(env.WUYA, token)).toBe(true);
+        const renewed = await touchManualSyncLock(env.WUYA, token);
+        expect(renewed).not.toBeNull();
         expect(Number(await readLockValue())).toBeGreaterThan(Date.now() + 60_000);
         expect(await acquireManualSyncLock(env.WUYA)).toBeNull();
+    });
+
+    it("连续两次续租都应成功：第二次比对的是上一次续租后的新值", async () => {
+        const token = (await acquireManualSyncLock(env.WUYA)) as string;
+
+        const first = await touchManualSyncLock(env.WUYA, token);
+        expect(first).not.toBeNull();
+
+        // 续租已把锁值改写成 first，再拿旧 token 续租必然失配——正确用法是传新值
+        const second = await touchManualSyncLock(env.WUYA, first as string);
+        expect(second).not.toBeNull();
+        expect(await readLockValue()).toBe(second);
     });
 
     it("令牌不匹配时续租失败且不改动锁值", async () => {
         const token = String(Date.now() + 1_000);
         await writeLock(Number(token));
 
-        expect(await touchManualSyncLock(env.WUYA, "999")).toBe(false);
+        expect(await touchManualSyncLock(env.WUYA, "999")).toBeNull();
         expect(await readLockValue()).toBe(token);
     });
 
@@ -110,6 +124,38 @@ describe("手动同步锁续租 (高-1)", () => {
         expect(other).toBeNull();
 
         await writeLock(Number(Date.now() + 5_000));
-        expect(await touchManualSyncLock(env.WUYA, mine)).toBe(false);
+        expect(await touchManualSyncLock(env.WUYA, mine)).toBeNull();
+    });
+});
+
+describe("续租后释放 (高-1 回归)", () => {
+    beforeEach(async () => {
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = ?").bind(MANUAL_SYNC_LOCK_KEY).run();
+    });
+
+    it("续租改写锁值后，仍能用当前值释放锁", async () => {
+        const token = (await acquireManualSyncLock(env.WUYA)) as string;
+        const logs: string[] = [];
+        const renewLock = createManualSyncLockRenewer(env.WUYA, token, (m) => logs.push(m));
+
+        await renewLock();
+        // 首次续租不受节流限制，锁值应已被改写
+        expect(await readLockValue()).not.toBe(token);
+        expect(logs).toHaveLength(0);
+
+        await releaseManualSyncLock(env.WUYA, renewLock.current());
+        expect(await readLockValue()).toBeNull();
+        // 锁真的释放了，下一个调用者能立刻抢占（不必等 10 分钟 TTL）
+        expect(await acquireManualSyncLock(env.WUYA)).not.toBeNull();
+    });
+
+    it("未持锁时 renewer 为空操作，current() 返回 undefined", async () => {
+        const logs: string[] = [];
+        const renewLock = createManualSyncLockRenewer(env.WUYA, undefined, (m) => logs.push(m));
+        await renewLock();
+        expect(renewLock.current()).toBeUndefined();
+        expect(logs).toHaveLength(0);
+        await releaseManualSyncLock(env.WUYA, renewLock.current());
+        expect(await readLockValue()).toBeNull();
     });
 });

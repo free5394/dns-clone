@@ -589,6 +589,16 @@ function getDashboardScript(domains, ipSources, settings) {
     // 每个分段函数只返回字符串片段，拼装结果与拆分前逐字一致。
     return (
         `
+  // esbuild 的 keep_names 会给被 toString() 注入的函数体里插入 __name(fn, "fn") 语句；
+  // 浏览器侧没有这个 helper，缺垫片会让整个脚本块在 ReferenceError 处中止，后台所有交互失效。
+  const __name = (fn, name) => {
+      try {
+          Object.defineProperty(fn, "name", { value: name, configurable: true });
+      } catch (e) {
+          /* 老引擎不支持改 name，忽略即可 */
+      }
+      return fn;
+  };
   const consumeSseEvents = ${consumeSseEvents.toString()};
   function showNotification(message, type = 'info', duration = 5000) {
       const container = document.getElementById('notifications');

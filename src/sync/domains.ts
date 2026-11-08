@@ -137,6 +137,8 @@ export async function syncAllDomains(
 ): Promise<Response | void> {
     const db = env.WUYA;
     const syncLogic = async (log: LogFn) => {
+        // 续租器要活到 finally：锁值会被续租改写，释放必须用最新值而不是初始 token
+        const renewLock = createManualSyncLockRenewer(db, lockToken, log);
         try {
             log("开始批量同步任务...");
             const { token, zoneId } = await getCfApiSettings(db);
@@ -148,7 +150,6 @@ export async function syncAllDomains(
             }
             log(`发现 ${domains.length} 个已启用的目标需要同步。`);
             const syncContext: SyncContext = {};
-            const renewLock = createManualSyncLockRenewer(db, lockToken, log);
             await renewLock();
             await forEachIsolated(
                 domains,
@@ -165,7 +166,7 @@ export async function syncAllDomains(
             );
             log("所有目标同步任务执行完毕。");
         } finally {
-            if (lockToken) await releaseManualSyncLock(db, lockToken);
+            await releaseManualSyncLock(db, renewLock.current());
         }
     };
 
@@ -182,6 +183,8 @@ export async function syncSystemDomains(
 ): Promise<Response | void> {
     const db = env.WUYA;
     const syncLogic = async (log: LogFn) => {
+        // 续租器要活到 finally：锁值会被续租改写，释放必须用最新值而不是初始 token
+        const renewLock = createManualSyncLockRenewer(db, lockToken, log);
         try {
             log("开始同步系统预设域名...");
             const { token, zoneId } = await getCfApiSettings(db);
@@ -196,7 +199,6 @@ export async function syncSystemDomains(
             }
             log(`发现 ${domains.length} 个已启用的系统域名需要同步。`);
             const syncContext: SyncContext = {};
-            const renewLock = createManualSyncLockRenewer(db, lockToken, log);
             await renewLock();
             await forEachIsolated(
                 domains,
@@ -213,7 +215,7 @@ export async function syncSystemDomains(
             );
             log("系统域名同步任务执行完毕。");
         } finally {
-            if (lockToken) await releaseManualSyncLock(db, lockToken);
+            await releaseManualSyncLock(db, renewLock.current());
         }
     };
 

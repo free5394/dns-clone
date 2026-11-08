@@ -81,43 +81,56 @@ export async function acquireManualSyncLock(db: D1Database): Promise<string | nu
     return (takenOver.meta.changes ?? 0) === 1 ? token : null;
 }
 
-/** 释放手动同步锁：只有令牌一致（仍是本次持有时）才删除，避免陈旧持有者误删新锁 */
-export async function releaseManualSyncLock(db: D1Database, token: string): Promise<void> {
-    await db.prepare("DELETE FROM settings WHERE key = ? AND value = ?").bind(MANUAL_SYNC_LOCK_KEY, token).run();
+/** 释放手动同步锁：只有锁值一致（仍是本次持有时）才删除，避免陈旧持有者误删新锁 */
+export async function releaseManualSyncLock(db: D1Database, value: string | undefined): Promise<void> {
+    if (!value) return;
+    await db.prepare("DELETE FROM settings WHERE key = ? AND value = ?").bind(MANUAL_SYNC_LOCK_KEY, value).run();
 }
 
 /**
- * 续租手动同步锁：仅当锁值仍是本次令牌时，把到期时间推到 TTL 之后。
- * 令牌不匹配（锁已过期并被接管）时返回 false 且不改动锁值，避免把别人的锁改回自己。
+ * 续租手动同步锁：仅当锁值仍是 value 时，把到期时间推到 TTL 之后。
+ * 成功返回**新的锁值**——锁值本身就是到期时间戳，续租会把它改写，
+ * 调用方必须用返回值替换旧值，否则下一次续租/释放都会因为比对旧值而失配。
+ * 失败（锁已过期并被接管）返回 null 且不改动锁值，避免把别人的锁改回自己。
  */
-export async function touchManualSyncLock(db: D1Database, token: string): Promise<boolean> {
+export async function touchManualSyncLock(db: D1Database, value: string): Promise<string | null> {
     const renewed = String(Date.now() + MANUAL_SYNC_LOCK_TTL_MS);
     const result = await db
         .prepare("UPDATE settings SET value = ? WHERE key = ? AND value = ?")
-        .bind(renewed, MANUAL_SYNC_LOCK_KEY, token)
+        .bind(renewed, MANUAL_SYNC_LOCK_KEY, value)
         .run();
-    return (result.meta.changes ?? 0) === 1;
+    return (result.meta.changes ?? 0) === 1 ? renewed : null;
+}
+
+/** 续租函数：可直接 await 调用，另带 current() 取当前锁值供释放使用 */
+export interface ManualSyncLockRenewer {
+    (): Promise<void>;
+    /** 当前锁值（续租会改写它），释放时必须传这个值而不是最初的 token */
+    current(): string | undefined;
 }
 
 /**
  * 为一次全量同步创建带节流的续租函数：流开始时调用一次，之后每处理完一个条目调用。
  * 未持锁（token 为空）时为空操作；续租失败只记录「锁已易主」，不抛错中断同步。
+ * 内部持有**最新**锁值：续租成功后更新它，释放时用 current() 取，避免用初始 token 去删已被改写的锁。
  */
 export function createManualSyncLockRenewer(
     db: D1Database,
     token: string | undefined,
     log: (msg: string) => void
-): () => Promise<void> {
+): ManualSyncLockRenewer {
     let lastRenewedAt = 0;
-    return async () => {
-        if (!token) return;
+    let current = token;
+    const renew = async () => {
+        if (!current) return;
         const now = Date.now();
         if (now - lastRenewedAt < MANUAL_SYNC_LOCK_RENEW_INTERVAL_MS) return;
         lastRenewedAt = now;
-        if (!(await touchManualSyncLock(db, token))) {
-            log("手动同步锁已易主（可能被判定为陈旧后被接管），本次同步继续执行，但结果可能被其他任务覆盖。");
-        }
+        const renewed = await touchManualSyncLock(db, current);
+        if (renewed) current = renewed;
+        else log("手动同步锁已易主（可能被判定为陈旧后被接管），本次同步继续执行，但结果可能被其他任务覆盖。");
     };
+    return Object.assign(renew, { current: () => current });
 }
 
 /** 读取安全的 settings（前端可见，已剔除敏感字段） */
