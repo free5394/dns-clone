@@ -11,6 +11,7 @@ import {
 import { fetchThreeNetworkIps } from "./ip-sources.ts";
 import { beijingTimeLog } from "../util/log.ts";
 import { runWithOptionalLog } from "../util/run-with-log.ts";
+import type { WaitUntil } from "../util/http.ts";
 import { fetchWithTimeout, fetchWithRetry } from "../util/fetch.ts";
 import { normalizeBatchSize } from "../util/batch-size.ts";
 import { forEachIsolated } from "../util/batch-sync.ts";
@@ -106,7 +107,8 @@ export async function syncSingleDomain(
     id: number,
     env: { WUYA: D1Database },
     returnLogs: boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    waitUntil?: WaitUntil
 ): Promise<Response | void> {
     const db = env.WUYA;
     const syncLogic = async (log: LogFn) => {
@@ -122,7 +124,7 @@ export async function syncSingleDomain(
         await syncDomainLogic(domain, token, zoneId, db, log, syncContext);
     };
 
-    return await runWithOptionalLog(syncLogic, returnLogs, signal);
+    return await runWithOptionalLog(syncLogic, returnLogs, signal, waitUntil);
 }
 
 /** 批量同步全部启用域名（lockToken 由路由层抢占，任务结束后在此释放） */
@@ -130,7 +132,8 @@ export async function syncAllDomains(
     env: { WUYA: D1Database },
     returnLogs: boolean,
     signal?: AbortSignal,
-    lockToken?: string
+    lockToken?: string,
+    waitUntil?: WaitUntil
 ): Promise<Response | void> {
     const db = env.WUYA;
     const syncLogic = async (log: LogFn) => {
@@ -166,7 +169,7 @@ export async function syncAllDomains(
         }
     };
 
-    return runWithOptionalLog(syncLogic, returnLogs, signal);
+    return runWithOptionalLog(syncLogic, returnLogs, signal, waitUntil);
 }
 
 /** 批量同步系统预设域名（lockToken 由路由层抢占，任务结束后在此释放） */
@@ -174,7 +177,8 @@ export async function syncSystemDomains(
     env: { WUYA: D1Database },
     returnLogs: boolean,
     signal?: AbortSignal,
-    lockToken?: string
+    lockToken?: string,
+    waitUntil?: WaitUntil
 ): Promise<Response | void> {
     const db = env.WUYA;
     const syncLogic = async (log: LogFn) => {
@@ -213,7 +217,7 @@ export async function syncSystemDomains(
         }
     };
 
-    return runWithOptionalLog(syncLogic, returnLogs, signal);
+    return runWithOptionalLog(syncLogic, returnLogs, signal, waitUntil);
 }
 
 /**

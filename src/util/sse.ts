@@ -2,16 +2,22 @@
 // 从 index.legacy.js 提取（原 1450-1479 行）
 
 import { beijingTimeLog } from "./log.ts";
+import type { WaitUntil } from "./http.ts";
 
 /**
  * 创建 SSE 日志流响应：把 logFunction 的执行过程实时推送给客户端
  * @param logFunction 异步函数，接收 log 回调用于输出日志
  * @param signal 客户端断开信号（AbortSignal）—— 可选；触发后立即停止推送并关闭流。
- *               注意：它不会打断正在执行的后端任务，任务仍会跑完（锁释放与状态写回依赖这一点）。
+ *               它不会主动打断后端任务，但「关流后任务还能跑完」不由本函数保证：
+ *               必须由调用方把任务注册给 waitUntil，否则响应结束即请求生命周期结束，
+ *               运行时可以连带取消这个游离 Promise（锁释放与状态写回就丢了）。
+ * @param waitUntil Workers 的 ctx.waitUntil —— 可选；传入后后台任务被注册为延寿任务，
+ *               关流后仍会跑到 finally 释放锁。
  */
 export function createLogStreamResponse(
     logFunction: (log: (message: string) => void) => Promise<void>,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    waitUntil?: WaitUntil
 ): Response {
     const { readable, writable } = new TransformStream();
     const writer = writable.getWriter();
@@ -48,7 +54,7 @@ export function createLogStreamResponse(
         );
     }
 
-    (async () => {
+    const task = (async () => {
         try {
             await logFunction(log);
         } catch (e) {
@@ -62,6 +68,9 @@ export function createLogStreamResponse(
             await safeClose();
         }
     })();
+
+    // 注册给运行时：客户端 abort 导致流提前关闭时，任务与锁释放仍需跑完
+    if (waitUntil) waitUntil(task);
 
     return new Response(readable, {
         headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },

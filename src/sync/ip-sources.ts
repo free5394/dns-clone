@@ -12,6 +12,7 @@ import { getCurrentGitHubContent, updateFileOnGitHub } from "./github.ts";
 import { beijingTimeLog } from "../util/log.ts";
 import { createLogStreamResponse } from "../util/sse.ts";
 import { runWithOptionalLog } from "../util/run-with-log.ts";
+import type { WaitUntil } from "../util/http.ts";
 import { fetchWithTimeout } from "../util/fetch.ts";
 import { HttpError, TimeoutError } from "../util/http-error.ts";
 import { assertSafeHttpUrl } from "../util/url-safety.ts";
@@ -111,7 +112,8 @@ export async function syncSingleIpSource(
     id: number,
     env: { WUYA: D1Database },
     returnLogs: boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    waitUntil?: WaitUntil
 ): Promise<Response | void> {
     const db = env.WUYA;
     const syncLogic = async (log: LogFn) => {
@@ -174,7 +176,7 @@ export async function syncSingleIpSource(
         }
     };
 
-    return await runWithOptionalLog(syncLogic, returnLogs, signal);
+    return await runWithOptionalLog(syncLogic, returnLogs, signal, waitUntil);
 }
 
 /** 批量同步全部启用 IP 源（lockToken 由路由层抢占，任务结束后在此释放） */
@@ -182,7 +184,8 @@ export async function syncAllIpSources(
     env: { WUYA: D1Database },
     returnLogs: boolean,
     signal?: AbortSignal,
-    lockToken?: string
+    lockToken?: string,
+    waitUntil?: WaitUntil
 ): Promise<Response | void> {
     const db = env.WUYA;
     const syncLogic = async (log: LogFn) => {
@@ -213,7 +216,7 @@ export async function syncAllIpSources(
         }
     };
 
-    if (returnLogs) return createLogStreamResponse(syncLogic, signal);
+    if (returnLogs) return createLogStreamResponse(syncLogic, signal, waitUntil);
 
     const noOpLog: LogFn = (msg) => console.log(beijingTimeLog(msg));
     await syncLogic(noOpLog);

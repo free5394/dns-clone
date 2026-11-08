@@ -917,12 +917,18 @@ describe("手动全量同步并发防护 (M-8)", () => {
             })
         );
 
+        // 高-1：后台任务必须注册给运行时（waitUntil），否则客户端 abort 关流后可能被连带终止
+        const registered: Promise<unknown>[] = [];
+
         try {
             const res = await handleApiRequest(
                 new Request("https://example.com/api/sync", { method: "POST", headers: { Cookie: cookie } }),
-                env
+                env,
+                (p) => registered.push(p)
             );
-            expect(res.status).not.toBe(409);
+            // 低-1：SSE 成功即 200；not.toBe(409) 会放过 401/500，失败点离根因太远
+            expect(res.status).toBe(200);
+            expect(registered, "SSE 后台任务必须交给 waitUntil").toHaveLength(1);
 
             // res.text() 只在流关闭后 resolve，而流在后台任务的 finally 里关闭 —— 排空即任务结束
             const text = await res.text();
@@ -934,8 +940,47 @@ describe("手动全量同步并发防护 (M-8)", () => {
             // 关键断言（中-9 缺失项）：任务结束后锁行必须已被删除，否则会永久阻塞后续同步
             const lock = await env.WUYA.prepare("SELECT value FROM settings WHERE key = ?").bind(LOCK_KEY).first();
             expect(lock).toBeNull();
+
+            // 延寿 Promise 完成时锁必须已释放：这是 abort 场景下唯一还能保证锁释放的路径
+            await registered[0];
+            const lockAfterWaitUntil = await env.WUYA.prepare("SELECT value FROM settings WHERE key = ?")
+                .bind(LOCK_KEY)
+                .first();
+            expect(lockAfterWaitUntil).toBeNull();
         } finally {
             vi.unstubAllGlobals();
+            await clearLock();
+        }
+    });
+
+    it("IP 源批量同步的 SSE 路径同样把后台任务注册给 waitUntil", async () => {
+        const cookie = await loginAndGetCookie();
+        // 与上一条同理：清空 IP 源让后台任务在空集合上立刻结束，不依赖上游时序
+        await env.WUYA.prepare("DELETE FROM ip_sources").run();
+        await clearLock();
+
+        const registered: Promise<unknown>[] = [];
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/ip_sources/sync_all", {
+                    method: "POST",
+                    headers: { Cookie: cookie },
+                }),
+                env,
+                (p) => registered.push(p)
+            );
+            expect(res.status).toBe(200);
+            // 第二个 SSE 生产点：这里漏传 waitUntil 不会编译报错，只能靠断言拦住
+            expect(registered, "IP 源 SSE 也必须交给 waitUntil").toHaveLength(1);
+
+            const text = await res.text();
+            expect(text).toContain("开始批量同步IP源");
+            expect(text).toContain("没有已启用的IP源需要同步。");
+
+            await registered[0];
+            const lock = await env.WUYA.prepare("SELECT value FROM settings WHERE key = ?").bind(LOCK_KEY).first();
+            expect(lock).toBeNull();
+        } finally {
             await clearLock();
         }
     });
