@@ -66,5 +66,21 @@ scripts.forEach((code, index) => {
     }
 });
 
+// 守卫：内联脚本里出现的每个 __xxx( 调用（esbuild keep_names 等注入的 helper）
+// 都必须在同一段脚本里先声明，否则浏览器执行到该处会 ReferenceError 并中止整段脚本。
+// 语法检查抓不到这类缺陷（只解析不执行），只能靠这条不变量兜住。
+const helperCalls = new Set();
+scripts.forEach((code) => {
+    for (const m of code.matchAll(/\b__(\w+)\s*\(/g)) helperCalls.add(m[1]);
+});
+const allCode = scripts.join("\n");
+const undeclared = [...helperCalls].filter(
+    (name) => !new RegExp(`(?:const|let|var|function)\\s+__${name}\\b`).test(allCode)
+);
+if (undeclared.length > 0) {
+    console.error(`内联脚本调用了未声明的 helper：${undeclared.map((n) => `__${n}`).join("、")}`);
+    console.error("浏览器会在该处抛 ReferenceError 并中止整段脚本，后台所有交互失效。请在脚本开头补垫片定义。");
+    process.exit(1);
+}
 console.log(`内联脚本 ${scripts.length} 段，共 ${total} 字符，语法解析通过。`);
 console.log(`页面长度 ${html.length} 字符；包含批量记录端点：${html.includes("/api/domains/records")}`);
