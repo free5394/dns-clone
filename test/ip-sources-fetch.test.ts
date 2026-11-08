@@ -62,6 +62,48 @@ describe("策略层错误路径（D3 类别化）", () => {
         await assertion;
     });
 
+    it("源返回 200 但页面无 IP 时，聚合文案逐条标注未匹配，类别为无可用IP", async () => {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response("<table><tbody></tbody></table>", { status: 200 }))
+        );
+        const err = await fetchIpsFromSource(makeSource()).then(
+            () => {
+                throw new Error("应当失败");
+            },
+            (e: unknown) => e as Error
+        );
+        expect(err.message).toContain("[无可用IP]");
+        expect(err.message).toContain("direct_regex: 未匹配到 IP");
+        expect(err.message).toContain("phantomjs_cloud: 未匹配到 IP");
+        expect(err.message).toContain("proxy_codetabs: 未匹配到 IP");
+    });
+
+    it("空结果与超时混合时，类别取真实错误，空结果策略仍出现在明细里", async () => {
+        vi.useFakeTimers();
+        vi.stubGlobal(
+            "fetch",
+            vi.fn((url: string, init: RequestInit) => {
+                if (url.includes("api.codetabs.com")) {
+                    return new Promise<Response>((_resolve, reject) => {
+                        (init.signal as AbortSignal).addEventListener("abort", () => reject(new Error("aborted")));
+                    });
+                }
+                return Promise.resolve(new Response("<table><tbody></tbody></table>", { status: 200 }));
+            })
+        );
+        const pending = fetchIpsFromSource(makeSource());
+        const settled = pending.catch((e: unknown) => e as Error);
+        for (let i = 0; i < 4; i++) {
+            await vi.advanceTimersByTimeAsync(20000);
+        }
+        const err = await settled;
+        expect(err.message).toContain("[超时]");
+        expect(err.message).toContain("direct_regex: 未匹配到 IP");
+        expect(err.message).toContain("phantomjs_cloud: 未匹配到 IP");
+        expect(err.message).toContain("proxy_codetabs: 超时");
+    });
+
     it("fetchThreeNetworkIps 非 2xx 抛 HttpError（第四处裸抛类别化）", async () => {
         vi.stubGlobal(
             "fetch",
@@ -81,6 +123,8 @@ describe("回退顺序与策略字段", () => {
                     calls.push("phantomjs_cloud");
                 } else if (url.includes("api.codetabs.com")) {
                     calls.push("proxy_codetabs");
+                } else if (url.startsWith("https://r.jina.ai/")) {
+                    calls.push("jina_reader");
                 } else {
                     calls.push("direct_regex");
                 }
@@ -89,8 +133,64 @@ describe("回退顺序与策略字段", () => {
         );
         const source = makeSource("phantomjs_cloud");
         await expect(fetchIpsFromSource(source)).rejects.toThrow("所有抓取策略均未能从该URL获取到IP");
-        expect(calls).toEqual(["phantomjs_cloud", "direct_regex", "proxy_codetabs"]);
+        // 策略链新增 jina_reader 后，回退顺序按声明顺序延展到它
+        expect(calls).toEqual(["phantomjs_cloud", "direct_regex", "proxy_codetabs", "jina_reader"]);
         expect(source.fetch_strategy).toBe("phantomjs_cloud");
+    });
+});
+
+describe("新增抓取策略（直连被拦 / SPA 渲染）", () => {
+    it("hostmonit 源命中专用 API 策略，不依赖 phantomjs 配额", async () => {
+        const calls: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                calls.push(url);
+                if (url.includes("api.hostmonit.com/get_optimization_ip")) {
+                    return new Response(
+                        JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }, { ip: "198.41.208.168" }] }),
+                        {
+                            status: 200,
+                        }
+                    );
+                }
+                return new Response("forbidden", { status: 403 });
+            })
+        );
+        const source = { ...makeSource("direct_regex"), url: "https://stock.hostmonit.com/CloudFlareYes" };
+        const ips = await fetchIpsFromSource(source);
+        expect(ips).toEqual(["172.67.172.3", "198.41.208.168"]);
+        expect(source.fetch_strategy).toBe("hostmonit_api");
+        expect(calls.some((u) => u.includes("api.hostmonit.com"))).toBe(true);
+    });
+
+    it("直连被 403 时 jina_reader 回退可读，并写回策略", async () => {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                if (url.startsWith("https://r.jina.ai/")) {
+                    return new Response("Title: x\nMarkdown Content: 8.222.219.140 47.57.245.232", { status: 200 });
+                }
+                return new Response("forbidden", { status: 403 });
+            })
+        );
+        const source = makeSource("direct_regex");
+        const ips = await fetchIpsFromSource(source);
+        expect(ips).toEqual(["8.222.219.140", "47.57.245.232"]);
+        expect(source.fetch_strategy).toBe("jina_reader");
+    });
+
+    it("hostmonit 专用策略不会作用到其它 URL", async () => {
+        const calls: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                calls.push(url);
+                return new Response("no ip", { status: 503 });
+            })
+        );
+        await expect(fetchIpsFromSource(makeSource())).rejects.toThrow("所有抓取策略均未能从该URL获取到IP");
+        expect(calls.some((u) => u.includes("api.hostmonit.com"))).toBe(false);
     });
 });
 

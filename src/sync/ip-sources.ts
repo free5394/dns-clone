@@ -65,6 +65,32 @@ export const FETCH_STRATEGIES: Record<string, StrategyFn> = {
         const text = await res.text();
         return extractIpv4(text);
     },
+    // 免费渲染/转发通道：源站按 Cloudflare 出口 IP 拦截（直连 403）时仍能取到正文。
+    // 实测 ipdb.api.030101.xyz 直连对 Worker 403、经 jina 返回 116 个 IP。
+    jina_reader: async (url) => {
+        const res = await fetchWithTimeout("https://r.jina.ai/" + url, {}, 20000);
+        if (!res.ok) throw new HttpError(res.status, `Jina Reader HTTP ${res.status}`);
+        return extractIpv4(await res.text());
+    },
+    // hostmonit 是前端 SPA，页面本身无 IP；数据来自公开 JSON 接口（key 取自其前端 bundle），直连即可
+    hostmonit_api: async () => {
+        const res = await fetchWithTimeout(
+            "https://api.hostmonit.com/get_optimization_ip",
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ key: "iDetkOys" }),
+            },
+            15000
+        );
+        if (!res.ok) throw new HttpError(res.status, `HostMonit API HTTP ${res.status}`);
+        return extractIpv4(await res.text());
+    },
+};
+
+/** 专用策略的适用性判定：不匹配的 URL 不进入尝试链，避免污染其它源的失败明细 */
+const STRATEGY_APPLIES: Record<string, (url: string) => boolean> = {
+    hostmonit_api: (url) => /(^|\.)hostmonit\.com$/i.test(new URL(url).hostname),
 };
 
 type LogFn = (msg: string) => void;
@@ -245,7 +271,10 @@ export function describeFetchError(e: unknown): string {
 export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): Promise<string[]> {
     assertSafeHttpUrl(source.url);
     // 构造尝试顺序：缓存策略优先，回退策略按声明顺序依次尝试
-    const strategyNames = Object.keys(FETCH_STRATEGIES);
+    const strategyNames = Object.keys(FETCH_STRATEGIES).filter((n) => {
+        const applies = STRATEGY_APPLIES[n];
+        return !applies || applies(source.url);
+    });
     const orderedNames = [source.fetch_strategy, ...strategyNames.filter((n) => n !== source.fetch_strategy)];
 
     let lastError: unknown;
@@ -276,6 +305,9 @@ export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): 
                 };
                 return ips.sort(sortIps);
             }
+            // 空结果也记账：源站返回 200 但没有 IP 时若静默跳过，诊断文案只剩抛错的策略，
+            // 会把人误导成"换个代理就好"（实测 id=8 页面 tbody 为空，文案却只显示 proxy_codetabs 超时）
+            attempts.push(`${name}: 未匹配到 IP`);
         } catch (e) {
             lastError = e;
             attempts.push(`${name}: ${describeFetchError(e)}`);
@@ -283,6 +315,11 @@ export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): 
     }
     // D3 类别化文案：类别前缀 + 每策略摘要，随 last_sync_error 落库（只存 e.message，本文案即 message）
     const detail = attempts.length > 0 ? `（${attempts.join("; ")}）` : "";
+    if (lastError === undefined) {
+        throw new Error(
+            `[无可用IP] 所有抓取策略均未能从该URL获取到IP${detail}，源站页面未返回任何 IP，请确认该列表是否已下架或在添加/编辑IP源时更换源。`
+        );
+    }
     const category = describeErrorCategory(lastError);
     throw new Error(`[${category}] 所有抓取策略均未能从该URL获取到IP${detail}，请检查URL或在添加/编辑IP源时重新探测。`);
 }
