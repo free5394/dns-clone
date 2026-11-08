@@ -98,7 +98,7 @@ describe("createLogStreamResponse", () => {
         expect(closeErrors).toHaveLength(0);
     });
 
-    it("后台任务在无人读取响应体时照常执行到结束（排空语义）", async () => {
+    it("后台任务不依赖读者驱动：无人读取时已执行到结束，随后关流正常", async () => {
         const steps: string[] = [];
         let done!: () => void;
         const finished = new Promise<void>((resolve) => {
@@ -106,7 +106,7 @@ describe("createLogStreamResponse", () => {
         });
 
         // 刻意不消费 res.body：createLogStreamResponse 返回时后台任务已启动，不依赖读者驱动
-        createLogStreamResponse(async (log) => {
+        const res = createLogStreamResponse(async (log) => {
             log("第一步");
             steps.push("第一步");
             log("第二步");
@@ -116,6 +116,8 @@ describe("createLogStreamResponse", () => {
 
         await finished;
         expect(steps).toEqual(["第一步", "第二步"]);
+        // 中-1：上面只等到 logFunction 结束，未覆盖外层包装与 safeClose；补一次排空证明关流也已完成
+        expect(await drain(res)).toContain("第二步");
     });
 
     it("abort 只停止推送，不会终止后端任务", async () => {
@@ -150,6 +152,32 @@ describe("createLogStreamResponse", () => {
         const text = await drain(res);
         expect(text).toContain("abort 前");
         expect(text).not.toContain("abort 后");
+    });
+
+    it("把后台任务注册给 waitUntil：运行时延寿后任务与关流都能跑完", async () => {
+        const registered: Promise<unknown>[] = [];
+        let taskSettled = false;
+
+        const res = createLogStreamResponse(
+            async (log) => {
+                log("延寿步骤");
+            },
+            undefined,
+            (p) => {
+                registered.push(p);
+                void p.then(() => {
+                    taskSettled = true;
+                });
+            }
+        );
+
+        // 高-1：后台任务是游离 Promise，不注册给运行时的话，客户端 abort 关流后可能被连带终止
+        expect(registered, "必须把后台任务交给 waitUntil").toHaveLength(1);
+        // 先开始消费：writer.close() 要等可读侧被排空，否则注册的 Promise 永远不 resolve（真实客户端一直在读）
+        const drained = drain(res);
+        await registered[0];
+        expect(taskSettled, "注册的 Promise 应在任务与关流都结束后才 resolve").toBe(true);
+        expect(await drained).toContain("延寿步骤");
     });
 
     it("already-aborted signal pushes no logs", async () => {

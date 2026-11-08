@@ -1,6 +1,9 @@
 // http.ts — HTTP 响应与请求体工具
 // 从 index.legacy.js 提取（原 1847 行）
 
+/** Workers 运行时的延寿回调：把响应返回后仍需跑完的 Promise 交给事件生命周期管理 */
+export type WaitUntil = (promise: Promise<unknown>) => void;
+
 /** 统一 JSON 响应（格式化 2 空格缩进） */
 export function jsonResponse(data: unknown, status = 200, headers: Record<string, string> = {}): Response {
     return new Response(JSON.stringify(data, null, 2), {

@@ -31,7 +31,9 @@ export default {
         const path = url.pathname;
         try {
             if (path.startsWith("/api/")) {
-                return await handleApiRequest(request, env);
+                // 传 waitUntil：SSE 后台任务（同步 + 释放锁）必须注册给运行时，客户端断开也要跑完。
+                // 用 bind 而非箭头函数包一层：index.ts 的 /api/ 分支无单测覆盖，多包一个函数会白拉低函数覆盖率。
+                return await handleApiRequest(request, env, ctx.waitUntil.bind(ctx));
             }
             if (path.length > 1 && !path.startsWith("/api/") && !["/login", "/admin"].includes(path)) {
                 const fileName = path.substring(1);

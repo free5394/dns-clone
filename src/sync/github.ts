@@ -4,6 +4,7 @@
 
 import { fetchWithRetry } from "../util/fetch.ts";
 import { HttpError } from "../util/http-error.ts";
+import type { WaitUntil } from "../util/http.ts";
 
 /** 订阅器读的边缘缓存命名空间：合成键，不暴露真实请求 URL，也不与上游 URL 互相污染 */
 const SUBSCRIBER_CACHE_NAMESPACE = "https://github-proxy.cache";
@@ -13,9 +14,6 @@ const SUBSCRIBER_CACHE_CONTROL = "public, max-age=60, s-maxage=300";
 
 /** 上游非 2xx 时给订阅器的固定文案：不透传上游 JSON 错误体 */
 const SUBSCRIBER_FETCH_ERROR = "无法获取对应文件，请稍后重试。";
-
-/** 延迟写回调（路由传入 ExecutionContext.waitUntil）；缺省不等待、但吞掉写失败 */
-type WaitUntil = (promise: Promise<unknown>) => void;
 
 /** GitHub owner / repo 路径段白名单：字母、数字、下划线、点、连字符 */
 const GITHUB_SEGMENT_PATTERN = /^[A-Za-z0-9_.-]+$/;

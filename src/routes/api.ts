@@ -13,6 +13,7 @@ import {
 } from "../db/client.ts";
 import { ensureInitialData } from "../db/migrations.ts";
 import { jsonResponse, getCookie } from "../util/http.ts";
+import type { WaitUntil } from "../util/http.ts";
 import { hashPassword, isAuthenticated, verifyPassword } from "../util/auth.ts";
 import { getZoneName } from "../util/cf.ts";
 import { FETCH_STRATEGIES } from "../sync/ip-sources.ts";
@@ -39,7 +40,11 @@ async function readJsonBody<T>(request: Request): Promise<T | null> {
 const BAD_JSON = () => jsonResponse({ error: "请求体不是合法 JSON。" }, 400);
 
 /** API 路由分发 */
-export async function handleApiRequest(request: Request, env: { WUYA: D1Database }): Promise<Response> {
+export async function handleApiRequest(
+    request: Request,
+    env: { WUYA: D1Database },
+    waitUntil?: WaitUntil
+): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
@@ -61,9 +66,11 @@ export async function handleApiRequest(request: Request, env: { WUYA: D1Database
     if (method === "GET" && path === "/api/domains/records") return await apiGetDomainsRecords(db);
     if (method === "POST" && path === "/api/domains") return await apiAddDomain(request, db);
     if (method === "POST" && path === "/api/sync")
-        return withManualSyncLock(db, (lockToken) => syncAllDomains(env, true, request.signal, lockToken));
+        return withManualSyncLock(db, (lockToken) => syncAllDomains(env, true, request.signal, lockToken, waitUntil));
     if (method === "POST" && path === "/api/domains/sync_system")
-        return withManualSyncLock(db, (lockToken) => syncSystemDomains(env, true, request.signal, lockToken));
+        return withManualSyncLock(db, (lockToken) =>
+            syncSystemDomains(env, true, request.signal, lockToken, waitUntil)
+        );
 
     const domainMatch = path.match(/^\/api\/domains\/(\d+)$/);
     if (domainMatch) {
@@ -81,14 +88,14 @@ export async function handleApiRequest(request: Request, env: { WUYA: D1Database
     const syncMatch = path.match(/^\/api\/domains\/(\d+)\/sync$/);
     if (syncMatch && method === "POST") {
         const id = syncMatch[1];
-        return syncSingleDomain(Number(id), env, true, request.signal) as Promise<Response>;
+        return syncSingleDomain(Number(id), env, true, request.signal, waitUntil) as Promise<Response>;
     }
 
     if (method === "GET" && path === "/api/ip_sources") return await apiGetIpSources(db);
     if (method === "POST" && path === "/api/ip_sources") return await apiAddIpSource(request, db);
     if (method === "POST" && path === "/api/ip_sources/probe") return await apiProbeIpSource(request);
     if (method === "POST" && path === "/api/ip_sources/sync_all")
-        return withManualSyncLock(db, (lockToken) => syncAllIpSources(env, true, request.signal, lockToken));
+        return withManualSyncLock(db, (lockToken) => syncAllIpSources(env, true, request.signal, lockToken, waitUntil));
 
     const ipSourceMatch = path.match(/^\/api\/ip_sources\/(\d+)$/);
     if (ipSourceMatch) {
@@ -100,7 +107,7 @@ export async function handleApiRequest(request: Request, env: { WUYA: D1Database
     const ipSourceSyncMatch = path.match(/^\/api\/ip_sources\/(\d+)\/sync$/);
     if (ipSourceSyncMatch && method === "POST") {
         const id = Number(ipSourceSyncMatch[1]);
-        return syncSingleIpSource(id, env, true, request.signal) as Promise<Response>;
+        return syncSingleIpSource(id, env, true, request.signal, waitUntil) as Promise<Response>;
     }
 
     return jsonResponse({ error: "API 端点未找到" }, 404);
