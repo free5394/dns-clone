@@ -896,20 +896,26 @@ describe("手动全量同步并发防护 (M-8)", () => {
         }
     });
 
-    it("陈旧锁不阻塞新的手动同步", async () => {
+    it("陈旧锁被接管后，排空 SSE 即任务结束且锁已释放", async () => {
         const cookie = await loginAndGetCookie();
         await seedCfSettings();
+        // 清空域名：让后台任务在空集合上立刻结束，不依赖上游响应时序
+        await env.WUYA.prepare("DELETE FROM domains").run();
         await writeLock(Date.now() - 60000);
 
-        // 不读取响应体，避免真正驱动 SSE 流去请求上游
-        const origFetch = globalThis.fetch;
-        globalThis.fetch = (() =>
-            Promise.resolve(
-                new Response(JSON.stringify({ success: true, result: [] }), {
+        // createLogStreamResponse 在返回 Response 时就已经启动后台任务，
+        // 「不读响应体就不会跑」是错误假设（复审 中-9）。这里改为排空流并断言任务真的走完。
+        const fetchCalls: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                fetchCalls.push(String(url));
+                return new Response(JSON.stringify({ success: true, result: [] }), {
                     status: 200,
                     headers: { "Content-Type": "application/json" },
-                })
-            )) as typeof fetch;
+                });
+            })
+        );
 
         try {
             const res = await handleApiRequest(
@@ -917,8 +923,19 @@ describe("手动全量同步并发防护 (M-8)", () => {
                 env
             );
             expect(res.status).not.toBe(409);
+
+            // res.text() 只在流关闭后 resolve，而流在后台任务的 finally 里关闭 —— 排空即任务结束
+            const text = await res.text();
+            expect(text).toContain("开始批量同步任务");
+            expect(text).toContain("没有需要同步的已启用目标");
+            // 空域名集不应发起任何上游请求：证明任务确已结束，而不是仍在后台跑
+            expect(fetchCalls).toHaveLength(0);
+
+            // 关键断言（中-9 缺失项）：任务结束后锁行必须已被删除，否则会永久阻塞后续同步
+            const lock = await env.WUYA.prepare("SELECT value FROM settings WHERE key = ?").bind(LOCK_KEY).first();
+            expect(lock).toBeNull();
         } finally {
-            globalThis.fetch = origFetch;
+            vi.unstubAllGlobals();
             await clearLock();
         }
     });

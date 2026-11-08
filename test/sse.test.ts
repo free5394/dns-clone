@@ -98,6 +98,60 @@ describe("createLogStreamResponse", () => {
         expect(closeErrors).toHaveLength(0);
     });
 
+    it("后台任务在无人读取响应体时照常执行到结束（排空语义）", async () => {
+        const steps: string[] = [];
+        let done!: () => void;
+        const finished = new Promise<void>((resolve) => {
+            done = resolve;
+        });
+
+        // 刻意不消费 res.body：createLogStreamResponse 返回时后台任务已启动，不依赖读者驱动
+        createLogStreamResponse(async (log) => {
+            log("第一步");
+            steps.push("第一步");
+            log("第二步");
+            steps.push("第二步");
+            done();
+        });
+
+        await finished;
+        expect(steps).toEqual(["第一步", "第二步"]);
+    });
+
+    it("abort 只停止推送，不会终止后端任务", async () => {
+        vi.spyOn(console, "error").mockImplementation(() => {});
+        const controller = new AbortController();
+
+        let done!: () => void;
+        const finished = new Promise<void>((resolve) => {
+            done = resolve;
+        });
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let tailRan = false;
+
+        const res = createLogStreamResponse(async (log) => {
+            log("abort 前");
+            await gate;
+            log("abort 后"); // 应被 aborted 守卫丢弃
+            tailRan = true;
+            done();
+        }, controller.signal);
+
+        controller.abort();
+        expect(tailRan, "abort 不应中断后端任务").toBe(false);
+
+        release();
+        await finished;
+        expect(tailRan, "后端任务应在 abort 后继续执行到结束，锁与状态才有机会释放").toBe(true);
+
+        const text = await drain(res);
+        expect(text).toContain("abort 前");
+        expect(text).not.toContain("abort 后");
+    });
+
     it("already-aborted signal pushes no logs", async () => {
         vi.spyOn(console, "error").mockImplementation(() => {});
         const controller = new AbortController();

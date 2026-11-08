@@ -6,7 +6,8 @@ import { beijingTimeLog } from "./log.ts";
 /**
  * 创建 SSE 日志流响应：把 logFunction 的执行过程实时推送给客户端
  * @param logFunction 异步函数，接收 log 回调用于输出日志
- * @param signal 客户端断开信号（AbortSignal）—— 可选；触发后立即终止后端任务
+ * @param signal 客户端断开信号（AbortSignal）—— 可选；触发后立即停止推送并关闭流。
+ *               注意：它不会打断正在执行的后端任务，任务仍会跑完（锁释放与状态写回依赖这一点）。
  */
 export function createLogStreamResponse(
     logFunction: (log: (message: string) => void) => Promise<void>,
