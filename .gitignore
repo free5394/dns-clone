@@ -56,3 +56,6 @@ coverage/
 # ego 浏览器自动化运行的临时脚本（生成物，同 .e2e-run/）
 ego-runs/
 
+.agents/
+.agent-teams/
+
