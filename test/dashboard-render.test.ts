@@ -3,7 +3,8 @@
 
 import { describe, it, expect } from "vitest";
 import { createDashboardRenderers } from "../src/ui/dashboard-render.js";
-import { escapeHtmlClient } from "../src/ui/dashboard-helpers.js";
+import { escapeHtmlClient, canAddDomains } from "../src/ui/dashboard-helpers.js";
+import { getDashboardPage } from "../src/ui/templates.js";
 
 const ZONE = "example.com";
 const ORIGIN = "https://dash.test";
@@ -128,5 +129,30 @@ describe("仪表盘渲染助手 (M-1)", () => {
         expect(many).toContain("共 2 条");
         expect(many).toContain("<li><b>A:</b> 2.2.2.2</li>");
         expect(renderLiveRecords([{ type: "<x>", content: "<y>" }])).not.toContain("<x>");
+    });
+});
+
+describe("添加克隆目标按钮可用性 (issue #21)", () => {
+    it("CF 凭证已配置、区域名称为空时仍允许添加", () => {
+        // zoneName 只在保存设置时回填；按钮是否可点不能再依赖它。
+        expect(canAddDomains({ CF_CONFIGURED: true, zoneName: "" })).toBe(true);
+        expect(canAddDomains({ CF_CONFIGURED: true })).toBe(true);
+    });
+
+    it("CF 未配置时禁用", () => {
+        expect(canAddDomains({ CF_CONFIGURED: false, zoneName: "example.com" })).toBe(false);
+        expect(canAddDomains({})).toBe(false);
+        expect(canAddDomains(null)).toBe(false);
+    });
+
+    it("服务端渲染与保存设置后的客户端刷新共用同一判定", () => {
+        const html = getDashboardPage([], [], { CF_CONFIGURED: true, zoneName: "" });
+
+        expect(html).not.toContain('id="addDomainBtn" disabled');
+        // 判定函数随脚本注入，保存设置后刷新按钮状态时调用同一份实现
+        expect(html).toContain("const canAddDomains = function canAddDomains");
+        expect(html).toContain("document.getElementById('addDomainBtn').disabled = !canAddDomains(currentSettings);");
+        // 区域名称缺失时提示会在保存时自动获取，而不是让人先去保存设置
+        expect(html).toContain("（保存时自动获取）");
     });
 });

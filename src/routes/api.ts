@@ -274,6 +274,34 @@ function normalizeDeepResolve(value: unknown): { ok: true; value: number | null 
     return { ok: false };
 }
 
+/**
+ * 读取缓存的 Cloudflare 区域名称；缺失时按需从 API 获取并回填。
+ * 全新环境可能只配置了 Token / Zone ID 而没有 CF_ZONE_NAME（该值原本只在保存设置时回填），
+ * 添加目标时补全即可，不必要求管理员先保存一次设置（issue #21）。
+ */
+async function resolveZoneName(
+    db: D1Database,
+    token: string,
+    zoneId: string
+): Promise<{ ok: true; zoneName: string } | { ok: false; error: string }> {
+    let zoneName = ((await getSetting(db, "CF_ZONE_NAME")) || "").replace(/\.$/, "");
+    if (zoneName) return { ok: true, zoneName };
+    try {
+        zoneName = (await getZoneName(token, zoneId)).replace(/\.$/, "");
+    } catch (e) {
+        const detail = e instanceof Error ? `：${e.message}` : "";
+        return {
+            ok: false,
+            error: `无法获取 Cloudflare 区域名称，请先在「系统设置」重新保存 Cloudflare 配置${detail}`,
+        };
+    }
+    if (!zoneName) {
+        return { ok: false, error: "无法获取 Cloudflare 区域名称，请先在「系统设置」重新保存 Cloudflare 配置。" };
+    }
+    await setSetting(db, "CF_ZONE_NAME", zoneName);
+    return { ok: true, zoneName };
+}
+
 async function handleDomainMutation(
     request: Request,
     db: D1Database,
@@ -329,9 +357,12 @@ async function handleDomainMutation(
     if (!deepResolve.ok) return jsonResponse({ error: "is_deep_resolve 必须为 0 或 1。" }, 400);
     try {
         const { zoneId, token } = await getCfApiSettings(db);
-        if (!token || !zoneId) return jsonResponse({ error: "Cloudflare API 未配置。" }, 400);
-        const zoneName = ((await getSetting(db, "CF_ZONE_NAME")) || "").replace(/\.$/, "");
-        if (!zoneName) return jsonResponse({ error: "Cloudflare 区域名称未缓存，请重新保存 Cloudflare 设置。" }, 400);
+        if (!token || !zoneId) {
+            return jsonResponse({ error: "Cloudflare API 未配置，请先在「系统设置」填写 API 令牌与区域 ID。" }, 400);
+        }
+        const resolved = await resolveZoneName(db, token, zoneId);
+        if (!resolved.ok) return jsonResponse({ error: resolved.error }, 400);
+        const zoneName = resolved.zoneName;
         const target_domain = prefix === "@" ? zoneName : `${prefix}.${zoneName}`;
 
         if (isUpdate && id) {
