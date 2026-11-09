@@ -16,13 +16,18 @@ import { jsonResponse, getCookie } from "../util/http.ts";
 import type { WaitUntil } from "../util/http.ts";
 import { hashPassword, isAuthenticated, verifyPassword } from "../util/auth.ts";
 import { getZoneName } from "../util/cf.ts";
-import { FETCH_STRATEGIES } from "../sync/ip-sources.ts";
+import { FETCH_STRATEGIES, resolveHostmonitKey } from "../sync/ip-sources.ts";
 import { normalizeGithubPath } from "../sync/github.ts";
 import { syncAllDomains, syncSystemDomains, syncSingleDomain } from "../sync/domains.ts";
 import { syncSingleIpSource, syncAllIpSources } from "../sync/ip-sources.ts";
 import { assertSafeHttpUrl } from "../util/url-safety.ts";
 import { fetchWithTimeout } from "../util/fetch.ts";
-import { CONFIG_SETTING_KEYS, normalizeSettingsInput, validateEffectiveSettings } from "../db/settings.ts";
+import {
+    CONFIG_SETTING_KEYS,
+    HOSTMONIT_API_KEY,
+    normalizeSettingsInput,
+    validateEffectiveSettings,
+} from "../db/settings.ts";
 
 /** 检测 D1/SQLite UNIQUE 约束违例（D1 同时支持 message 与 code 两种错误呈现方式） */
 const isUniqueViolation = (e: unknown): boolean =>
@@ -93,7 +98,7 @@ export async function handleApiRequest(
 
     if (method === "GET" && path === "/api/ip_sources") return await apiGetIpSources(db);
     if (method === "POST" && path === "/api/ip_sources") return await apiAddIpSource(request, db);
-    if (method === "POST" && path === "/api/ip_sources/probe") return await apiProbeIpSource(request);
+    if (method === "POST" && path === "/api/ip_sources/probe") return await apiProbeIpSource(request, db);
     if (method === "POST" && path === "/api/ip_sources/sync_all")
         return withManualSyncLock(db, (lockToken) => syncAllIpSources(env, true, request.signal, lockToken, waitUntil));
 
@@ -210,16 +215,19 @@ async function apiLogout(request: Request, db: D1Database): Promise<Response> {
 
 async function apiGetSettings(request: Request, db: D1Database): Promise<Response> {
     const settings = await getSafeSettings(db);
-    const [{ token, zoneId }, github, zoneName] = await Promise.all([
+    const [{ token, zoneId }, github, zoneName, hostmonitKey] = await Promise.all([
         getCfApiSettings(db),
         getGitHubSettings(db),
         getSetting(db, "CF_ZONE_NAME"),
+        getSetting(db, HOSTMONIT_API_KEY),
     ]);
     return jsonResponse({
         ...settings,
         zoneName: zoneName || "",
         CF_CONFIGURED: Boolean(token && zoneId),
         GITHUB_CONFIGURED: Boolean(github.token && github.owner && github.repo),
+        // 只回传是否已自定义，key 原文属于敏感字段（getSafeSettings 已剔除）
+        HOSTMONIT_CONFIGURED: Boolean(hostmonitKey),
     });
 }
 
@@ -608,7 +616,7 @@ async function withProbeTimeout<T>(promise: Promise<T>, ms: number): Promise<T> 
     }
 }
 
-async function apiProbeIpSource(request: Request): Promise<Response> {
+async function apiProbeIpSource(request: Request, db: D1Database): Promise<Response> {
     const body = await readJsonBody<{ url?: string }>(request);
     if (body === null) return BAD_JSON();
     const { url } = body;
@@ -619,6 +627,8 @@ async function apiProbeIpSource(request: Request): Promise<Response> {
         return jsonResponse({ error: e instanceof Error ? e.message : "URL 校验失败" }, 400);
     }
 
+    // 探测与同步使用同一份 key 解析结果，避免设置页改了 key 但探测仍用旧默认值
+    const hostmonitKey = await resolveHostmonitKey(db);
     const deadlineAt = Date.now() + PROBE_TOTAL_TIMEOUT_MS;
     let attempts = 0;
     let budgetExhausted = false;
@@ -631,7 +641,7 @@ async function apiProbeIpSource(request: Request): Promise<Response> {
         }
         attempts += 1;
         try {
-            const ips = await withProbeTimeout(strategyFn(url), remaining);
+            const ips = await withProbeTimeout(strategyFn(url, { hostmonitKey }), remaining);
             if (ips && ips.length > 0) {
                 return jsonResponse({
                     success: true,

@@ -2,8 +2,11 @@
 // 覆盖：三策略错误路径聚合文案（HTTP 类别 / 超时类别）、回退顺序与 fetch_strategy 保持、
 // 三网 HTML 表格解析（parseHtmlTableWithOperator 提成导出后直测）、describeFetchError 归一化。
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { env } from "cloudflare:test";
 import {
+    DEFAULT_HOSTMONIT_API_KEY,
     fetchIpsFromSource,
+    fetchIpsWithStrategy,
     fetchThreeNetworkIps,
     parseHtmlTableWithOperator,
     describeFetchError,
@@ -226,5 +229,81 @@ describe("describeFetchError 归一化", () => {
         expect(describeFetchError(new Error("boom"))).toBe("boom");
         expect(describeFetchError("字符串异常")).toBe("字符串异常");
         expect(describeFetchError(new Error("x".repeat(500))).length).toBeLessThanOrEqual(201);
+    });
+});
+
+async function writeHostmonitKey(value: string | null): Promise<void> {
+    if (value === null) {
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = 'HOSTMONIT_API_KEY'").run();
+        return;
+    }
+    await env.WUYA.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('HOSTMONIT_API_KEY', ?)")
+        .bind(value)
+        .run();
+}
+
+/** 只让 hostmonit 专用接口成功，并记录请求体里的 key */
+function stubHostmonitFetch(): { bodies: string[] } {
+    const bodies: string[] = [];
+    vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string, init?: RequestInit) => {
+            if (url.includes("api.hostmonit.com/get_optimization_ip")) {
+                bodies.push(String(init?.body ?? ""));
+                return new Response(JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }] }), { status: 200 });
+            }
+            return new Response("forbidden", { status: 403 });
+        })
+    );
+    return { bodies };
+}
+
+describe("hostmonit 抓取 key 配置化 (issue #25)", () => {
+    const hostmonitSource = () => ({
+        ...makeSource("hostmonit_api"),
+        url: "https://stock.hostmonit.com/CloudFlareYes",
+    });
+
+    afterEach(async () => {
+        await writeHostmonitKey(null);
+    });
+
+    it("保存新值后，下一次抓取立即使用新 key（无需重启/重新部署）", async () => {
+        await writeHostmonitKey("custom-hostmonit-key");
+        const { bodies } = stubHostmonitFetch();
+
+        await fetchIpsWithStrategy(hostmonitSource(), env.WUYA);
+
+        expect(bodies).toHaveLength(1);
+        expect(JSON.parse(bodies[0])).toEqual({ key: "custom-hostmonit-key" });
+    });
+
+    it("留空/未配置时沿用内置默认 key", async () => {
+        await writeHostmonitKey(null);
+        const { bodies } = stubHostmonitFetch();
+
+        await fetchIpsWithStrategy(hostmonitSource(), env.WUYA);
+
+        expect(JSON.parse(bodies[0])).toEqual({ key: DEFAULT_HOSTMONIT_API_KEY });
+        expect(DEFAULT_HOSTMONIT_API_KEY).toBe("iDetkOys");
+    });
+
+    it("显式清除后回到内置默认 key", async () => {
+        await writeHostmonitKey("temporary-key");
+        await writeHostmonitKey(null);
+        const { bodies } = stubHostmonitFetch();
+
+        await fetchIpsWithStrategy(hostmonitSource(), env.WUYA);
+
+        expect(JSON.parse(bodies[0])).toEqual({ key: DEFAULT_HOSTMONIT_API_KEY });
+    });
+
+    it("库里是空白字符串时也不把空 key 发出去", async () => {
+        await writeHostmonitKey("   ");
+        const { bodies } = stubHostmonitFetch();
+
+        await fetchIpsWithStrategy(hostmonitSource(), env.WUYA);
+
+        expect(JSON.parse(bodies[0])).toEqual({ key: DEFAULT_HOSTMONIT_API_KEY });
     });
 });

@@ -11,18 +11,29 @@ export const CF_CONFIG_KEYS = ["CF_API_TOKEN", "CF_ZONE_ID"] as const;
 /** GitHub 侧配置键：令牌、Owner、Repo 三者必须同时配置 */
 export const GITHUB_CONFIG_KEYS = ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO"] as const;
 
+/**
+ * hostmonit 三网优选 IP 接口的抓取 key（issue #25）。
+ * 该 key 是 hostmonit 前端 bundle 里的公开值，写死会在对方轮换后失效，故允许设置页覆盖。
+ */
+export const HOSTMONIT_API_KEY = "HOSTMONIT_API_KEY";
+
 /** 用户可在设置页写入的全部配置键（配对校验与合并有效配置时使用） */
 export const CONFIG_SETTING_KEYS = [...CF_CONFIG_KEYS, ...GITHUB_CONFIG_KEYS] as const;
 
 /** 写入白名单：只有这些键允许通过 /api/settings 落库 */
 export const WRITABLE_SETTING_KEYS: ReadonlySet<string> = new Set<string>([
     ...CONFIG_SETTING_KEYS,
+    HOSTMONIT_API_KEY,
     "THREE_NETWORK_SOURCE",
     "BATCH_SIZE",
 ]);
 
 /** 密钥类键：空字符串表示「保持不变」，不能被当成清除指令 */
-export const SECRET_SETTING_KEYS: ReadonlySet<string> = new Set<string>(["CF_API_TOKEN", "GITHUB_TOKEN"]);
+export const SECRET_SETTING_KEYS: ReadonlySet<string> = new Set<string>([
+    "CF_API_TOKEN",
+    "GITHUB_TOKEN",
+    HOSTMONIT_API_KEY,
+]);
 
 /** 敏感字段：序列化到前端前过滤（Token、密码哈希、Salt） */
 export const SENSITIVE_SETTINGS_KEYS: ReadonlySet<string> = new Set<string>([
