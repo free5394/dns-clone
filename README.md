@@ -251,29 +251,32 @@ pnpm dev
 | `pnpm typecheck`       | TypeScript 严格模式检查（`tsc --noEmit`）                            |
 | `pnpm build:single`    | 用 esbuild 打包 `src/index.ts` → `dist/worker.bundle.js`             |
 | `pnpm predeploy`       | 部署前校验：检查 `wrangler.toml` 中 `database_id` 是否替换           |
-| `pnpm deploy`          | CLI 部署到 Cloudflare（自动注入 `.env` 中的 `CLOUDFLARE_API_TOKEN`） |
+| `pnpm run deploy`      | CLI 部署到 Cloudflare（自动注入 `.env` 中的 `CLOUDFLARE_API_TOKEN`） |
 | `pnpm cf-typegen`      | 重新生成 `worker-configuration.d.ts`（gitignore）                    |
 
-### CLI 部署（`pnpm deploy`）
+### CLI 部署（`pnpm run deploy`）
 
 > 先用 `wrangler d1 create` 创建生产 D1 数据库，拿到真实 UUID。
+
+> **仓库配置与线上配置故意不同**：提交态的 `wrangler.toml` 是模板（`database_id` 为哨兵值），维护者的线上部署走本机 `.scratch/wrangler.deploy.toml`。原因、路径与可执行命令见 [docs/deployment.md](docs/deployment.md)。
 
 ```bash
 # 1. 创建生产 D1 数据库（记下输出的 database_id）
 pnpm dlx wrangler d1 create wuya-db
 
-# 2. 将返回的 UUID 填入 wrangler.toml 的 database_id
-#    （替换占位符 REPLACE_WITH_YOUR_D1_ID）
+# 2. 把 database_id 填入 wrangler.toml（替换哨兵值 REPLACE_WITH_YOUR_D1_ID）
+#    想从示例起步：cp wrangler.example.toml wrangler.toml
+#    （复制后还要把 name 从 your-worker-name 改成你自己的 Worker 名）
 
 # 3. 在项目根目录创建 .env，写入账号级 Token（用于 wrangler CLI 认证）
 #    CLOUDFLARE_API_TOKEN=xxxxx
 #    （获取：CF Dashboard → 我的个人资料 → API Tokens → Edit Cloudflare Workers）
 
-# 4. 部署前校验（占位符未替换会报错退出）
+# 4. 部署前校验（哨兵值未替换会报错退出）
 pnpm predeploy
 
-# 5. 部署到 Cloudflare
-pnpm deploy
+# 5. 部署到 Cloudflare（显式调用 package.json 的 deploy 脚本）
+pnpm run deploy
 ```
 
 > **注意**：`wrangler.toml` 已配置 `keep_vars: true`，不会覆盖你在 Dashboard 里手动配置的 Variables / Bindings。CLI 部署与网页部署两条路径可混用。
@@ -285,13 +288,15 @@ pnpm deploy
 ├── README.md            # 本文档
 ├── CLAUDE.md            # 给 AI 助手的代码事实摘要
 ├── package.json         # 脚本：dev / test / typecheck / deploy / cf-typegen
-├── wrangler.toml       # Worker 配置（compatibility_date 2026-05-20，keep_vars）
+├── wrangler.toml       # Worker 配置（compatibility_date 2026-05-20，keep_vars；database_id 为哨兵值）
+├── wrangler.example.toml # 部署配置示例（字段齐全，database_id 为哨兵值；见 docs/deployment.md）
 ├── tsconfig.json        # TypeScript strict 配置
 ├── vitest.config.ts     # @cloudflare/vitest-plugin 测试配置
 ├── scripts/
 │   ├── build-single-file.mjs  # esbuild 打包 → dist/worker.bundle.js
 │   ├── predeploy.cjs          # 部署前占位符校验
-│   └── load-deploy-env.cjs    # pnpm deploy 前置：注入 .env 到 wrangler
+│   └── load-deploy-env.cjs    # pnpm run deploy 前置：注入 .env 到 wrangler
+├── docs/                # 文档（deployment.md：部署例外与「生产为唯一真相源」）
 ├── src/
 │   ├── index.ts         # Worker 入口（fetch + scheduled 组装，约 80 行）
 │   ├── db/              # client.ts（D1 封装）+ migrations.ts（幂等建表）+ migrations/*.sql（测试用）
