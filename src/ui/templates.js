@@ -1,5 +1,5 @@
 // templates.js — UI 模板函数（阶段 E 从 index.legacy.js 拆出）
-import { escapeHtmlClient } from "./dashboard-helpers.js";
+import { escapeHtmlClient, canAddDomains } from "./dashboard-helpers.js";
 import { createDashboardRenderers } from "./dashboard-render.js";
 import { createApiFetch } from "./dashboard-api.js";
 // 纯 JS 文件（tsc 不参与）：内含大量浏览器端 JS 模板字符串
@@ -533,7 +533,7 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
  */
 export function getDashboardPage(domains, ipSources, settings) {
     const githubSettingsComplete = settings.GITHUB_CONFIGURED === true;
-    const cfSettingsComplete = settings.CF_CONFIGURED === true && Boolean(settings.zoneName);
+    const cfSettingsComplete = canAddDomains(settings);
     return `<aside class="sidebar"><div class="sidebar-header"><h3>DNS Clone</h3><button id="theme-toggle" type="button" aria-label="切换到深色主题"><i class="fa-solid fa-moon" aria-hidden="true"></i></button></div><nav class="sidebar-nav"><a href="#page-dns-clone" class="nav-link active" data-target="page-dns-clone"><i class="fa-solid fa-clone fa-fw"></i> 域名克隆</a><a href="#page-github-upload" class="nav-link" data-target="page-github-upload"><i class="fa-brands fa-github fa-fw"></i> GitHub 上传</a><a href="#page-settings" class="nav-link" data-target="page-settings"><i class="fa-solid fa-gear fa-fw"></i> 系统设置</a></nav></aside>
     <div class="main-content">
         <div id="page-dns-clone" class="page active">
@@ -635,6 +635,8 @@ function getDashboardScript(domains, ipSources, settings) {
   // I2: 客户端渲染统一转义助手（与服务器端 escapeHtml 同语义）
   // 客户端转义助手来自 ./dashboard-helpers.js，注入后可直接被行为测试覆盖。
   const esc = ${escapeHtmlClient.toString()};
+  // 按钮可用性判定与服务器端渲染共用同一份实现（issue #21）
+  const canAddDomains = ${canAddDomains.toString()};
 
   const formatBeijingTime = (isoStr) => { if (!isoStr) return '从未'; const d = new Date(isoStr); return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(d).replace(/\\//g, '-'); };
 ` +
@@ -688,7 +690,7 @@ function getDashboardInteractionScript() {
       if (modalId === 'domainModal') {
           const form = document.getElementById('domainForm'); form.reset();
           document.getElementById('modalTitle').textContent = id ? '编辑克隆目标' : '添加新克隆目标';
-          document.getElementById('zoneNameSuffix').textContent = zoneName ? '.' + zoneName : '(请先保存设置)';
+          document.getElementById('zoneNameSuffix').textContent = zoneName ? '.' + zoneName : '（保存时自动获取）';
           document.getElementById('is_deep_resolve').checked = true;
           if (id) {
               const domain = currentDomains.find(d => d.id === id);
@@ -882,8 +884,7 @@ function getDashboardSyncScript() {
           currentSettings = newSettings;
           zoneName = currentSettings.zoneName || '';
           const githubSettingsComplete = currentSettings.GITHUB_CONFIGURED === true;
-          const cfSettingsComplete = currentSettings.CF_CONFIGURED === true && Boolean(zoneName);
-          document.getElementById('addDomainBtn').disabled = !cfSettingsComplete;
+          document.getElementById('addDomainBtn').disabled = !canAddDomains(currentSettings);
           document.getElementById('addIpSourceBtn').disabled = !githubSettingsComplete;
           document.getElementById('cfClear').checked = false;
           document.getElementById('githubClear').checked = false;

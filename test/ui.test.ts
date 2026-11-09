@@ -3,6 +3,7 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleUiRequest } from "../src/routes/ui.ts";
+import { handleApiRequest } from "../src/routes/api.ts";
 
 /** 创建一个带有效会话 Cookie 的登录态请求 */
 async function loggedInRequest(url: string): Promise<Request> {
@@ -126,6 +127,106 @@ describe("handleUiRequest /admin 鉴权", () => {
         expect(html).not.toContain(saltLeak);
         expect(html).not.toContain(hashLeak);
         expect(html).not.toContain("pbkdf2$");
+    });
+});
+
+describe("CF 已配置但区域名称未缓存 (issue #21)", () => {
+    async function seedCfWithoutZoneName() {
+        await env.WUYA.batch([
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('CF_API_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).bind("test-token"),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).bind("test-zone"),
+            env.WUYA.prepare("DELETE FROM settings WHERE key = 'CF_ZONE_NAME'"),
+        ]);
+    }
+
+    async function cleanupCf() {
+        await env.WUYA.prepare(
+            "DELETE FROM settings WHERE key IN ('CF_API_TOKEN', 'CF_ZONE_ID', 'CF_ZONE_NAME')"
+        ).run();
+    }
+
+    it("仪表盘仍渲染可点击的添加按钮，并提示保存时自动获取区域名称", async () => {
+        await seedCfWithoutZoneName();
+
+        const req = await loggedInRequest("https://example.com/admin");
+        const res = await handleUiRequest(req, env);
+
+        expect(res.status).toBe(200);
+        const html = await res.text();
+        expect(html).not.toContain('id="addDomainBtn" disabled');
+        expect(html).toContain("（保存时自动获取）");
+
+        await cleanupCf();
+    });
+
+    it("提交添加目标时自动获取并缓存区域名称，无需先保存一次设置", async () => {
+        await seedCfWithoutZoneName();
+        const fetchSpy = vi.fn(
+            async () =>
+                new Response(JSON.stringify({ success: true, result: { name: "lazy.example.com" } }), {
+                    status: 200,
+                })
+        );
+        vi.stubGlobal("fetch", fetchSpy);
+        const login = await loggedInRequest("https://example.com/admin");
+        const cookie = login.headers.get("Cookie") || "";
+
+        const res = await handleApiRequest(
+            new Request("https://example.com/api/domains", {
+                method: "POST",
+                headers: { Cookie: cookie, "Content-Type": "application/json" },
+                body: JSON.stringify({ source_domain: "origin.example.com", target_domain_prefix: "auto21", ttl: 60 }),
+            }),
+            env
+        );
+
+        expect(res.status).toBe(200);
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        const created = await env.WUYA.prepare("SELECT target_domain FROM domains WHERE target_domain = ?")
+            .bind("auto21.lazy.example.com")
+            .first();
+        expect(created).not.toBeNull();
+        const cached = (await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'CF_ZONE_NAME'").first()) as {
+            value: string;
+        } | null;
+        expect(cached?.value).toBe("lazy.example.com");
+
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain = ?").bind("auto21.lazy.example.com").run();
+        await cleanupCf();
+    });
+
+    it("区域名称取不到时返回明确中文提示，不静默失败", async () => {
+        await seedCfWithoutZoneName();
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response("forbidden", { status: 403 }))
+        );
+        const login = await loggedInRequest("https://example.com/admin");
+        const cookie = login.headers.get("Cookie") || "";
+
+        const res = await handleApiRequest(
+            new Request("https://example.com/api/domains", {
+                method: "POST",
+                headers: { Cookie: cookie, "Content-Type": "application/json" },
+                body: JSON.stringify({ source_domain: "origin.example.com", target_domain_prefix: "auto21", ttl: 60 }),
+            }),
+            env
+        );
+
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error?: string };
+        expect(body.error).toContain("区域名称");
+        expect(body.error).toContain("系统设置");
+        const created = await env.WUYA.prepare("SELECT COUNT(*) as n FROM domains WHERE target_domain = ?")
+            .bind("auto21.lazy.example.com")
+            .first();
+        expect(created?.n).toBe(0);
+
+        await cleanupCf();
     });
 });
 
