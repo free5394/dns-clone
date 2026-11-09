@@ -1,40 +1,4 @@
----
-
-<div align="center">
-
-### 🙏 特别鸣谢   CMliu 频道
-
-首先，特别感谢 **CMliu** 频道。本项目中使用的部分核心 `Snippets` 代码及 `ProxyIP` 均源自该频道。
-
-原项目旨在实现域名解析的克隆功能。在日常交流中，我们注意到许多朋友对如何自定义 `Snippets` 节点内容或进行 IP 优选有诸多疑问。为此，我们在原项目的基础上，特别增设了代理功能板块，希望能为大家提供一个方便研究和学习的平台。
-
----
-
-</div>
-
-<div align="center">
-  <a href="https://dash.cloudflare.com/?to=/:account/workers-and-pages/create" target="_blank">
-    <img src="https://img.shields.io/badge/CF--DNS--Clon-Cloudflare%20Workers-F38020?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Deploy to Cloudflare Workers">
-  </a>
-  <p><strong>一个能让你轻松“白嫖”别人优选域名的 Cloudflare Worker 工具</strong></p>
-  <a href="https://t.me/cfwuya1">
-    <img src="https://img.shields.io/badge/Telegram-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram">
-  </a>
-</div>
-
----
-
-<div align="center">
-  <a href="https://www.youtube.com/watch?v=a4Ky4kg1LhI" target="_blank">
-    <img src="https://img.shields.io/badge/YouTube-%23FF0000.svg?style=for-the-badge&logo=YouTube&logoColor=white" alt="YouTube Badge"/>
-  </a>
-  <br/>
-  <a href="https://www.youtube.com/watch?v=a4Ky4kg1LhI" target="_blank">
-    <img src="https://img.youtube.com/vi/a4Ky4kg1LhI/hqdefault.jpg" alt="点击观看视频">
-  </a>
-</div>
-
----
+# dns-clone
 
 ## 📑 目录
 
@@ -78,7 +42,7 @@
 
 ### 架构总览
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                   Cloudflare Worker（入口）                       │
 │                   src/index.ts (fetch + scheduled)               │
@@ -121,7 +85,7 @@
 
 Cron `* * * * *`（每分钟）触发 `scheduled` handler，通过 `settings.next_sync_task` 在两种批任务间**轮转**：
 
-```
+```text
 第 N 分钟：next_sync_task = 'domains'    → 同步 BATCH_SIZE=10 条域名（失败优先）
             执行完毕后翻转：next_sync_task = 'ip_sources'
 第 N+1 分钟：next_sync_task = 'ip_sources' → 同步 BATCH_SIZE=10 条 IP 源（失败优先）
@@ -316,7 +280,7 @@ pnpm deploy
 
 ### 仓库结构
 
-```
+```text
 .
 ├── README.md            # 本文档
 ├── CLAUDE.md            # 给 AI 助手的代码事实摘要
