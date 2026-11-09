@@ -24,7 +24,8 @@ interface IpSourceRow {
     url: string;
     github_path: string;
     commit_message: string;
-    fetch_strategy: string;
+    /** 列可空（迁移里的 fetch_strategy 无 NOT NULL），读取处一律按空串归一 */
+    fetch_strategy: string | null;
     is_enabled: number;
 }
 
@@ -158,11 +159,11 @@ export async function syncSingleIpSource(
 
         try {
             const { ips, strategy, configuredStrategy } = await fetchIpsWithStrategy(source, db);
-            // issue #22 P4：日志写实际生效策略；回退时点明从哪个策略退下来的
-            const strategyNote =
-                strategy === configuredStrategy
-                    ? `（抓取策略: ${strategy}）`
-                    : `（抓取策略: ${strategy}，已从 ${configuredStrategy} 回退）`;
+            // issue #22 P4：日志写实际生效策略；确实发生过回退时才点明从哪个策略退下来的
+            const fellBack = configuredStrategy !== "" && configuredStrategy !== strategy;
+            const strategyNote = fellBack
+                ? `（抓取策略: ${strategy}，已从 ${configuredStrategy} 回退）`
+                : `（抓取策略: ${strategy}）`;
             log(`成功获取 ${ips.length} 个IP${strategyNote}。`);
 
             const newContent = ips.join("\n");
@@ -285,13 +286,14 @@ export interface IpFetchResult {
 /** 按策略抓取 IP（带排序 + 失败自动回退），并回报实际生效的策略 */
 export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database): Promise<IpFetchResult> {
     assertSafeHttpUrl(source.url);
-    const configuredStrategy = source.fetch_strategy;
+    // 列可空：NULL 归一到空串，避免日志里出现「已从 null 回退」
+    const configuredStrategy = source.fetch_strategy ?? "";
     // 构造尝试顺序：缓存策略优先，回退策略按声明顺序依次尝试
     const strategyNames = Object.keys(FETCH_STRATEGIES).filter((n) => {
         const applies = STRATEGY_APPLIES[n];
         return !applies || applies(source.url);
     });
-    const orderedNames = [source.fetch_strategy, ...strategyNames.filter((n) => n !== source.fetch_strategy)];
+    const orderedNames = [configuredStrategy, ...strategyNames.filter((n) => n !== configuredStrategy)];
 
     let lastError: unknown;
     const attempts: string[] = [];
@@ -301,7 +303,7 @@ export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database)
         try {
             const ips = await fn(source.url);
             if (ips && ips.length > 0) {
-                if (name !== source.fetch_strategy) {
+                if (name !== configuredStrategy) {
                     // 回退策略命中：更新传入对象的 fetch_strategy（调用方可感知），若提供了 db 则持久化
                     (source as { fetch_strategy: string }).fetch_strategy = name;
                     if (db) {
@@ -340,7 +342,7 @@ export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database)
     throw new Error(`[${category}] 所有抓取策略均未能从该URL获取到IP${detail}，请检查URL或在添加/编辑IP源时重新探测。`);
 }
 
-/** 只要 IP 的旧入口（探测/兼容调用方用），策略信息走 fetchIpsWithStrategy。 */
+/** @internal 兼容测试/旧调用方；生产同步走 fetchIpsWithStrategy（需要实际生效的策略信息）。 */
 export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): Promise<string[]> {
     const { ips } = await fetchIpsWithStrategy(source, db);
     return ips;

@@ -159,6 +159,8 @@ describe("添加克隆目标按钮可用性 (issue #21)", () => {
 
 // issue #22（P3）：单条同步结束后列表必须自动刷新（无需 F5）。
 // 本地与浏览器实测均未复现"不刷新"，但这段顺序是行为契约，锁住防回归。
+// 断言必须切进流式函数体内：saveSettings 里也有 await refreshDomains()，
+// 全文 indexOf 会命中那一处，删掉流结束后的刷新照样绿（评审变异实验已证）。
 describe("单条同步结束后自动刷新列表 (issue #22)", () => {
     it("SSE 流结束后先提示再刷新域名与 IP 源列表", () => {
         const html = getDashboardPage([], [], {
@@ -167,14 +169,20 @@ describe("单条同步结束后自动刷新列表 (issue #22)", () => {
             zoneName: ZONE,
         });
 
-        const hint = html.indexOf("同步完成，正在更新列表。");
+        // 结束锚点用带赋值的写法：裸 "window.individualSync" 在页面更早处也出现过，
+        // 用它做 end 会得到空切片，断言等于没写
+        const body = html.slice(
+            html.indexOf("async function handleStreamingRequest"),
+            html.indexOf("window.individualSync = (id)")
+        );
+        expect(body.length).toBeGreaterThan(0);
+
+        const hint = body.indexOf("同步完成，正在更新列表。");
         expect(hint).toBeGreaterThan(-1);
 
         // 两处刷新都必须排在"流结束"提示之后：早于落库刷新会读到旧数据
-        // （用 fromIndex 从提示处往后找，避免命中保存设置等其他位置的同名调用）
-        const domainRefresh = html.indexOf("await refreshDomains();", hint);
-        const ipRefresh = html.indexOf("await refreshIpSources();", hint);
-        // 两处刷新都必须排在"流结束"提示之后：早于落库刷新会读到旧数据
+        const domainRefresh = body.indexOf("await refreshDomains();", hint);
+        const ipRefresh = body.indexOf("await refreshIpSources();", hint);
         expect(domainRefresh).toBeGreaterThan(hint);
         expect(ipRefresh).toBeGreaterThan(hint);
     });
