@@ -17,6 +17,7 @@ import { fetchWithTimeout } from "../util/fetch.ts";
 import { HttpError, TimeoutError } from "../util/http-error.ts";
 import { assertSafeHttpUrl } from "../util/url-safety.ts";
 import { normalizeBatchSize } from "../util/batch-size.ts";
+import { HOSTMONIT_API_KEY } from "../db/settings.ts";
 import { forEachIsolated } from "../util/batch-sync.ts";
 
 interface IpSourceRow {
@@ -29,7 +30,15 @@ interface IpSourceRow {
     is_enabled: number;
 }
 
-type StrategyFn = (url: string) => Promise<string[]>;
+/** hostmonit 接口的内置 key（issue #25）：设置页留空/未配置时使用它 */
+export const DEFAULT_HOSTMONIT_API_KEY = "iDetkOys";
+
+/** 抓取上下文：目前只有 hostmonit 专用接口需要外部参数 */
+export interface FetchStrategyContext {
+    hostmonitKey: string;
+}
+
+type StrategyFn = (url: string, context?: FetchStrategyContext) => Promise<string[]>;
 
 /** 提取文本中的合法 IPv4（Suggestion ③：段值 ≤255，防止 999.x.x.x 伪 IP 发布给订阅器） */
 function extractIpv4(text: string): string[] {
@@ -73,14 +82,15 @@ export const FETCH_STRATEGIES: Record<string, StrategyFn> = {
         if (!res.ok) throw new HttpError(res.status, `Jina Reader HTTP ${res.status}`);
         return extractIpv4(await res.text());
     },
-    // hostmonit 是前端 SPA，页面本身无 IP；数据来自公开 JSON 接口（key 取自其前端 bundle），直连即可
-    hostmonit_api: async () => {
+    // hostmonit 是前端 SPA，页面本身无 IP；数据来自公开 JSON 接口（key 取自其前端 bundle），直连即可。
+    // key 允许在设置页覆盖（对方轮换后无需改代码），未配置时回落到内置默认值。
+    hostmonit_api: async (_url, context) => {
         const res = await fetchWithTimeout(
             "https://api.hostmonit.com/get_optimization_ip",
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ key: "iDetkOys" }),
+                body: JSON.stringify({ key: context?.hostmonitKey || DEFAULT_HOSTMONIT_API_KEY }),
             },
             15000
         );
@@ -283,6 +293,15 @@ export interface IpFetchResult {
     configuredStrategy: string;
 }
 
+/**
+ * 解析本次实际使用的 hostmonit key（issue #25）：
+ * 库里保存的非空值优先；未配置、已显式清除或只剩空白时回落到内置默认。
+ */
+export async function resolveHostmonitKey(db: D1Database): Promise<string> {
+    const stored = await getSetting(db, HOSTMONIT_API_KEY);
+    return (stored || "").trim() || DEFAULT_HOSTMONIT_API_KEY;
+}
+
 /** 按策略抓取 IP（带排序 + 失败自动回退），并回报实际生效的策略 */
 export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database): Promise<IpFetchResult> {
     assertSafeHttpUrl(source.url);
@@ -294,6 +313,10 @@ export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database)
         return !applies || applies(source.url);
     });
     const orderedNames = [configuredStrategy, ...strategyNames.filter((n) => n !== configuredStrategy)];
+    // 设置页保存后下一次抓取立即生效：每次抓取都重新读取，不缓存到模块级变量
+    const context: FetchStrategyContext = {
+        hostmonitKey: db ? await resolveHostmonitKey(db) : DEFAULT_HOSTMONIT_API_KEY,
+    };
 
     let lastError: unknown;
     const attempts: string[] = [];
@@ -301,7 +324,7 @@ export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database)
         const fn = FETCH_STRATEGIES[name];
         if (!fn) continue;
         try {
-            const ips = await fn(source.url);
+            const ips = await fn(source.url, context);
             if (ips && ips.length > 0) {
                 if (name !== configuredStrategy) {
                     // 回退策略命中：更新传入对象的 fetch_strategy（调用方可感知），若提供了 db 则持久化

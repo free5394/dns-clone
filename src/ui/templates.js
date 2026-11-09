@@ -554,6 +554,8 @@ export function getDashboardPage(domains, ipSources, settings) {
                 </fieldset>
                  <fieldset><legend><i class="fa-solid fa-network-wired"></i> 三网优选IP源设置</legend><label for="threeNetworkSource">三网采集源</label><select id="threeNetworkSource"><option value="CloudFlareYes" ${settings.THREE_NETWORK_SOURCE === "CloudFlareYes" ? "selected" : ""}>CloudFlareYes</option><option value="api.uouin.com" ${settings.THREE_NETWORK_SOURCE === "api.uouin.com" ? "selected" : ""}>api.uouin.com</option><option value="wetest.vip" ${settings.THREE_NETWORK_SOURCE === "wetest.vip" ? "selected" : ""}>wetest.vip</option></select><small>为系统预设的电信/移动/联通域名选择IP来源。更改后保存设置将自动同步一次系统域名。</small>
                 </fieldset>
+                <fieldset><legend><i class="fa-solid fa-key"></i> IP 源抓取设置</legend><label for="hostmonitKey">hostmonit 接口 Key</label><input type="password" id="hostmonitKey" value="" placeholder="留空沿用内置默认 Key（已自定义时留空保持不变）"><label><input type="checkbox" id="hostmonitClear"> 清除自定义 Key（恢复内置默认）</label><small>hostmonit 三网优选 IP 接口的公开 key，对方轮换或限流后在此更新，保存后下一次同步即生效。</small>
+                </fieldset>
                 <fieldset><legend><i class="fa-brands fa-github"></i> GitHub API 设置</legend><label for="githubToken">GitHub Token</label><input type="password" id="githubToken" value="" placeholder="${settings.GITHUB_CONFIGURED ? "已配置，留空保持不变" : "具有 repo 权限的 Personal Access Token"}"><label><input type="checkbox" id="githubClear"> 清除已保存的 GitHub 配置</label><label for="githubOwner">GitHub 用户名/组织名</label><input type="text" id="githubOwner" value="${escapeHtml(settings.GITHUB_OWNER || "")}" placeholder="例如: my-username"><label for="githubRepo">仓库名称</label><input type="text" id="githubRepo" value="${escapeHtml(settings.GITHUB_REPO || "")}" placeholder="例如: my-dns-records">
                     <details class="tutorial-details"><summary>如何获取 GitHub API 信息？</summary><div class="tutorial-content"><ol><li><strong>获取 GitHub Token:</strong><ol type="a"><li>登录 <a href="https://github.com/" target="_blank">GitHub</a>，点击右上角头像，进入 <strong>“Settings”</strong>。</li><li>在左侧菜单中，选择 <strong>“Developer settings”</strong> &rarr; <strong>“Personal access tokens”</strong> &rarr; <strong>“Tokens (classic)”</strong>。</li><li>点击 <strong>“Generate new token”</strong>，并选择 <strong>“Generate new token (classic)”</strong>。</li><li>为令牌添加描述（Note），设置合适的过期时间（Expiration）。</li><li>在 <strong>“Select scopes”</strong> 部分，勾选 <code>repo</code> 权限。</li><li>点击页面底部的 <strong>“Generate token”</strong>，并复制生成的令牌。<strong>注意：令牌仅显示一次，请妥善保管。</strong></li></ol></li><li><strong>获取用户名/组织名 和 仓库名称:</strong><ol type="a"><li><strong>用户名/组织名</strong> 就是您的GitHub个人主页URL中，github.com后面的那部分，或者您组织的主页URL。</li><li><strong>仓库名称</strong> 是您在GitHub上创建的，用来存储IP文件的仓库的名字。如果仓库不存在，系统将在第一次同步时自动为您创建为私有仓库。</li></ol></li></ol></div></details>
                 </fieldset>
@@ -861,6 +863,12 @@ function getDashboardSyncScript() {
           if (cfToken) settingsToSave.CF_API_TOKEN = cfToken;
           if (cfZoneId) settingsToSave.CF_ZONE_ID = cfZoneId;
       }
+      if (document.getElementById('hostmonitClear').checked) {
+          settingsToSave.HOSTMONIT_API_KEY = null;
+      } else {
+          const hostmonitKey = document.getElementById('hostmonitKey').value.trim();
+          if (hostmonitKey) settingsToSave.HOSTMONIT_API_KEY = hostmonitKey;
+      }
       if (document.getElementById('githubClear').checked) {
           Object.assign(settingsToSave, { GITHUB_TOKEN: null, GITHUB_OWNER: null, GITHUB_REPO: null });
       } else {
@@ -893,6 +901,11 @@ function getDashboardSyncScript() {
           document.getElementById('githubToken').value = '';
           document.getElementById('githubOwner').value = currentSettings.GITHUB_OWNER || '';
           document.getElementById('githubRepo').value = currentSettings.GITHUB_REPO || '';
+          document.getElementById('hostmonitKey').value = '';
+          document.getElementById('hostmonitKey').placeholder = currentSettings.HOSTMONIT_CONFIGURED
+              ? '已配置，留空保持不变'
+              : '留空沿用内置默认 Key';
+          document.getElementById('hostmonitClear').checked = false;
           await refreshDomains();
       } catch (e) {
           showNotification(\`保存失败: \${e.message}\`, 'error', 10000);
