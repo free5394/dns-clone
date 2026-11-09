@@ -242,6 +242,109 @@ describe("syncSingleIpSource (Task 2.1 is_enabled 守卫)", () => {
     });
 });
 
+// issue #22（P4）：成功日志必须写明本次实际生效的抓取策略；发生回退时写回退后的那个，
+// 而不是配置里写的那个——否则管理员看到的"策略"与真实抓取链路不符。
+describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)", () => {
+    async function seedGitHubSettings() {
+        for (const [key, value] of [
+            ["GITHUB_TOKEN", "test-token"],
+            ["GITHUB_OWNER", "test-owner"],
+            ["GITHUB_REPO", "test-repo"],
+        ]) {
+            await env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            )
+                .bind(key, value)
+                .run();
+        }
+    }
+
+    /** GitHub 侧全部 mock 掉：仓库存在、文件不存在（404 → 新建）、PUT 成功。 */
+    function stubFetch(ipResponseFor: (url: string) => Response | null) {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                if (url === "https://api.github.com/repos/test-owner/test-repo") {
+                    return new Response("{}", { status: 200 });
+                }
+                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                    if ((init?.method ?? "GET").toUpperCase() === "PUT") return new Response("{}", { status: 200 });
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                const ipResponse = ipResponseFor(url);
+                if (ipResponse) return ipResponse;
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+    }
+
+    async function insertSource(strategy: string, url: string) {
+        const uniquePath = `strategy-log-${crypto.randomUUID()}.txt`;
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind(url, uniquePath, "update", strategy)
+            .run();
+        const row = (await env.WUYA.prepare("SELECT * FROM ip_sources WHERE github_path = ?")
+            .bind(uniquePath)
+            .first()) as { id: number };
+        return row.id;
+    }
+
+    async function captureLogs(run: () => Promise<unknown>): Promise<string[]> {
+        const logs: string[] = [];
+        const spy = vi.spyOn(console, "log").mockImplementation((msg?: unknown) => {
+            logs.push(String(msg));
+        });
+        try {
+            await run();
+        } finally {
+            spy.mockRestore();
+        }
+        return logs;
+    }
+
+    it("成功日志行带实际生效策略名", async () => {
+        await seedGitHubSettings();
+        const id = await insertSource("direct_regex", "https://example.com/ips.txt");
+        stubFetch((url) => (url === "https://example.com/ips.txt" ? new Response("1.1.1.1\n2.2.2.2") : null));
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        const successLine = logs.find((line) => line.includes("成功获取"));
+        expect(successLine).toBeDefined();
+        expect(successLine).toContain("direct_regex");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("回退后日志显示回退后真正生效的策略", async () => {
+        await seedGitHubSettings();
+        const id = await insertSource("phantomjs_cloud", "https://example.com/fallback.txt");
+        stubFetch((url) => {
+            if (url.startsWith("https://PhantomJsCloud.com")) return new Response("no ips here");
+            if (url === "https://example.com/fallback.txt") return new Response("10.0.0.1\n10.0.0.2");
+            return null;
+        });
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        const successLine = logs.find((line) => line.includes("成功获取"));
+        expect(successLine).toBeDefined();
+        // 写回退后真正生效的策略，并点明是从哪个策略退下来的
+        expect(successLine).toContain("direct_regex");
+        expect(successLine).toContain("phantomjs_cloud");
+
+        const updated = (await env.WUYA.prepare("SELECT fetch_strategy FROM ip_sources WHERE id = ?")
+            .bind(id)
+            .first()) as { fetch_strategy: string };
+        expect(updated.fetch_strategy).toBe("direct_regex");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+});
+
 describe("syncSystemDomains (FIX-02: 错误日志替代静默)", () => {
     it("syncDomainLogic throw: D1 writes failed status, log identifies failing domain", async () => {
         // 插入一个启用系统域名，source_domain 设为 internal:hostmonit:CM
