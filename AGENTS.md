@@ -42,7 +42,7 @@ Cloudflare Worker：域名克隆（DNS 同步）+ IP 聚合（推送 GitHub）�
 
 ## 交接
 
-跨会话交接文档放在 `docs/handoff/`，不要写进 `.scratch/`。
+跨会话交接文档放在 `.scratch/handoff/`。
 
 - 命名：`YYYYMMDD-HHMMSS-mmm-<主题>.md`。
 - 只写接手必需的信息：当前状态、未决项、技术坑、验证方式与建议技能。
