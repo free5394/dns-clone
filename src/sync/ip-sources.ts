@@ -24,7 +24,8 @@ interface IpSourceRow {
     url: string;
     github_path: string;
     commit_message: string;
-    fetch_strategy: string;
+    /** 列可空（迁移里的 fetch_strategy 无 NOT NULL），读取处一律按空串归一 */
+    fetch_strategy: string | null;
     is_enabled: number;
 }
 
@@ -157,8 +158,13 @@ export async function syncSingleIpSource(
         log(`======== 开始同步IP源: ${source.url} ========`);
 
         try {
-            const ips = await fetchIpsFromSource(source, db);
-            log(`成功获取 ${ips.length} 个IP。`);
+            const { ips, strategy, configuredStrategy } = await fetchIpsWithStrategy(source, db);
+            // issue #22 P4：日志写实际生效策略；确实发生过回退时才点明从哪个策略退下来的
+            const fellBack = configuredStrategy !== "" && configuredStrategy !== strategy;
+            const strategyNote = fellBack
+                ? `（抓取策略: ${strategy}，已从 ${configuredStrategy} 回退）`
+                : `（抓取策略: ${strategy}）`;
+            log(`成功获取 ${ips.length} 个IP${strategyNote}。`);
 
             const newContent = ips.join("\n");
             const oldContent = await getCurrentGitHubContent({ ...gh, path: source.github_path, log });
@@ -268,15 +274,26 @@ export function describeFetchError(e: unknown): string {
     return msg.length > 200 ? `${msg.slice(0, 200)}…` : msg;
 }
 
-/** 按策略抓取 IP（带排序 + 失败自动回退） */
-export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): Promise<string[]> {
+/** 抓取结果：除了 IP，还要带回本次真正生效的策略（issue #22 P4）。 */
+export interface IpFetchResult {
+    ips: string[];
+    /** 本次实际生效的抓取策略名（回退命中时为回退后的策略） */
+    strategy: string;
+    /** 调用前配置/缓存里的策略名，用于判断本次是否发生了回退 */
+    configuredStrategy: string;
+}
+
+/** 按策略抓取 IP（带排序 + 失败自动回退），并回报实际生效的策略 */
+export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database): Promise<IpFetchResult> {
     assertSafeHttpUrl(source.url);
+    // 列可空：NULL 归一到空串，避免日志里出现「已从 null 回退」
+    const configuredStrategy = source.fetch_strategy ?? "";
     // 构造尝试顺序：缓存策略优先，回退策略按声明顺序依次尝试
     const strategyNames = Object.keys(FETCH_STRATEGIES).filter((n) => {
         const applies = STRATEGY_APPLIES[n];
         return !applies || applies(source.url);
     });
-    const orderedNames = [source.fetch_strategy, ...strategyNames.filter((n) => n !== source.fetch_strategy)];
+    const orderedNames = [configuredStrategy, ...strategyNames.filter((n) => n !== configuredStrategy)];
 
     let lastError: unknown;
     const attempts: string[] = [];
@@ -286,7 +303,7 @@ export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): 
         try {
             const ips = await fn(source.url);
             if (ips && ips.length > 0) {
-                if (name !== source.fetch_strategy) {
+                if (name !== configuredStrategy) {
                     // 回退策略命中：更新传入对象的 fetch_strategy（调用方可感知），若提供了 db 则持久化
                     (source as { fetch_strategy: string }).fetch_strategy = name;
                     if (db) {
@@ -304,7 +321,7 @@ export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): 
                     }
                     return 0;
                 };
-                return ips.sort(sortIps);
+                return { ips: ips.sort(sortIps), strategy: name, configuredStrategy };
             }
             // 空结果也记账：源站返回 200 但没有 IP 时若静默跳过，诊断文案只剩抛错的策略，
             // 会把人误导成"换个代理就好"（实测 id=8 页面 tbody 为空，文案却只显示 proxy_codetabs 超时）
@@ -323,6 +340,12 @@ export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): 
     }
     const category = describeErrorCategory(lastError);
     throw new Error(`[${category}] 所有抓取策略均未能从该URL获取到IP${detail}，请检查URL或在添加/编辑IP源时重新探测。`);
+}
+
+/** @internal 兼容测试/旧调用方；生产同步走 fetchIpsWithStrategy（需要实际生效的策略信息）。 */
+export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): Promise<string[]> {
+    const { ips } = await fetchIpsWithStrategy(source, db);
+    return ips;
 }
 
 /** 三网 IP 分类（yd 移动 / dx 电信 / lt 联通），供三网抓取与表格解析共用。 */
