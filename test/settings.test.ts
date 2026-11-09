@@ -1,4 +1,5 @@
 // settings.test.ts — M-4：settings 清洗与配对校验的纯函数契约
+import { SELF, env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import {
     normalizeSettingsInput,
@@ -119,5 +120,70 @@ describe("hostmonit 抓取 key 的写入语义 (issue #25)", () => {
 
     it("属于敏感字段：安全设置视图不会回传明文", () => {
         expect(SENSITIVE_SETTINGS_KEYS.has("HOSTMONIT_API_KEY")).toBe(true);
+    });
+});
+
+// 种子密码（见 apply-migrations.ts）
+const PASSWORD = "test-password-123";
+
+async function loginCookie(): Promise<string> {
+    const res = await SELF.fetch("https://example.com/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: PASSWORD }),
+    });
+    expect(res.status).toBe(200);
+    return (res.headers.get("Set-Cookie") as string).split(";")[0];
+}
+
+async function readSettings(cookie: string): Promise<Record<string, unknown>> {
+    const res = await SELF.fetch("https://example.com/api/settings", { headers: { Cookie: cookie } });
+    expect(res.status).toBe(200);
+    return (await res.json()) as Record<string, unknown>;
+}
+
+async function seedHostmonitKey(value: string): Promise<void> {
+    await env.WUYA.prepare(
+        "INSERT INTO settings (key, value) VALUES ('HOSTMONIT_API_KEY', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    )
+        .bind(value)
+        .run();
+}
+
+async function clearHostmonitKey(): Promise<void> {
+    await env.WUYA.prepare("DELETE FROM settings WHERE key = 'HOSTMONIT_API_KEY'").run();
+}
+
+describe("HOSTMONIT_CONFIGURED 与抓取判据一致 (issue #32)", () => {
+    it("库里只有空白 key 时不报「已配置」（抓取本来就会回落默认）", async () => {
+        await seedHostmonitKey("   ");
+        const settings = await readSettings(await loginCookie());
+        expect(settings.HOSTMONIT_CONFIGURED).toBe(false);
+    });
+
+    it("提交纯空白 key 后仍不报「已配置」", async () => {
+        await clearHostmonitKey();
+        const cookie = await loginCookie();
+        const res = await SELF.fetch("https://example.com/api/settings", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({ HOSTMONIT_API_KEY: "   " }),
+        });
+        expect(res.status).toBe(200);
+        expect((await readSettings(cookie)).HOSTMONIT_CONFIGURED).toBe(false);
+    });
+
+    it("有效 key 报「已配置」，显式清除后不再报", async () => {
+        await seedHostmonitKey("custom-hostmonit-key");
+        const cookie = await loginCookie();
+        expect((await readSettings(cookie)).HOSTMONIT_CONFIGURED).toBe(true);
+
+        const res = await SELF.fetch("https://example.com/api/settings", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({ HOSTMONIT_API_KEY: null }),
+        });
+        expect(res.status).toBe(200);
+        expect((await readSettings(cookie)).HOSTMONIT_CONFIGURED).toBe(false);
     });
 });

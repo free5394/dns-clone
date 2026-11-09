@@ -17,7 +17,7 @@ import { fetchWithTimeout } from "../util/fetch.ts";
 import { HttpError, TimeoutError } from "../util/http-error.ts";
 import { assertSafeHttpUrl } from "../util/url-safety.ts";
 import { normalizeBatchSize } from "../util/batch-size.ts";
-import { HOSTMONIT_API_KEY } from "../db/settings.ts";
+import { HOSTMONIT_API_KEY, normalizeHostmonitKey } from "../db/settings.ts";
 import { forEachIsolated } from "../util/batch-sync.ts";
 
 interface IpSourceRow {
@@ -296,10 +296,11 @@ export interface IpFetchResult {
 /**
  * 解析本次实际使用的 hostmonit key（issue #25）：
  * 库里保存的非空值优先；未配置、已显式清除或只剩空白时回落到内置默认。
+ * 空白判定与设置页的「已配置」状态共用 normalizeHostmonitKey（issue #32）。
  */
 export async function resolveHostmonitKey(db: D1Database): Promise<string> {
     const stored = await getSetting(db, HOSTMONIT_API_KEY);
-    return (stored || "").trim() || DEFAULT_HOSTMONIT_API_KEY;
+    return normalizeHostmonitKey(stored) || DEFAULT_HOSTMONIT_API_KEY;
 }
 
 /** 按策略抓取 IP（带排序 + 失败自动回退），并回报实际生效的策略 */

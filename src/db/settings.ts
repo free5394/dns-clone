@@ -17,6 +17,19 @@ export const GITHUB_CONFIG_KEYS = ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO"
  */
 export const HOSTMONIT_API_KEY = "HOSTMONIT_API_KEY";
 
+/**
+ * 归一 hostmonit key：只保留 trim 后的内容（issue #32）。
+ * 判据与取值共用这一处 trim，避免路由与抓取逻辑各写一遍而产生「已配置」误报。
+ */
+export function normalizeHostmonitKey(stored: string | null | undefined): string {
+    return (stored ?? "").trim();
+}
+
+/** hostmonit key 是否算「已配置」：纯空白与未配置等价，抓取时都会回落内置默认 */
+export function isHostmonitKeyConfigured(stored: string | null | undefined): boolean {
+    return normalizeHostmonitKey(stored) !== "";
+}
+
 /** 用户可在设置页写入的全部配置键（配对校验与合并有效配置时使用） */
 export const CONFIG_SETTING_KEYS = [...CF_CONFIG_KEYS, ...GITHUB_CONFIG_KEYS] as const;
 
