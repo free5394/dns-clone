@@ -68,6 +68,12 @@ jobs:
             - name: 格式检查
               run: pnpm format:check
 
+            # 仪表盘内联脚本的语法与体积检查。此前它只靠实现者「记得跑」，
+            # 于是 esbuild 注入 __name 垫片这类只在运行时炸的缺陷可以一路合进 main。
+            # 现在由 CI 每次跑，坏了就红。
+            - name: 仪表盘脚本检查
+              run: pnpm check:dashboard
+
             # vitest run --coverage，比 pnpm test 多约 4 秒（istanbul 插桩），换来 coverage 路径进 CI。
             # 这条命令曾在 .gitignore / 依赖版本错配下静默坏过（@vitest/coverage-istanbul 5.0.5 vs vitest 4.1.11），
             # 现在由 CI 每次跑，坏了就红。
