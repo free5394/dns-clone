@@ -181,12 +181,15 @@ describe("单条同步结束后自动刷新列表 (issue #22 / #42)", () => {
         expect(planSyncCompletionActions("otherOutput")).toEqual([{ type: "hint", text: "同步完成，正在更新列表。" }]);
     });
 
-    it("页面注入该判定函数（静态契约：只锁注入点存在，行为由上方用例覆盖）", () => {
+    it("页面注入该判定函数并按序列执行（冒烟）", () => {
         const html = getDashboardPage([], [], {
             CF_CONFIGURED: true,
             GITHUB_CONFIGURED: true,
             zoneName: ZONE,
         });
+        // 静态契约（issue #42）：只锁「注入点存在 + 同步段按动作序列执行」两处接线，
+        // 刷新顺序行为已由上方 planSyncCompletionActions 用例覆盖；脱离 DOM 无法转成行为测试。
         expect(html).toContain("const planSyncCompletionActions = function planSyncCompletionActions");
+        expect(html).toContain("for (const action of planSyncCompletionActions(");
     });
 });

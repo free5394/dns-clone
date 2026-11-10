@@ -830,8 +830,8 @@ function getDashboardSyncScript() {
           // 动作序列由注入的纯函数判定（issue #42）：提示在前、刷新在后，顺序契约见 dashboard-helpers.js
           for (const action of planSyncCompletionActions(logOutputElem.id)) {
               if (action.type === 'hint') logOutputElem.textContent += '\\n' + action.text;
-              else if (action.target === 'domains') await refreshDomains();
-              else if (action.target === 'ipSources') await refreshIpSources();
+              else if (action.type === 'refresh' && action.target === 'domains') await refreshDomains();
+              else if (action.type === 'refresh' && action.target === 'ipSources') await refreshIpSources();
           }
       } catch (e) {
           logOutputElem.textContent += '\\n发生严重错误：\\n' + e.message;
