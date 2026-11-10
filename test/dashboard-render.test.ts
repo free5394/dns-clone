@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from "vitest";
 import { createDashboardRenderers } from "../src/ui/dashboard-render.js";
-import { escapeHtmlClient, canAddDomains } from "../src/ui/dashboard-helpers.js";
+import { escapeHtmlClient, canAddDomains, planSyncCompletionActions } from "../src/ui/dashboard-helpers.js";
 import { getDashboardPage } from "../src/ui/templates.js";
 
 const ZONE = "example.com";
@@ -149,7 +149,8 @@ describe("添加克隆目标按钮可用性 (issue #21)", () => {
         const html = getDashboardPage([], [], { CF_CONFIGURED: true, zoneName: "" });
 
         expect(html).not.toContain('id="addDomainBtn" disabled');
-        // 判定函数随脚本注入，保存设置后刷新按钮状态时调用同一份实现
+        // 静态契约（issue #42）：判定逻辑本身已由上方 canAddDomains 行为用例覆盖，
+        // 这里只锁「注入点存在 + DOM 接线 + 提示文案」，脱离 DOM 无法转成行为测试。
         expect(html).toContain("const canAddDomains = function canAddDomains");
         expect(html).toContain("document.getElementById('addDomainBtn').disabled = !canAddDomains(currentSettings);");
         // 区域名称缺失时提示会在保存时自动获取，而不是让人先去保存设置
@@ -157,34 +158,35 @@ describe("添加克隆目标按钮可用性 (issue #21)", () => {
     });
 });
 
-// issue #22（P3）：单条同步结束后列表必须自动刷新（无需 F5）。
-// 本地与浏览器实测均未复现"不刷新"，但这段顺序是行为契约，锁住防回归。
-// 断言必须切进流式函数体内：saveSettings 里也有 await refreshDomains()，
-// 全文 indexOf 会命中那一处，删掉流结束后的刷新照样绿（评审变异实验已证）。
-describe("单条同步结束后自动刷新列表 (issue #22)", () => {
-    it("SSE 流结束后先提示再刷新域名与 IP 源列表", () => {
+// issue #22（P3）：单条同步结束后列表必须自动刷新（无需 F5），且刷新必须排在流结束提示之后。
+// issue #42 把这条契约从「源码字符串断言」升级为纯函数行为测试：
+// planSyncCompletionActions 与页面注入的是同一份实现（templates.js 用 toString() 注入），
+// 用例直接调用它并断言返回的动作序列；删掉函数实现会让下面的用例全部失败（变异自证）。
+describe("单条同步结束后自动刷新列表 (issue #22 / #42)", () => {
+    it("域名日志先提示流结束，再刷新域名列表", () => {
+        expect(planSyncCompletionActions("logOutput")).toEqual([
+            { type: "hint", text: "同步完成，正在更新列表。" },
+            { type: "refresh", target: "domains" },
+        ]);
+    });
+
+    it("IP 源日志先提示流结束，再刷新 IP 源列表", () => {
+        expect(planSyncCompletionActions("ipLogOutput")).toEqual([
+            { type: "hint", text: "同步完成，正在更新列表。" },
+            { type: "refresh", target: "ipSources" },
+        ]);
+    });
+
+    it("其他日志面板只提示流结束，不刷新任何列表", () => {
+        expect(planSyncCompletionActions("otherOutput")).toEqual([{ type: "hint", text: "同步完成，正在更新列表。" }]);
+    });
+
+    it("页面注入该判定函数（静态契约：只锁注入点存在，行为由上方用例覆盖）", () => {
         const html = getDashboardPage([], [], {
             CF_CONFIGURED: true,
             GITHUB_CONFIGURED: true,
             zoneName: ZONE,
         });
-
-        // 结束锚点用带赋值的写法：裸 "window.individualSync" 在页面更早处也出现过，
-        // 用它做 end 会得到空切片，断言等于没写。
-        // 两个锚点都必须显式断言存在：indexOf 返回 -1 时 slice(start, -1) 仍非空，长度断言挡不住空转。
-        const startIndex = html.indexOf("async function handleStreamingRequest");
-        const endIndex = html.indexOf("window.individualSync = (id)");
-        expect(startIndex).toBeGreaterThanOrEqual(0);
-        expect(endIndex).toBeGreaterThan(startIndex);
-        const body = html.slice(startIndex, endIndex);
-
-        const hint = body.indexOf("同步完成，正在更新列表。");
-        expect(hint).toBeGreaterThan(-1);
-
-        // 两处刷新都必须排在"流结束"提示之后：早于落库刷新会读到旧数据
-        const domainRefresh = body.indexOf("await refreshDomains();", hint);
-        const ipRefresh = body.indexOf("await refreshIpSources();", hint);
-        expect(domainRefresh).toBeGreaterThan(hint);
-        expect(ipRefresh).toBeGreaterThan(hint);
+        expect(html).toContain("const planSyncCompletionActions = function planSyncCompletionActions");
     });
 });

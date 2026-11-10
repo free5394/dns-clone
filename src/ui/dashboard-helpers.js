@@ -15,6 +15,20 @@ export function canAddDomains(settings) {
 }
 
 /**
+ * 单条同步的 SSE 流结束后，按日志面板 id 决定要执行的动作序列（issue #22 / #42）。
+ * 返回有序数组：先「流结束提示」，再对应列表的刷新动作；未知面板只提示不刷新。
+ * 刷新必须排在提示之后：早于落库完成会读到旧数据（issue #22 的原始契约）。
+ * 页面侧（templates.js handleStreamingRequest）按序列逐项执行；
+ * 抽成纯函数是为了让这条顺序契约由行为测试直接驱动，而不是源码字符串断言。
+ */
+export function planSyncCompletionActions(logId) {
+    const actions = [{ type: "hint", text: "同步完成，正在更新列表。" }];
+    if (logId === "logOutput") actions.push({ type: "refresh", target: "domains" });
+    if (logId === "ipLogOutput") actions.push({ type: "refresh", target: "ipSources" });
+    return actions;
+}
+
+/**
  * 客户端 HTML 转义，与服务器端 escapeHtml 同语义。
  * 所有来自数据库、又要在仪表盘里拼 HTML 的字段都必须先过这里。
  */

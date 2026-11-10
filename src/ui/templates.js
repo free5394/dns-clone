@@ -1,5 +1,5 @@
 // templates.js — UI 模板函数（阶段 E 从 index.legacy.js 拆出）
-import { escapeHtmlClient, canAddDomains } from "./dashboard-helpers.js";
+import { escapeHtmlClient, canAddDomains, planSyncCompletionActions } from "./dashboard-helpers.js";
 import { createDashboardRenderers } from "./dashboard-render.js";
 import { createApiFetch } from "./dashboard-api.js";
 // 纯 JS 文件（tsc 不参与）：内含大量浏览器端 JS 模板字符串
@@ -792,6 +792,8 @@ function getDashboardInteractionScript() {
 // 仪表盘脚本 · 同步段（M-1）：流式同步、单条同步、设置保存
 function getDashboardSyncScript() {
     return `
+  // 流结束后的刷新判定来自 ./dashboard-helpers.js，注入后可直接被行为测试覆盖（issue #42）。
+  const planSyncCompletionActions = ${planSyncCompletionActions.toString()};
   async function handleStreamingRequest(url, btn, logOutputElem) {
       const allButtons = document.querySelectorAll('button'); allButtons.forEach(b => b.disabled = true); if (btn) btn.setAttribute('aria-busy', 'true'); // 进度只由日志面板呈现，按钮只禁用不改文案
       logOutputElem.style.display = 'block';
@@ -825,9 +827,12 @@ function getDashboardSyncScript() {
                   logOutputElem.scrollTop = logOutputElem.scrollHeight;
               }
           }
-          logOutputElem.textContent += '\\n同步完成，正在更新列表。';
-          if(logOutputElem.id === 'logOutput') await refreshDomains();
-          if(logOutputElem.id === 'ipLogOutput') await refreshIpSources();
+          // 动作序列由注入的纯函数判定（issue #42）：提示在前、刷新在后，顺序契约见 dashboard-helpers.js
+          for (const action of planSyncCompletionActions(logOutputElem.id)) {
+              if (action.type === 'hint') logOutputElem.textContent += '\\n' + action.text;
+              else if (action.target === 'domains') await refreshDomains();
+              else if (action.target === 'ipSources') await refreshIpSources();
+          }
       } catch (e) {
           logOutputElem.textContent += '\\n发生严重错误：\\n' + e.message;
           showNotification('同步任务发生错误', 'error');
