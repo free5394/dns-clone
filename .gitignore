@@ -59,3 +59,6 @@ ego-runs/
 .agents/
 .agent-teams/
 
+
+!wrangler.example.toml
+wrangler.*.toml
