@@ -343,6 +343,32 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
 
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
     });
+
+    it("fetch_strategy 为 NULL 时只写实际策略，不打「已从 null 回退」", async () => {
+        await seedGitHubSettings();
+        // 列可空（迁移里 fetch_strategy 无 NOT NULL）：直接插 NULL 模拟历史数据
+        const uniquePath = `strategy-log-${crypto.randomUUID()}.txt`;
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, NULL)"
+        )
+            .bind("https://example.com/null-strategy.txt", uniquePath, "update")
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind(uniquePath)
+            .first()) as { id: number };
+        stubFetch((url) => (url === "https://example.com/null-strategy.txt" ? new Response("9.9.9.9") : null));
+
+        const logs = await captureLogs(() => syncSingleIpSource(row.id, env, false));
+
+        const successLine = logs.find((line) => line.includes("成功获取"));
+        expect(successLine).toBeDefined();
+        // NULL 已在读取处归一为空串：既不能当回退（不出现「已从」），也不能把 null 打进日志
+        expect(successLine).toMatch(/（抓取策略: [a-z_]+）/);
+        expect(successLine).not.toContain("已从");
+        expect(successLine).not.toContain("null");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(row.id).run();
+    });
 });
 
 describe("syncSystemDomains (FIX-02: 错误日志替代静默)", () => {

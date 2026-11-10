@@ -131,7 +131,7 @@ $ node scripts/predeploy.cjs
 | `database_id 仍是未替换的占位符`            | 用提交态 `wrangler.toml` 或示例配置直接部署 | 维护者走 `.scratch/wrangler.deploy.toml`；自助部署填入自己的 ID |
 | `--config .scratch/...` 报入口文件不存在    | 不在仓库根执行，或临时配置被移动            | 回到仓库根执行；相对路径以配置文件所在目录为基准                |
 | `找不到 wrangler.toml，请从仓库根目录运行`  | 在子目录执行 `pnpm predeploy`               | 回到仓库根                                                      |
-| `未检测到 CLOUDFLARE_API_TOKEN`             | 项目根没有 `.env` 或变量为空                | 创建 `.env` 并写入账号级 Token（仓库未提供 `.env.example`）     |
+| `未检测到 CLOUDFLARE_API_TOKEN`             | 项目根没有 `.env` 或变量为空                | 复制 `.env.example` 为 `.env`，写入账号级 Token                 |
 | 部署后 500 / 日志 `no such table: settings` | D1 绑定缺失或库未被初始化                   | 确认绑定名是 `WUYA`；更新到最新代码后首次访问会触发幂等建表     |
 
 日常静态校验仍是 `pnpm check`；部署前的最后一道闸门是 `pnpm predeploy`（只对仓库根 `wrangler.toml` 生效，线上路径靠 `--config` 指定）。
