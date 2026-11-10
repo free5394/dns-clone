@@ -30,6 +30,6 @@ crons = ["0,30 * * * *"]
 binding = "WUYA"
 # 改成你自己创建的 D1 库名
 database_name = "wuya-db"
-# 哨兵值：未替换时 scripts/predeploy.cjs 会拦截部署
+# 哨兵值：部署前必须替换为真实 D1 ID（未替换时由 wrangler / Cloudflare 在部署期报错）
 database_id = "REPLACE_WITH_YOUR_D1_ID"
 migrations_dir = "src/db/migrations"
