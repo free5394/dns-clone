@@ -174,10 +174,9 @@ describe("单条同步结束后自动刷新列表 (issue #22)", () => {
         // 两个锚点都必须显式断言存在：indexOf 返回 -1 时 slice(start, -1) 仍非空，长度断言挡不住空转。
         const startIndex = html.indexOf("async function handleStreamingRequest");
         const endIndex = html.indexOf("window.individualSync = (id)");
-        expect(startIndex).toBeGreaterThan(-1);
+        expect(startIndex).toBeGreaterThanOrEqual(0);
         expect(endIndex).toBeGreaterThan(startIndex);
         const body = html.slice(startIndex, endIndex);
-        expect(body.length).toBeGreaterThan(0);
 
         const hint = body.indexOf("同步完成，正在更新列表。");
         expect(hint).toBeGreaterThan(-1);

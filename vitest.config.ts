@@ -15,9 +15,9 @@ export default defineProject({
         }),
     ],
     test: {
-        // .agents/ 是 DSH worktree 的落地目录、.scratch/ 是本地临时产物目录，两者都被
-        // .gitignore 忽略但仍在仓库树下；不排除会把同一批用例跑两遍（实测 27 → 54 个文件），
-        // 也让残留 worktree 的失败测试冒充主仓失败。
+        // 仓库树下的本地副本工作树会被 vitest 一起收集：.scratch/worktrees/*（已注册 worktree，
+        // 实测多出 27 个 test 文件）与 .agents/worktrees/*（DSH 默认落点）。不排除会让同一批
+        // 用例跑两遍（27 → 54 个文件），且旧副本的失败会冒充主仓失败。
         exclude: [...configDefaults.exclude, "**/.agents/**", "**/.scratch/**"],
         globalSetup: ["./test/global-setup.ts"],
         setupFiles: ["./test/apply-migrations.ts"],

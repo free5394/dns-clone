@@ -78,8 +78,8 @@ pnpm dlx wrangler d1 create wuya-db
 #    （复制后还要把 name 从 your-worker-name 改成你自己的 Worker 名）
 $EDITOR wrangler.toml
 
-# 3. 在项目根创建 .env，写入账号级 Token（.env 已被 .gitignore 的 *.env 条目忽略）
-#    CLOUDFLARE_API_TOKEN=xxxxx
+# 3. 复制 .env.example 为 .env 并填入账号级 Token（.env 已被 .gitignore 忽略）
+#    cp .env.example .env  然后改 CLOUDFLARE_API_TOKEN
 #    获取：CF Dashboard → 我的个人资料 → API Tokens → Edit Cloudflare Workers
 
 # 4. 部署前校验（哨兵值未替换会失败退出）
