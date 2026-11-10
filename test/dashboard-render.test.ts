@@ -170,12 +170,13 @@ describe("单条同步结束后自动刷新列表 (issue #22)", () => {
         });
 
         // 结束锚点用带赋值的写法：裸 "window.individualSync" 在页面更早处也出现过，
-        // 用它做 end 会得到空切片，断言等于没写
-        const body = html.slice(
-            html.indexOf("async function handleStreamingRequest"),
-            html.indexOf("window.individualSync = (id)")
-        );
-        expect(body.length).toBeGreaterThan(0);
+        // 用它做 end 会得到空切片，断言等于没写。
+        // 两个锚点都必须显式断言存在：indexOf 返回 -1 时 slice(start, -1) 仍非空，长度断言挡不住空转。
+        const startIndex = html.indexOf("async function handleStreamingRequest");
+        const endIndex = html.indexOf("window.individualSync = (id)");
+        expect(startIndex).toBeGreaterThanOrEqual(0);
+        expect(endIndex).toBeGreaterThan(startIndex);
+        const body = html.slice(startIndex, endIndex);
 
         const hint = body.indexOf("同步完成，正在更新列表。");
         expect(hint).toBeGreaterThan(-1);
