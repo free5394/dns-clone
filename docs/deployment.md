@@ -10,49 +10,47 @@
 ## 一句话口径
 
 - 仓库提交态的 `wrangler.toml` 是**模板**：`database_id` 永远是哨兵值 `REPLACE_WITH_YOUR_D1_ID`（定义见 [GLOSSARY](../GLOSSARY.md)），真实值不入库。
-- 线上部署用维护者本机的 `.scratch/wrangler.deploy.toml`。`.scratch/` 已被 `.gitignore` 的 `.scratch/` 条目忽略，**真实值不写进仓库，也不写进任何文档**。
+- 线上部署用维护者本机的 `wrangler.prod.toml` + `.env.prod`。两者已被 `.gitignore` 的 `wrangler.*.toml` / `*.env.*` 条目忽略，**真实值不写进仓库，也不写进任何文档**。
 - **生产 D1 是唯一真相源**：不做生产 ↔ 本地双向同步，本地库只作开发夹具。
 
 ## 三份配置各是什么
 
-| 文件                            | 是否入库   | 作用                                          | `database_id`      |
-| ------------------------------- | ---------- | --------------------------------------------- | ------------------ |
-| `wrangler.toml`                 | 是         | `pnpm dev` / `pnpm cf-typegen` / 自助部署模板 | 哨兵值             |
-| `wrangler.example.toml`         | 是         | 带逐字段注释的示例，复制后填写                | 哨兵值             |
-| `.scratch/wrangler.deploy.toml` | 否（忽略） | 维护者本机的线上部署配置                      | 真实值（只在本机） |
+| 文件                               | 是否入库   | 作用                                          | `database_id`      |
+| ---------------------------------- | ---------- | --------------------------------------------- | ------------------ |
+| `wrangler.toml`                    | 是         | `pnpm dev` / `pnpm cf-typegen` / 自助部署模板 | 哨兵值             |
+| `wrangler.example.toml`            | 是         | 带逐字段注释的示例，复制后填写                | 哨兵值             |
+| `wrangler.prod.toml` + `.env.prod` | 否（忽略） | 维护者本机的线上部署配置与 Token              | 真实值（只在本机） |
 
 `wrangler.example.toml` 与 `wrangler.toml` 字段相同。线上那份与仓库那份只差两处，其余字段一致：
 
 1. **`name`**：线上是 `cf-dns-clon`，仓库是 `dns-clone`（以 `pnpm exec wrangler deployments list` 的实际输出为准）；
 2. **`database_id`**：线上填真实值，仓库保留哨兵值。
 
-另外，`.scratch/` 里的配置位于子目录，所以它的 `main` / `migrations_dir` 要带 `../` 前缀 —— wrangler 按**配置文件所在目录**解析这两个相对路径。
-
 ## 为什么故意不一致
 
 - **不泄露部署指纹**：公开仓库里不放真实 D1 ID；ID 配合账号信息足以定位具体资源。
-- **防止误部署**：仓库配置的 `name` 与线上不同，`database_id` 又是哨兵值。`pnpm run deploy` 会先跑 `predeploy`，哨兵值未替换就失败退出，顺手跑一下不会把模板发到生产。
+- **防止误部署**：仓库配置的 `name` 与线上不同，`database_id` 又是哨兵值，直接 `pnpm run deploy` 会在 wrangler / Cloudflare 的部署期失败，发不到生产。
 - **模板必须可填空**：仓库配置同时服务自助部署的人，只能保留哨兵值；真实值属于维护者本机。
-- **CI 与脚本无法误触线上**：`.github/workflows/ci.yml` 没有部署步骤；只要不显式传 `--config .scratch/wrangler.deploy.toml`，任何默认读 `wrangler.toml` 的命令都到不了线上 Worker。
+- **CI 与脚本无法误触线上**：`.github/workflows/ci.yml` 没有部署步骤；只要不显式传 `--config wrangler.prod.toml`（或走 `pnpm run deploy:prod`），任何默认读 `wrangler.toml` 的命令都到不了线上 Worker。
 
 ## 部署
 
 ### 维护者：发布到线上（唯一正确路径）
 
-前置：Node ≥ 22（`package.json#engines`）、已 `pnpm install`、当前进程环境里有账号级 `CLOUDFLARE_API_TOKEN`（模板：Edit Cloudflare Workers）。
+前置：Node ≥ 22（`package.json#engines`）、已 `pnpm install`；本机存在 `wrangler.prod.toml`（真实 `name` / `database_id`）与 `.env.prod`（账号级 `CLOUDFLARE_API_TOKEN`，模板：Edit Cloudflare Workers）。两者均不入库；换机时按上文两处差异重建，不要从仓库找真实值。
 
 ```bash
-# 1. 确认本机临时配置存在（不入库；换机时按上文两处差异重建，不要从仓库找真实值）
-ls .scratch/wrangler.deploy.toml
+# 1. 确认本机生产配置与凭据存在
+ls wrangler.prod.toml .env.prod
 
-# 2. 先 dry-run：验证配置、入口路径与打包，不产生上传
-pnpm exec wrangler deploy --config .scratch/wrangler.deploy.toml --dry-run --outdir .scratch/wrangler-dry-run
+# 2. 先 dry-run：验证配置、入口路径与打包，不产生上传（额外参数透传给 wrangler）
+pnpm run deploy:prod --dry-run --outdir .scratch/wrangler-dry-run
 
 # 3. 正式发布（会真实上传并切换线上版本）
-pnpm exec wrangler deploy --config .scratch/wrangler.deploy.toml
+pnpm run deploy:prod
 ```
 
-第 2 步实测输出（wrangler 4.157.0，2026-11-09）：
+第 2 步实测输出（wrangler 4.157.0，2026-11-09，当时经旧路径 `--config .scratch/wrangler.deploy.toml` 实测，与新命令产物等价）：
 
 ```text
 Total Upload: 169.88 KiB / gzip: 42.65 KiB
@@ -63,7 +61,7 @@ env.WUYA (wuya-db)      D1 Database
 --dry-run: exiting now.
 ```
 
-- 这条路径**不经过** `pnpm predeploy`：`scripts/predeploy.cjs` 只校验仓库根的 `wrangler.toml`。所以发布前的闸门是第 2 步的 dry-run 加上人工确认。
+- 发布前的闸门是第 2 步的 dry-run 加上人工确认（原 `pnpm predeploy` 占位符校验脚本已删除）。
 - 第 3 步本轮**未执行**（会真实发布）。依据：与第 2 步是同一条命令，只去掉 `--dry-run`；`pnpm exec wrangler deploy --help` 确认 `--config` / `--dry-run` / `--outdir` 都是受支持参数。
 - 真实 D1 ID 忘了时用 `pnpm exec wrangler d1 list` 查（需已认证；本轮未执行）。
 
@@ -82,27 +80,15 @@ $EDITOR wrangler.toml
 #    cp .env.example .env  然后改 CLOUDFLARE_API_TOKEN
 #    获取：CF Dashboard → 我的个人资料 → API Tokens → Edit Cloudflare Workers
 
-# 4. 部署前校验（哨兵值未替换会失败退出）
-pnpm predeploy
-
-# 5. 部署（显式调用 package.json 的 deploy 脚本）
+# 4. 部署（显式调用 package.json 的 deploy 脚本；哨兵值未替换会在部署期报错）
 pnpm run deploy
 ```
 
-`pnpm run deploy` 会先自动执行 `predeploy`，再由 `scripts/load-deploy-env.cjs` 注入 `.env` 的 Token 并调用 `wrangler deploy`（默认读仓库根 `wrangler.toml`）。`wrangler.toml` 里的 `keep_vars = true` 会保留 Dashboard 手配的 Variables / Bindings。
-
-提交态下的实际拦截效果（本轮实测，pnpm 12.11.2）：
-
-```text
-$ node scripts/predeploy.cjs
-❌ wrangler.toml 中的 database_id 未就绪：
-- WUYA：database_id 仍是未替换的占位符。
-   请先运行 wrangler d1 create 获取真实 D1 ID，然后替换 database_id。
-   详见 README §CLI 部署指南。
-[ELIFECYCLE] Command failed with exit code 1.
-```
+`pnpm run deploy` 由 `scripts/load-deploy-env.cjs` 注入 `.env` 的 Token 并调用 `wrangler deploy`（默认读仓库根 `wrangler.toml`）。`wrangler.toml` 里的 `keep_vars = true` 会保留 Dashboard 手配的 Variables / Bindings。
 
 ### 本文命令的验证记录
+
+> 下表为 2026-11-09 的历史记录，当时命令仍是 `.scratch/wrangler.deploy.toml` + `pnpm predeploy` 形态；本轮切换到 `pnpm run deploy:prod` 后尚未复测。
 
 | 命令 / 检查                                                                                                     | 状态   | 结果或依据                                 |
 | --------------------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------ |
@@ -126,12 +112,12 @@ $ node scripts/predeploy.cjs
 
 ## 常见错误
 
-| 现象                                        | 原因                                        | 处理                                                            |
-| ------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------- |
-| `database_id 仍是未替换的占位符`            | 用提交态 `wrangler.toml` 或示例配置直接部署 | 维护者走 `.scratch/wrangler.deploy.toml`；自助部署填入自己的 ID |
-| `--config .scratch/...` 报入口文件不存在    | 不在仓库根执行，或临时配置被移动            | 回到仓库根执行；相对路径以配置文件所在目录为基准                |
-| `找不到 wrangler.toml，请从仓库根目录运行`  | 在子目录执行 `pnpm predeploy`               | 回到仓库根                                                      |
-| `未检测到 CLOUDFLARE_API_TOKEN`             | 项目根没有 `.env` 或变量为空                | 复制 `.env.example` 为 `.env`，写入账号级 Token                 |
-| 部署后 500 / 日志 `no such table: settings` | D1 绑定缺失或库未被初始化                   | 确认绑定名是 `WUYA`；更新到最新代码后首次访问会触发幂等建表     |
+| 现象                                                                 | 原因                                        | 处理                                                                           |
+| -------------------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------ |
+| `database_id 仍是未替换的占位符`（wrangler / Cloudflare 部署期报错） | 用提交态 `wrangler.toml` 或示例配置直接部署 | 维护者走 `wrangler.prod.toml`（`pnpm run deploy:prod`）；自助部署填入自己的 ID |
+| `--config` 报入口文件不存在                                          | 不在仓库根执行，或配置文件被移动            | 回到仓库根执行；相对路径以配置文件所在目录为基准                               |
+| `未找到 .env.prod` / `未找到 wrangler.prod.toml`                     | `deploy:prod` 依赖这两个本机文件            | 分别按 `.env.example` 与 `wrangler.example.toml` 创建（均不入库）              |
+| `未检测到 CLOUDFLARE_API_TOKEN`                                      | 对应 `.env` / `.env.<env>` 没有该变量或为空 | 复制 `.env.example` 为对应文件，写入账号级 Token                               |
+| 部署后 500 / 日志 `no such table: settings`                          | D1 绑定缺失或库未被初始化                   | 确认绑定名是 `WUYA`；更新到最新代码后首次访问会触发幂等建表                    |
 
-日常静态校验仍是 `pnpm check`；部署前的最后一道闸门是 `pnpm predeploy`（只对仓库根 `wrangler.toml` 生效，线上路径靠 `--config` 指定）。
+日常静态校验仍是 `pnpm check`；部署前的最后一道闸门是 dry-run（`pnpm run deploy:prod --dry-run`，线上路径由脚本注入 `--config wrangler.prod.toml`）。

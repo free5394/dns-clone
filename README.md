@@ -244,25 +244,25 @@ pnpm dev
 
 ### 常用脚本
 
-| 命令                   | 作用                                                                 |
-| ---------------------- | -------------------------------------------------------------------- |
-| `pnpm dev`             | 启动本地 workerd 调试环境（默认 8787 端口）                          |
-| `pnpm test`            | 运行 `@cloudflare/vitest-plugin` 测试套件（workerd 内执行）          |
-| `pnpm test:coverage`   | 运行测试并生成覆盖率报告（istanbul 插桩）                            |
-| `pnpm check`           | 静态门禁：typecheck、语言、UTF-8、lint、格式（pre-commit 跑的这条）  |
-| `pnpm verify`          | `pnpm check` + 全量测试，想一次跑完时用                              |
-| `pnpm check:dashboard` | 渲染仪表盘并解析注入的客户端脚本（Node 侧语法闸门，不进 CI）         |
-| `pnpm typecheck`       | TypeScript 严格模式检查（`tsc --noEmit`）                            |
-| `pnpm build:single`    | 用 esbuild 打包 `src/index.ts` → `dist/worker.bundle.js`             |
-| `pnpm predeploy`       | 部署前校验：检查 `wrangler.toml` 中 `database_id` 是否替换           |
-| `pnpm run deploy`      | CLI 部署到 Cloudflare（自动注入 `.env` 中的 `CLOUDFLARE_API_TOKEN`） |
-| `pnpm cf-typegen`      | 重新生成 `worker-configuration.d.ts`（gitignore）                    |
+| 命令                   | 作用                                                                                                                  |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `pnpm dev`             | 启动本地 workerd 调试环境（默认 8787 端口）                                                                           |
+| `pnpm test`            | 运行 `@cloudflare/vitest-plugin` 测试套件（workerd 内执行）                                                           |
+| `pnpm test:coverage`   | 运行测试并生成覆盖率报告（istanbul 插桩）                                                                             |
+| `pnpm check`           | 静态门禁：typecheck、语言、UTF-8、lint、格式（pre-commit 跑的这条）                                                   |
+| `pnpm verify`          | `pnpm check` + 全量测试，想一次跑完时用                                                                               |
+| `pnpm check:dashboard` | 渲染仪表盘并解析注入的客户端脚本（Node 侧语法闸门，不进 CI）                                                          |
+| `pnpm typecheck`       | TypeScript 严格模式检查（`tsc --noEmit`）                                                                             |
+| `pnpm build:single`    | 用 esbuild 打包 `src/index.ts` → `dist/worker.bundle.js`                                                              |
+| `pnpm run deploy`      | CLI 部署（自动注入 `.env` 中的 `CLOUDFLARE_API_TOKEN`；`--env <name>` 可切换 `.env.<name>` + `wrangler.<name>.toml`） |
+| `pnpm run deploy:prod` | 生产部署：等价 `deploy --env prod`，需本机 `.env.prod` 与 `wrangler.prod.toml`（均不入库）                            |
+| `pnpm cf-typegen`      | 重新生成 `worker-configuration.d.ts`（gitignore）                                                                     |
 
 ### CLI 部署（`pnpm run deploy`）
 
 > 先用 `wrangler d1 create` 创建生产 D1 数据库，拿到真实 UUID。
 
-> **仓库配置与线上配置故意不同**：提交态的 `wrangler.toml` 是模板（`database_id` 为哨兵值），维护者的线上部署走本机 `.scratch/wrangler.deploy.toml`。原因、路径与可执行命令见 [docs/deployment.md](docs/deployment.md)。
+> **仓库配置与线上配置故意不同**：提交态的 `wrangler.toml` 是模板（`database_id` 为哨兵值），维护者的线上部署走本机 `wrangler.prod.toml` + `.env.prod`（`pnpm run deploy:prod`）。原因、路径与可执行命令见 [docs/deployment.md](docs/deployment.md)。
 
 ```bash
 # 1. 创建生产 D1 数据库（记下输出的 database_id）
@@ -276,10 +276,8 @@ pnpm dlx wrangler d1 create wuya-db
 #    cp .env.example .env  然后改 CLOUDFLARE_API_TOKEN
 #    （获取：CF Dashboard → 我的个人资料 → API Tokens → Edit Cloudflare Workers）
 
-# 4. 部署前校验（哨兵值未替换会报错退出）
-pnpm predeploy
-
-# 5. 部署到 Cloudflare（显式调用 package.json 的 deploy 脚本）
+# 4. 部署到 Cloudflare（显式调用 package.json 的 deploy 脚本；
+#    database_id 未替换时由 wrangler / Cloudflare 在部署期报错）
 pnpm run deploy
 ```
 
@@ -298,8 +296,7 @@ pnpm run deploy
 ├── vitest.config.ts     # @cloudflare/vitest-plugin 测试配置
 ├── scripts/
 │   ├── build-single-file.mjs  # esbuild 打包 → dist/worker.bundle.js
-│   ├── predeploy.cjs          # 部署前占位符校验
-│   └── load-deploy-env.cjs    # pnpm run deploy 前置：注入 .env 到 wrangler
+│   └── load-deploy-env.cjs    # pnpm run deploy 前置：解析 --env、注入 .env / .env.<env> 并选择 wrangler 配置
 ├── docs/                # 文档（deployment.md：部署例外与「生产为唯一真相源」）
 ├── src/
 │   ├── index.ts         # Worker 入口（fetch + scheduled 组装，约 80 行）
