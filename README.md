@@ -269,8 +269,7 @@ pnpm dev
 pnpm dlx wrangler d1 create wuya-db
 
 # 2. 把 database_id 填入 wrangler.toml（替换哨兵值 REPLACE_WITH_YOUR_D1_ID）
-#    想从示例起步：cp wrangler.example.toml wrangler.toml
-#    （复制后还要把 name 从 your-worker-name 改成你自己的 Worker 名）
+#    （自助部署建议同时把 name 改成你自己的 Worker 名）
 
 # 3. 复制 .env.example 为 .env，填入账号级 Token（用于 wrangler CLI 认证）
 #    cp .env.example .env  然后改 CLOUDFLARE_API_TOKEN
@@ -290,8 +289,7 @@ pnpm run deploy
 ├── README.md            # 本文档
 ├── CLAUDE.md            # 给 AI 助手的代码事实摘要
 ├── package.json         # 脚本：dev / test / typecheck / deploy / cf-typegen
-├── wrangler.toml       # Worker 配置（compatibility_date 2026-05-20，keep_vars；database_id 为哨兵值）
-├── wrangler.example.toml # 部署配置示例（字段齐全，database_id 为哨兵值；见 docs/deployment.md）
+├── wrangler.toml       # Worker 配置，兼自助部署模板（compatibility_date 2026-05-20，keep_vars；database_id 为哨兵值）
 ├── tsconfig.json        # TypeScript strict 配置
 ├── vitest.config.ts     # @cloudflare/vitest-plugin 测试配置
 ├── scripts/

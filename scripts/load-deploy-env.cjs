@@ -82,7 +82,7 @@ if (envName) {
     const configPath = path.join(ROOT, `wrangler.${envName}.toml`);
     if (!fs.existsSync(configPath)) {
         console.error(
-            `❌ 未找到配置文件 wrangler.${envName}.toml。\n   指定 --env ${envName} 需要该配置文件（不入库，本机维护真实 database_id；模板见 wrangler.example.toml）。`
+            `❌ 未找到配置文件 wrangler.${envName}.toml。\n   指定 --env ${envName} 需要该配置文件（不入库，本机维护真实 database_id；模板见提交态 wrangler.toml）。`
         );
         process.exit(1);
     }

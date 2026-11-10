@@ -13,15 +13,14 @@
 - 线上部署用维护者本机的 `wrangler.prod.toml` + `.env.prod`。两者已被 `.gitignore` 的 `wrangler.*.toml` / `*.env.*` 条目忽略，**真实值不写进仓库，也不写进任何文档**。
 - **生产 D1 是唯一真相源**：不做生产 ↔ 本地双向同步，本地库只作开发夹具。
 
-## 三份配置各是什么
+## 两份配置各是什么
 
-| 文件                               | 是否入库   | 作用                                          | `database_id`      |
-| ---------------------------------- | ---------- | --------------------------------------------- | ------------------ |
-| `wrangler.toml`                    | 是         | `pnpm dev` / `pnpm cf-typegen` / 自助部署模板 | 哨兵值             |
-| `wrangler.example.toml`            | 是         | 带逐字段注释的示例，复制后填写                | 哨兵值             |
-| `wrangler.prod.toml` + `.env.prod` | 否（忽略） | 维护者本机的线上部署配置与 Token              | 真实值（只在本机） |
+| 文件                               | 是否入库   | 作用                                                          | `database_id`      |
+| ---------------------------------- | ---------- | ------------------------------------------------------------- | ------------------ |
+| `wrangler.toml`                    | 是         | `pnpm dev` / `pnpm cf-typegen` / 自助部署模板（含逐字段注释） | 哨兵值             |
+| `wrangler.prod.toml` + `.env.prod` | 否（忽略） | 维护者本机的线上部署配置与 Token                              | 真实值（只在本机） |
 
-`wrangler.example.toml` 与 `wrangler.toml` 字段相同。线上那份与仓库那份只差两处，其余字段一致：
+线上那份与仓库那份只差两处，其余字段一致：
 
 1. **`name`**：线上是 `cf-dns-clon`，仓库是 `dns-clone`（以 `pnpm exec wrangler deployments list` 的实际输出为准）；
 2. **`database_id`**：线上填真实值，仓库保留哨兵值。
@@ -72,8 +71,7 @@ env.WUYA (wuya-db)      D1 Database
 pnpm dlx wrangler d1 create wuya-db
 
 # 2. 把 database_id 填入 wrangler.toml，替换哨兵值 REPLACE_WITH_YOUR_D1_ID
-#    想从示例起步：cp wrangler.example.toml wrangler.toml
-#    （复制后还要把 name 从 your-worker-name 改成你自己的 Worker 名）
+#    （自助部署建议同时把 name 改成你自己的 Worker 名）
 $EDITOR wrangler.toml
 
 # 3. 复制 .env.example 为 .env 并填入账号级 Token（.env 已被 .gitignore 忽略）
@@ -114,9 +112,9 @@ pnpm run deploy
 
 | 现象                                                                 | 原因                                        | 处理                                                                           |
 | -------------------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------ |
-| `database_id 仍是未替换的占位符`（wrangler / Cloudflare 部署期报错） | 用提交态 `wrangler.toml` 或示例配置直接部署 | 维护者走 `wrangler.prod.toml`（`pnpm run deploy:prod`）；自助部署填入自己的 ID |
+| `database_id 仍是未替换的占位符`（wrangler / Cloudflare 部署期报错） | 用提交态 `wrangler.toml` 直接部署           | 维护者走 `wrangler.prod.toml`（`pnpm run deploy:prod`）；自助部署填入自己的 ID |
 | `--config` 报入口文件不存在                                          | 不在仓库根执行，或配置文件被移动            | 回到仓库根执行；相对路径以配置文件所在目录为基准                               |
-| `未找到 .env.prod` / `未找到 wrangler.prod.toml`                     | `deploy:prod` 依赖这两个本机文件            | 分别按 `.env.example` 与 `wrangler.example.toml` 创建（均不入库）              |
+| `未找到 .env.prod` / `未找到 wrangler.prod.toml`                     | `deploy:prod` 依赖这两个本机文件            | 分别按 `.env.example` 与提交态 `wrangler.toml` 模板创建（均不入库）            |
 | `未检测到 CLOUDFLARE_API_TOKEN`                                      | 对应 `.env` / `.env.<env>` 没有该变量或为空 | 复制 `.env.example` 为对应文件，写入账号级 Token                               |
 | 部署后 500 / 日志 `no such table: settings`                          | D1 绑定缺失或库未被初始化                   | 确认绑定名是 `WUYA`；更新到最新代码后首次访问会触发幂等建表                    |
 
