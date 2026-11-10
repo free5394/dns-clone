@@ -179,7 +179,7 @@ Cron `* * * * *`（每分钟）触发 `scheduled` handler，通过 `settings.nex
     - 访问你的 Worker URL 并在后面加上 `/admin` (例如 `https://.../admin`)，使用你的密码登录。
     - 进入 **系统设置** 页面，将上面获取到的所有信息填入对应的输入框中。
     - 点击 **保存设置**。系统会自动验证 Cloudflare 凭据，并为你的域名初始化 8 个内置 IP 源 + 10 个内置域名（含三网优选）。
-    - **三网优选 IP 的 hostmonit key（可选）**：内置三网源通过 hostmonit 的公开接口取 IP，默认使用内置 key。若日志出现 `HostMonit API HTTP 4xx` 或返回 0 个 IP（对方轮换 key / 限流），到 **系统设置 → IP 源抓取设置** 填入新 key 并保存即可，下一次同步立即生效。该输入框「留空」的含义取决于是否配置过自定义 key：
+    - **三网优选 IP 的 hostmonit key（可选）**：内置三网源通过 hostmonit 的公开接口取 IP，默认使用内置 key。若日志出现 `HostMonit API HTTP 4xx/5xx`（实际串形如 `HostMonit API HTTP 429`）或返回 0 个 IP（对方轮换 key / 限流），到 **系统设置 → IP 源抓取设置** 填入新 key 并保存即可，下一次同步立即生效。该输入框「留空」的含义取决于是否配置过自定义 key：
         - **从未配置过**：留空保存即继续使用内置默认 key。
         - **已配置过自定义 key**：留空保存表示**保持当前 key 不变**，不会回退到内置默认；要恢复内置默认，请勾选下方的「清除自定义 Key（恢复内置默认）」再保存。清除与留空是两个不同动作，只有勾选清除才会删掉已保存的 key。
         - 只输入空白字符等同留空；key 属敏感字段，页面只显示「是否已配置」，不回显原文。
@@ -376,7 +376,7 @@ D1 数据库（绑定名 `WUYA`）共 5 张表，由 `initializeAndMigrateDataba
 | `key`   | TEXT PRIMARY KEY | 配置项名（如 `CF_API_TOKEN`、`BATCH_SIZE`） |
 | `value` | TEXT NOT NULL    | 配置值                                      |
 
-> 已知键：`ADMIN_PASSWORD_HASH`、`PASSWORD_SALT`、`CF_API_TOKEN`、`CF_ZONE_ID`、`CF_ZONE_NAME`、`GITHUB_TOKEN`、`GITHUB_OWNER`、`GITHUB_REPO`、`HOSTMONIT_API_KEY`（可选，留空用内置默认）、`THREE_NETWORK_SOURCE`、`BATCH_SIZE`（默认 10）、`next_sync_task`、`last_migrated_at`
+> 已知键：`ADMIN_PASSWORD_HASH`、`PASSWORD_SALT`、`CF_API_TOKEN`、`CF_ZONE_ID`、`CF_ZONE_NAME`、`GITHUB_TOKEN`、`GITHUB_OWNER`、`GITHUB_REPO`、`HOSTMONIT_API_KEY`（可选；留空与清除的语义见步骤 ③ 的「三网优选 IP 的 hostmonit key」）、`THREE_NETWORK_SOURCE`、`BATCH_SIZE`（默认 10）、`next_sync_task`、`last_migrated_at`
 
 ### `domains`（克隆目标域名）
 
