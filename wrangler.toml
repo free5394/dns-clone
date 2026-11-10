@@ -3,7 +3,7 @@
 # 由 wrangler dev / wrangler types / wrangler deploy 共同读取
 # 本文件同时是自助部署模板：database_id 提交态永远是哨兵值，
 # 真实 database_id、API Token、账号邮箱一律不要提交。
-# 注意：database_id 占位符 REPLACE_WITH_YOUR_D1_ID 必须在部署前替换为真实 ID，否则 scripts/predeploy.cjs 会拦截
+# 注意：database_id 占位符 REPLACE_WITH_YOUR_D1_ID 必须在部署前替换为真实 ID（未替换时由 wrangler / Cloudflare 在部署期报错）
 
 name = "dns-clone" # 自助部署建议改成你自己的 Worker 名
 main = "src/index.ts"

@@ -12,7 +12,7 @@
     "scripts": {
         "dev": "wrangler dev",
         "deploy": "node scripts/load-deploy-env.cjs",
-        "predeploy": "node scripts/predeploy.cjs",
+        "deploy:prod": "node scripts/load-deploy-env.cjs --env prod",
         "build:single": "node scripts/build-single-file.mjs",
         "cf-typegen": "wrangler types",
         "pretypecheck": "node scripts/ensure-worker-types.cjs",
