@@ -12,6 +12,7 @@ Cloudflare Worker：域名克隆（DNS 同步）+ IP 聚合（推送 GitHub）�
 - 修改 `src/ui/templates.js` 或任何界面模板前，必读 `docs/ui-redesign.md` §11。
 - 架构深化候选：`docs/architecture-review.md`；跨模块领域术语先看 `GLOSSARY.md`。
 - Issue 流程：`docs/agents/issue-tracker.md`；triage 标签：`docs/agents/triage-labels.md`；领域文档约定：`docs/agents/domain.md`。
+- 多 agent 协作（泳道、改派、合并放行）：`docs/agents/agent-teams.md`。
 
 ## 实现红线
 
@@ -28,7 +29,7 @@ Cloudflare Worker：域名克隆（DNS 同步）+ IP 聚合（推送 GitHub）�
 ## 验证
 
 - `pnpm test` 与本机 `pnpm dev` 同跑时，worker 偶发启动失败；需要确定性结果时先停 dev server。
-- 提交前跑 `pnpm check`（typecheck、语言门禁、UTF-8 门禁、lint、format check）；pre-commit 钩子跑这条组合命令，CI 在 `.github/workflows/ci.yml` 分步跑同样五项。实际检查的文件集合见下面两条。
+- 提交前跑 `pnpm check`（typecheck、语言门禁、UTF-8 门禁、lint、format check、仪表盘脚本检查）；pre-commit 钩子跑这条组合命令，CI 在 `.github/workflows/ci.yml` 分步跑同样六项。实际检查的文件集合见下面两条。
 - 语言门禁：默认有暂存内容看暂存，否则看工作树；`LANGUAGE_CHECK_BASE` 优先，有值时改看 `base...HEAD`——验证未提交改动时不要设它。
 - UTF-8 门禁：有暂存内容时只扫暂存文件，无暂存时扫全仓受管文本文件（含存量，跳过真二进制），拦非法 UTF-8 与 BOM。本地 pre-commit 因此只看本次提交的文件，CI 检出后无暂存才等于全仓查。
 - 标语言的 Markdown 围栏会被 Prettier 重排；需要原样保留时删除语言标注或加 `<!-- prettier-ignore -->`。
