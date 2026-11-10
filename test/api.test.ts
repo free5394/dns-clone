@@ -4,6 +4,7 @@ import { SELF, env } from "cloudflare:test";
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { handleApiRequest } from "../src/routes/api.ts";
 import { verifyPassword } from "../src/util/auth.ts";
+import { DEFAULT_HOSTMONIT_API_KEY, resolveHostmonitKey } from "../src/sync/ip-sources.ts";
 
 // 种子密码（见 apply-migrations.ts）
 const PASSWORD = "test-password-123";
@@ -1601,5 +1602,90 @@ describe("IP 源路径解码残留百分号 (Q1)", () => {
             .bind("mq1/a b.txt")
             .first<{ github_path: string }>();
         expect(row?.github_path).toBe("mq1/a b.txt");
+    });
+});
+
+// HOSTMONIT_API_KEY 三态语义的 API 级用例（issue #31）
+// 说明：/api/settings 的路由级用例统一放在本文件，复用上面的 PASSWORD/loginAndGetCookie，
+// 避免 test/settings.test.ts 再复制一份登录逻辑（issue #31 评审 low）。
+async function readSafeSettings(cookie: string): Promise<Record<string, unknown>> {
+    const res = await SELF.fetch("https://example.com/api/settings", { headers: { Cookie: cookie } });
+    expect(res.status).toBe(200);
+    return (await res.json()) as Record<string, unknown>;
+}
+
+async function postSettings(cookie: string, payload: Record<string, unknown>): Promise<Response> {
+    return SELF.fetch("https://example.com/api/settings", {
+        method: "POST",
+        headers: { Cookie: cookie, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
+}
+
+/** 直接读 D1 行，用于断言「库值有没有被改写」，而不只是看接口布尔 */
+async function readHostmonitKeyRow(): Promise<string | null> {
+    const row = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'HOSTMONIT_API_KEY'").first<{
+        value: string;
+    }>();
+    return row?.value ?? null;
+}
+
+async function seedHostmonitKey(value: string): Promise<void> {
+    await env.WUYA.prepare(
+        "INSERT INTO settings (key, value) VALUES ('HOSTMONIT_API_KEY', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    )
+        .bind(value)
+        .run();
+}
+
+async function clearHostmonitKey(): Promise<void> {
+    await env.WUYA.prepare("DELETE FROM settings WHERE key = 'HOSTMONIT_API_KEY'").run();
+}
+
+describe("HOSTMONIT_API_KEY 三态 API 级语义 (issue #31)", () => {
+    it("保存非空 key：trim 后落库、报「已配置」，响应不回传明文", async () => {
+        await clearHostmonitKey();
+        const cookie = await loginAndGetCookie();
+        const plaintext = "api-level-hostmonit-key";
+
+        const res = await postSettings(cookie, { HOSTMONIT_API_KEY: `  ${plaintext}  ` });
+        expect(res.status).toBe(200);
+        expect(await res.text()).not.toContain(plaintext);
+
+        const settings = await readSafeSettings(cookie);
+        expect(settings.HOSTMONIT_CONFIGURED).toBe(true);
+        expect(JSON.stringify(settings)).not.toContain(plaintext);
+        expect(await readHostmonitKeyRow()).toBe(plaintext);
+    });
+
+    it("先自定义再提交纯空白：库值保持不变，不误清", async () => {
+        await seedHostmonitKey("keep-me-key");
+        const cookie = await loginAndGetCookie();
+
+        const res = await postSettings(cookie, { HOSTMONIT_API_KEY: "   " });
+        expect(res.status).toBe(200);
+
+        // 评审 low：不只看布尔，直接断言 D1 行没有被空串改写
+        expect(await readHostmonitKeyRow()).toBe("keep-me-key");
+        expect((await readSafeSettings(cookie)).HOSTMONIT_CONFIGURED).toBe(true);
+    });
+
+    it("保存 null：库行删除、不再报「已配置」，抓取回落内置默认", async () => {
+        await seedHostmonitKey("clear-me-key");
+        const cookie = await loginAndGetCookie();
+
+        const res = await postSettings(cookie, { HOSTMONIT_API_KEY: null });
+        expect(res.status).toBe(200);
+
+        expect(await readHostmonitKeyRow()).toBeNull();
+        expect((await readSafeSettings(cookie)).HOSTMONIT_CONFIGURED).toBe(false);
+        expect(await resolveHostmonitKey(env.WUYA)).toBe(DEFAULT_HOSTMONIT_API_KEY);
+    });
+
+    it("库里只有空白 key（历史脏数据）时不报「已配置」", async () => {
+        // issue #32 回归：判据与 resolveHostmonitKey 共用 normalizeHostmonitKey
+        await seedHostmonitKey("   ");
+        expect((await readSafeSettings(await loginAndGetCookie())).HOSTMONIT_CONFIGURED).toBe(false);
+        expect(await resolveHostmonitKey(env.WUYA)).toBe(DEFAULT_HOSTMONIT_API_KEY);
     });
 });
