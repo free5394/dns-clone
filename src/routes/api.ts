@@ -25,6 +25,7 @@ import { fetchWithTimeout } from "../util/fetch.ts";
 import {
     CONFIG_SETTING_KEYS,
     HOSTMONIT_API_KEY,
+    isHostmonitKeyConfigured,
     normalizeSettingsInput,
     validateEffectiveSettings,
 } from "../db/settings.ts";
@@ -226,8 +227,9 @@ async function apiGetSettings(request: Request, db: D1Database): Promise<Respons
         zoneName: zoneName || "",
         CF_CONFIGURED: Boolean(token && zoneId),
         GITHUB_CONFIGURED: Boolean(github.token && github.owner && github.repo),
-        // 只回传是否已自定义，key 原文属于敏感字段（getSafeSettings 已剔除）
-        HOSTMONIT_CONFIGURED: Boolean(hostmonitKey),
+        // 只回传是否已自定义，key 原文属于敏感字段（getSafeSettings 已剔除）；
+        // 判据与抓取一致：纯空白等同未配置（issue #32）
+        HOSTMONIT_CONFIGURED: isHostmonitKeyConfigured(hostmonitKey),
     });
 }
 
