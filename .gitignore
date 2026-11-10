@@ -39,6 +39,9 @@ dist/
 *.env.*
 !.env.example
 
+wrangler.*.toml
+!wrangler.example.toml
+
 # wrangler types 生成的环境类型（由 pnpm cf-typegen 重新生成）
 worker-configuration.d.ts
 
@@ -59,6 +62,3 @@ ego-runs/
 .agents/
 .agent-teams/
 
-
-!wrangler.example.toml
-wrangler.*.toml
