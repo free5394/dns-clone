@@ -1670,6 +1670,25 @@ describe("HOSTMONIT_API_KEY 三态 API 级语义 (issue #31)", () => {
         expect((await readSafeSettings(cookie)).HOSTMONIT_CONFIGURED).toBe(true);
     });
 
+    it("库里本来没有 key 时提交纯空白：不新增库行，也不报「已配置」", async () => {
+        // issue #37 R1：起点是「没有这一行」，与「已有 key 再提交空白」是不同分支
+        await clearHostmonitKey();
+        const cookie = await loginAndGetCookie();
+        expect(await readHostmonitKeyRow()).toBeNull();
+
+        const res = await postSettings(cookie, { HOSTMONIT_API_KEY: "   " });
+        expect(res.status).toBe(200);
+
+        // 「没有行」而不是「行值是空串」：直接数行数
+        const rowCount = await env.WUYA.prepare(
+            "SELECT COUNT(*) AS n FROM settings WHERE key = 'HOSTMONIT_API_KEY'"
+        ).first<{ n: number }>();
+        expect(rowCount?.n).toBe(0);
+        expect(await readHostmonitKeyRow()).toBeNull();
+        expect((await readSafeSettings(cookie)).HOSTMONIT_CONFIGURED).toBe(false);
+        expect(await resolveHostmonitKey(env.WUYA)).toBe(DEFAULT_HOSTMONIT_API_KEY);
+    });
+
     it("保存 null：库行删除、不再报「已配置」，抓取回落内置默认", async () => {
         await seedHostmonitKey("clear-me-key");
         const cookie = await loginAndGetCookie();

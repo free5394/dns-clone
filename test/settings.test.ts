@@ -5,6 +5,8 @@ import { describe, it, expect } from "vitest";
 import {
     normalizeSettingsInput,
     validateEffectiveSettings,
+    normalizeHostmonitKey,
+    isHostmonitKeyConfigured,
     WRITABLE_SETTING_KEYS,
     SECRET_SETTING_KEYS,
     SENSITIVE_SETTINGS_KEYS,
@@ -121,5 +123,23 @@ describe("hostmonit 抓取 key 的写入语义 (issue #25)", () => {
 
     it("属于敏感字段：安全设置视图不会回传明文", () => {
         expect(SENSITIVE_SETTINGS_KEYS.has("HOSTMONIT_API_KEY")).toBe(true);
+    });
+});
+
+describe("hostmonit key 判据一致性 (issue #37 R2)", () => {
+    // 同一批输入下，两个导出函数必须给出互相自洽的结论，避免「显示未配置但抓取用了自定义值」这类分叉
+    const inputs: Array<string | null | undefined> = ["", "   ", "\t\n ", "  key  ", null, undefined];
+
+    it("isHostmonitKeyConfigured 与 normalizeHostmonitKey 对同一批输入保持一致", () => {
+        for (const input of inputs) {
+            expect(isHostmonitKeyConfigured(input)).toBe(normalizeHostmonitKey(input) !== "");
+        }
+    });
+
+    it("空白与缺失都归一为空串，非空值只去掉首尾空白", () => {
+        expect(normalizeHostmonitKey("   ")).toBe("");
+        expect(normalizeHostmonitKey(null)).toBe("");
+        expect(normalizeHostmonitKey(undefined)).toBe("");
+        expect(normalizeHostmonitKey("  key  ")).toBe("key");
     });
 });
