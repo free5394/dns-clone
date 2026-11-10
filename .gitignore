@@ -30,14 +30,14 @@ node_modules/
 .wrangler/
 dist/
 
-# 本地 secrets （勿提交；模板见 .dev.vars.example）
+# 本地 secrets （勿提交；本项目运行时配置存 D1，不需要 .dev.vars）
 *.vars
 *.vars.*
 
-# 本地环境变量 （勿提交；模板见 .env.example）
-!.env.example
+# 本地环境变量（勿提交；模板 .env.example 可提交）
 *.env
 *.env.*
+!.env.example
 
 # wrangler types 生成的环境类型（由 pnpm cf-typegen 重新生成）
 worker-configuration.d.ts

@@ -279,7 +279,7 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
         );
     }
 
-    async function insertSource(strategy: string, url: string) {
+    async function insertSource(strategy: string | null, url: string) {
         const uniquePath = `strategy-log-${crypto.randomUUID()}.txt`;
         await env.WUYA.prepare(
             "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
@@ -340,6 +340,22 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
             .bind(id)
             .first()) as { fetch_strategy: string };
         expect(updated.fetch_strategy).toBe("direct_regex");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("fetch_strategy 为 NULL 时只写实际策略，不打「已从 null 回退」", async () => {
+        await seedGitHubSettings();
+        // 列可空（迁移里 fetch_strategy 无 NOT NULL）：插入 NULL 模拟历史数据
+        const id = await insertSource(null, "https://example.com/null-strategy.txt");
+        stubFetch((url) => (url === "https://example.com/null-strategy.txt" ? new Response("9.9.9.9") : null));
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        const successLine = logs.find((line) => line.includes("成功获取"));
+        // NULL 已在读取处归一为空串，fellBack 因此为 false：只写实际策略，不带回退说明
+        expect(successLine).toMatch(/（抓取策略: direct_regex）/);
+        expect(successLine).not.toContain("已从");
 
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
     });

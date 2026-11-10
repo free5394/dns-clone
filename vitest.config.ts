@@ -1,6 +1,6 @@
 // vitest.config.ts — 阶段 F：vitest-pool-workers 测试配置
 // 从 vitest/config 导入 defineProject，用于 multi-project 配置（R1 修订）
-import { defineProject } from "vitest/config";
+import { configDefaults, defineProject } from "vitest/config";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 import path from "node:path";
 
@@ -15,6 +15,10 @@ export default defineProject({
         }),
     ],
     test: {
+        // 仓库树下的本地副本工作树会被 vitest 一起收集：.scratch/worktrees/*（已注册 worktree，
+        // 实测多出 27 个 test 文件）与 .agents/worktrees/*（DSH 默认落点）。不排除会让同一批
+        // 用例跑两遍（27 → 54 个文件），且旧副本的失败会冒充主仓失败。
+        exclude: [...configDefaults.exclude, "**/.agents/**", "**/.scratch/**"],
         globalSetup: ["./test/global-setup.ts"],
         setupFiles: ["./test/apply-migrations.ts"],
         // Q14 决策：单 worker 串行（避免 D1 SQLite 多进程锁）+ 文件级并行
