@@ -41,6 +41,49 @@ gh(["pr", "merge", prArg, "--merge", "--delete-branch"]);
 const after = JSON.parse(gh(["pr", "view", prArg, "--json", "state,mergedAt,mergeCommit"]));
 if (after.state !== "MERGED") fail(`合并命令执行后状态仍是 ${after.state}，请人工核查`);
 
+/**
+ * 合并后把本地 base 分支同步到远端。
+ * gh 的 `--delete-branch` 会顺带尝试快进本地分支，多 worktree 时它只会打印
+ * `fatal: Cannot fast-forward to multiple branches` 然后收场——于是合并成功但本地落后。
+ * 这里自己做，并把结果写进台账；同步失败不影响已完成的合并，只作为待办报出来。
+ */
+function syncLocalBase(base, mergeCommit) {
+    const result = { branch: base, switched: false, fastForwarded: false, head: null, note: null };
+    const run = (args) => {
+        try {
+            const out = execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+            return { ok: true, out: out.trim() };
+        } catch (error) {
+            return { ok: false, out: (error.stderr ?? error.message ?? "").toString().trim() };
+        }
+    };
+
+    const switched = run(["switch", base]);
+    if (!switched.ok) {
+        result.note = `切到 ${base} 失败：${switched.out}`;
+        return result;
+    }
+    result.switched = true;
+
+    const pulled = run(["pull", "--ff-only"]);
+    if (!pulled.ok) {
+        result.note = `pull --ff-only 失败：${pulled.out}`;
+    }
+
+    const head = run(["rev-parse", "HEAD"]);
+    if (head.ok) {
+        result.head = head.out;
+        result.fastForwarded = mergeCommit ? head.out === mergeCommit : false;
+    }
+    if (!result.fastForwarded && !result.note) {
+        result.note = `本地 ${base} 未到合并提交 ${mergeCommit ?? "(未知)"}，请检查是否有本地提交或未推送改动`;
+    }
+    return result;
+}
+
+const localSync = syncLocalBase(info.baseRefName, after.mergeCommit?.oid ?? null);
+if (!localSync.fastForwarded) console.error(`[merge-pr] 本地同步未完成：${localSync.note}`);
+
 // 回执即台账：调用方把这段 JSON 贴回来，不需要再手抄 hash。
 console.log(
     JSON.stringify(
@@ -52,6 +95,7 @@ console.log(
             state: after.state,
             mergedAt: after.mergedAt,
             mergeCommit: after.mergeCommit?.oid ?? null,
+            localSync,
         },
         null,
         2
