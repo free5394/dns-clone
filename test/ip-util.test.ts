@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
     isValidIpv4,
     isValidIpv6,
+    dedupeSortedIps,
     normalizeIpv6,
     extractIpv4,
     extractIpv6,
@@ -150,6 +151,26 @@ describe("排序与截断", () => {
             ipv4: ["1.1.1.1"],
             ipv6: [],
         });
+    });
+});
+
+describe("去重排序流水线（dedupeSortedIps，方案 §7.3）", () => {
+    it("IPv4 按规范化值去重、IPv6 按 RFC 5952 归并，两侧都排好序", () => {
+        const result = dedupeSortedIps(
+            ["10.0.0.1", "2.0.0.2", "01.2.3.4", "1.2.3.4"],
+            ["2001:db8:0:0:0:0:0:1", "fe80::1", "2001:db8::1"]
+        );
+
+        expect(result).toEqual({
+            ipv4: ["1.2.3.4", "2.0.0.2", "10.0.0.1"],
+            ipv6: ["2001:db8::1", "fe80::1"],
+        });
+    });
+
+    it("IPv6 去掉首尾空白后再归一；:: 与 IPv4-mapped 不产出", () => {
+        const result = dedupeSortedIps([], [" 2001:db8::1 ", "::", "::ffff:192.0.2.1", "bad"]);
+
+        expect(result).toEqual({ ipv4: [], ipv6: ["2001:db8::1"] });
     });
 });
 

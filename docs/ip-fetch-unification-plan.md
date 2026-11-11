@@ -54,12 +54,12 @@
 
 ### 3.2 IP 抓取与 GitHub 链路
 
-- [ip-sources.ts](../src/sync/ip-sources.ts#L43-L47)：唯一提取函数 `extractIpv4`，仅 IPv4，段值 ≤255 过滤。
-- [ip-sources.ts](../src/sync/ip-sources.ts#L50-L100)：五个策略，每个策略内部直接调用 `extractIpv4`：
+- [ip-sources.ts](../src/sync/ip-sources.ts#L42-L48)：`FetchStrategyContext` 承载策略上下文（HostMonit 密钥等）。IP 提取统一走 [util/ip.ts](../src/util/ip.ts#L165-L171) 的 `extractIpv4`，仅 IPv4，段值 ≤255 过滤。
+- [ip-sources.ts](../src/sync/ip-sources.ts#L53-L100)：五个策略只负责取回正文，提取由调用方统一做：
     - `direct_regex`、`phantomjs_cloud`、`proxy_codetabs`、`jina_reader`、`hostmonit_api`。
-- [ip-sources.ts](../src/sync/ip-sources.ts#L307-L367)：`fetchIpsWithStrategy` 负责 SSRF 校验、策略回退、IPv4 数值排序、回退策略持久化。
-- [ip-sources.ts](../src/sync/ip-sources.ts#L148-L222)：`syncSingleIpSource` 抓取后 `ips.join("\n")` 与远端比对，无变化标 `no_change`，否则 `updateFileOnGitHub`。
-- [github.ts](../src/sync/github.ts#L150-L231)：`getCurrentGitHubContent`（404→null）、`updateFileOnGitHub`（GET sha → PUT base64）。
+- [ip-sources.ts](../src/sync/ip-sources.ts#L389-L453)：`fetchIpsForTarget` 是抓取主干——SSRF 校验、策略链回退、`parseContent` 解析（内含 IPv4 数值排序）、回退策略持久化；[fetchIpsWithStrategy](../src/sync/ip-sources.ts#L460-L472) 只是「成功但 0 条」那一层的薄包装。
+- [ip-sources.ts](../src/sync/ip-sources.ts#L173-L275)：`syncSingleIpSource` 抓取后 `ips.join("\n")` 与远端比对，无变化标 `no_change`，否则 `updateFileOnGitHub`。
+- [github.ts](../src/sync/github.ts#L170-L239)：`getCurrentGitHubContent`（404→null）、`updateFileOnGitHub`（GET sha → PUT base64）。
 - [github-proxy.ts](../src/routes/github-proxy.ts)：订阅器只按 `github_path` 白名单读主文件。
 
 **现状结论**：GitHub 链路只有 IPv4，没有 IPv6，也没有伴生文件。
@@ -73,7 +73,7 @@
     - 否则：浅层克隆，只取 CNAME。
 - [domains.ts](../src/sync/domains.ts#L573-L597)：`resolveRecursively` 校验并返回最终 A/AAAA（原内联正则已由本方案 §7.1 的共享内核取代，见 §7.3）。
 - [domains.ts](../src/sync/domains.ts#L506-L570)：`syncDomainLogic` 解析 → 空结果判定 → `updateCloudflareDns` → 状态落库。
-- [domains.ts](../src/sync/domains.ts#L654-L792)：`updateCloudflareDns` 分页拉取、差异比对、分块增删；固定 `proxied=false`，TTL 取域名行，**不写 `comment`**。
+- [domains.ts](../src/sync/domains.ts#L654-L792)：`updateCloudflareDns` 分页拉取、差异比对、分块增删；固定 `proxied=false`，TTL 取域名行；只有记录集合发生增删时才写/刷新 `comment`（§12.4），`no_change` 不产生任何 PATCH。
 
 **现状结论**：域名链路有三种解析方式，浅层克隆不产出 IP；所有来源都没有记录数上限，也没有更新时间备注。
 
@@ -179,7 +179,7 @@
 - `isValidIpv6(text)`：锚定全串匹配 + 结构校验（`::` 至多一次、展开后组数 ≤8、每段 ≤4 位十六进制）。不复用 `domains.ts` 原有的无锚定正则——该正则只在 DoH 场景碰巧可用（每条应答恰为一个干净 IP），放到任意正文上会放行 `::before`、`IP=::1` 等子串误匹配；方案落地后该内联正则已删除，DoH 分支同样改走本内核。
 - `normalizeIpv6(text)`：去方括号、转小写；含 `%zone` 或非法形态返回 null。
 - `canonicalizeIpv4(text)` / `canonicalizeIpv6(text)`：去重前把等值写法收敛到同一字符串——IPv4 去每段前导零，IPv6 按 RFC 5952 压缩；非法返回 null。
-- `dedupeSortedIps({ ipv4, ipv6 })`：§7.3 的收尾流水线（规范化 → 去重 → 各自排序），**URL 分支与 DNS 分支共用这一份**，规则只维护一处。
+- `dedupeSortedIps(ipv4s, ipv6s)`：§7.3 的收尾流水线（规范化 → 去重 → 各自排序），**URL 分支与 DNS 分支共用这一份**，规则只维护一处。
 - `extractIpv4(text)` / `extractIpv6(text)`：全局匹配提取候选，逐项经 `isValidIpv4` / `isValidIpv6` 严格过滤，再 `Set` 去重。
 - `sortIpv4(list)`：数值升序（沿用现有比较器）。
 - `sortIpv6(list)`：规范化后字典序。

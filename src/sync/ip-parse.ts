@@ -380,7 +380,8 @@ export interface ParsedIps {
  * 统一解析入口（§7.1）：正文 + 配置 → `{ ipv4, ipv6 }`。
  * 配置非法时返回空结果（错误由 validateParseConfig 在保存 / 探测入口返回给用户），
  * 正文为空、无匹配、非 JSON、路径不存在、正则不可构造一律按未匹配处理，不抛错。
- * 结果统一走「严格校验 → 去重 → IPv4 数值升序 / IPv6 规范化字典序」（§7.3）。
+ * 结果统一走「严格校验 → 规范化 → 去重 → 排序」（§7.3）：IPv4 去前导零后按数值升序，
+ * IPv6 按 RFC 5952 收敛写法后按字典序。
  */
 export function parseContent(text: string, mode: unknown, param?: unknown): ParsedIps {
     const config = validateParseConfig(mode, param);

@@ -241,7 +241,7 @@ export function dedupeSortedIps(ipv4s: string[], ipv6s: string[]): { ipv4: strin
     }
     const v6 = new Set<string>();
     for (const ip of ipv6s) {
-        const canonical = canonicalizeIpv6(ip);
+        const canonical = canonicalizeIpv6(ip.trim());
         if (canonical !== null && isPublishableIpv6(canonical)) v6.add(canonical);
     }
     return { ipv4: sortIpv4([...v4]), ipv6: sortIpv6([...v6]) };
