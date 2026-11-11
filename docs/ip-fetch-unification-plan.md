@@ -85,7 +85,7 @@
 - [settings.ts](../src/db/settings.ts#L36-L49)：写入白名单；`BATCH_SIZE` 已有整数范围校验范例。
 - [api.ts](../src/routes/api.ts#L315-L398)：域名新增/更新校验；`source_domain` 仅允许 hostname 或 `internal:hostmonit:(yd|dx|lt)`；目标前缀为单 label 或 `@`；TTL 规则见 [api.ts](../src/routes/api.ts#L357-L365)。
 - [api.ts](../src/routes/api.ts#L513-L538)：IP 源校验：URL 走 SSRF + 2048 上限，路径归一 + 512 上限，提交信息 1–200，策略白名单。
-- [api.ts](../src/routes/api.ts#L621-L670)：探测接口按策略串行尝试，总预算 25s，返回 `strategy / ipCount / sampleIps`。
+- [api.ts](../src/routes/api.ts#L621-L670)：探测接口按策略串行尝试，总预算 25s，返回 `strategy / ipv4Count / ipv6Count / sampleIps / sampleIpv6`。
 - [url-safety.ts](../src/util/url-safety.ts#L74-L113)：SSRF 防护覆盖十进制、十六进制、IPv4-mapped、私有段、元数据域名。
 
 ### 3.5 UI 与测试
@@ -320,7 +320,6 @@
     "strategy": "direct_regex",
     "ipv4Count": 12,
     "ipv6Count": 3,
-    "ipCount": 12, // 兼容现有前端，等于 ipv4Count
     "sampleIps": ["1.1.1.1", "..."],
     "sampleIpv6": ["2606:4700::1", "..."],
 }
@@ -328,6 +327,7 @@
 
 - 探测总预算 25 秒、策略串行顺序保持不变。
 - 解析配置非法时直接 400，不进入抓取。
+- 不返回 `ipCount`：该字段是早期「IPv4 单一计数」时代的兼容别名，与 `ipv4Count` 同值冗余，仓库内前端已全部改用 `ipv4Count`/`ipv6Count`，故删除（issue #58）。仅当出现**可举证的**外部调用方依赖该别名时，才允许以显式别名形式恢复，并在本票补记依赖方证据。
 
 ### 9.4 系统设置
 

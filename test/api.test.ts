@@ -1163,10 +1163,18 @@ describe("端点直测补齐 (M-12)", () => {
                 env
             );
             expect(res.status).toBe(200);
-            const body = (await res.json()) as { success?: boolean; strategy?: string; ipCount?: number };
+            const body = (await res.json()) as {
+                success?: boolean;
+                strategy?: string;
+                ipv4Count?: number;
+                ipv6Count?: number;
+            };
             expect(body.success).toBe(true);
             expect(body.strategy).toBe("direct_regex");
-            expect(body.ipCount).toBe(2);
+            expect(body.ipv4Count).toBe(2);
+            expect(body.ipv6Count).toBe(0);
+            // ipCount 兼容字段已移除，响应只保留 ipv4Count / ipv6Count 一份真相
+            expect(body).not.toHaveProperty("ipCount");
         } finally {
             globalThis.fetch = origFetch;
         }
@@ -1329,7 +1337,6 @@ describe("IP 源解析模式 (issue #50)", () => {
                 strategy?: string;
                 ipv4Count?: number;
                 ipv6Count?: number;
-                ipCount?: number;
                 sampleIps?: string[];
                 sampleIpv6?: string[];
             };
@@ -1337,7 +1344,7 @@ describe("IP 源解析模式 (issue #50)", () => {
             expect(body.strategy).toBe("direct_regex");
             expect(body.ipv4Count).toBe(2);
             expect(body.ipv6Count).toBe(1);
-            expect(body.ipCount).toBe(2);
+            expect(body).not.toHaveProperty("ipCount");
             expect(body.sampleIps).toEqual(["1.1.1.1", "8.8.8.8"]);
             expect(body.sampleIpv6).toEqual(["2606:4700:4700::1111"]);
         } finally {
