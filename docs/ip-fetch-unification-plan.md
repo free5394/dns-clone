@@ -67,11 +67,11 @@
 ### 3.3 域名解析与 DNS 链路
 
 - [domains.ts](../src/sync/domains.ts#L52-L66)：`getDnsFromDoh` 走 Cloudflare DoH，失败返回空数组。
-- [domains.ts](../src/sync/domains.ts#L231-L279)：`resolveRecordsForDomain` 三个分支：
+- [domains.ts](../src/sync/domains.ts#L338-L407)：`resolveRecordsForDomain` 四个分支：
     - `internal:hostmonit:*`：三网优选 IP（HTML 表格解析），同批缓存，失败保留上次成功缓存；
     - `is_deep_resolve=1`：递归跟随 CNAME，最终取 A/AAAA；
     - 否则：浅层克隆，只取 CNAME。
-- [domains.ts](../src/sync/domains.ts#L348-L381)：`resolveRecursively` 内联 IPv4 / IPv6 正则校验。
+- [domains.ts](../src/sync/domains.ts#L552-L585)：`resolveRecursively` 内联 IPv4 / IPv6 正则校验（该内联正则已由本方案 §7.1 的共享内核取代，见 §7.3）。
 - [domains.ts](../src/sync/domains.ts#L282-L345)：`syncDomainLogic` 解析 → 空结果判定 → `updateCloudflareDns` → 状态落库。
 - [domains.ts](../src/sync/domains.ts#L427-L529)：`updateCloudflareDns` 分页拉取、差异比对、分块增删；固定 `proxied=false`，TTL 取域名行，**不写 `comment`**。
 
@@ -118,7 +118,9 @@
   → 定时/手动同步
     → 域名：DoH 解析（跟随 CNAME）→ A / AAAA / CNAME
     → URL ：策略链抓正文 → parseContent(parse_mode, parse_param) → IPv4 / IPv6
-    → 校验 → 去重 → 排序 → 各取前 N
+    → 产出 IP 的分支各自过共享内核：校验 → 去重 → 规范化 → 排序
+      （三网与深度解析同口径；CNAME 分支不产出 IP，不参与校验与排序）
+    → 出口统一按 MAX_IPS_PER_TYPE 截断（排序先于截断，故「前 N」即序最小的 N 条）
     → 与 Cloudflare 现有记录比对
        ├ 缺失：新增（带 comment）
        ├ 多余：删除
@@ -143,7 +145,7 @@
 ### 6.1 域名输入
 
 - 复用 [getDnsFromDoh](../src/sync/domains.ts#L52-L66)。
-- 深度解析：复用 [resolveRecursively](../src/sync/domains.ts#L348-L381)，跟随 CNAME 直到最终 A/AAAA；无最终 IP 时回退为 CNAME 记录。
+- 深度解析：复用 [resolveRecursively](../src/sync/domains.ts#L552-L585)，跟随 CNAME 直到最终 A/AAAA；无最终 IP 时回退为 CNAME 记录。最终 A/AAAA 过共享内核校验、去重、规范化与排序（§7.3）。
 - 浅层克隆：只取 CNAME，不参与 IP 上限与备注。
 - 域名输入不抓取网页正文，不读取解析配置。
 
@@ -174,7 +176,7 @@
 **`src/util/ip.ts`**
 
 - `isValidIpv4(text)`
-- `isValidIpv6(text)`：锚定全串匹配 + 结构校验（`::` 至多一次、展开后组数 ≤8、每段 ≤4 位十六进制）。不复用 [domains.ts](../src/sync/domains.ts#L372-L376) 现有无锚定正则——该正则仅适用于 DoH 场景（每条应答恰为一个干净 IP），在任意正文上会放行 `::before`、`IP=::1` 等子串误匹配。
+- `isValidIpv6(text)`：锚定全串匹配 + 结构校验（`::` 至多一次、展开后组数 ≤8、每段 ≤4 位十六进制）。不复用 `domains.ts` 原有的无锚定正则——该正则只在 DoH 场景碰巧可用（每条应答恰为一个干净 IP），放到任意正文上会放行 `::before`、`IP=::1` 等子串误匹配；方案落地后该内联正则已删除，DoH 分支同样改走本内核。
 - `normalizeIpv6(text)`：去方括号、转小写；含 `%zone` 或非法形态返回 null。
 - `extractIpv4(text)` / `extractIpv6(text)`：全局匹配提取候选，逐项经 `isValidIpv4` / `isValidIpv6` 严格过滤，再 `Set` 去重。
 - `sortIpv4(list)`：数值升序（沿用现有比较器）。
@@ -200,9 +202,10 @@
 ### 7.3 校验、去重、排序、截断
 
 1. 提取后逐项严格校验：IPv4 四段 0–255；IPv6 锚定全串结构校验（`isValidIpv6`，见 7.1）+ 规范化。
-2. IPv4 / IPv6 各自 `Set` 去重。
+2. IPv4 / IPv6 各自去重；IPv6 按 RFC 5952 规范写法去重（`2001:db8::1` 与 `2001:db8:0:0:0:0:0:1` 视为同一地址），`::` 与 IPv4-mapped 不产出 AAAA。
 3. IPv4 数值升序；IPv6 规范化后字典序。
-4. DNS 侧各取前 N 条；GitHub 侧不截断。
+4. DNS 侧各取前 N 条；GitHub 侧不截断。**排序必须早于截断**，否则「前 N」不是序最小的 N 条。
+5. 适用分支：三网（`internal:hostmonit:*`）与深度解析同口径；浅层 CNAME 分支不产出 IP，不参与校验、排序与截断。
 
 ### 7.4 `custom_regex` 防护
 
@@ -358,14 +361,14 @@
 
 | 文件                            | 类型 | 职责                                                                                                                         |
 | ------------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `src/util/ip.ts`                | 新增 | IPv4/IPv6 校验、归一、提取、排序、截断；IPv6 正则从 `domains.ts` 迁入                                                        |
+| `src/util/ip.ts`                | 新增 | IPv4/IPv6 校验、归一、提取、排序、截断（独立内核，不搬用 `domains.ts` 的无锚定正则）                                         |
 | `src/sync/ip-parse.ts`          | 新增 | 四种解析模式、点路径取值、正则防护、统一解析入口                                                                             |
 | `src/db/migrations.ts`          | 修改 | `domains` 5 列、`ip_sources` 2 列、`MIGRATION_VERSION`                                                                       |
 | `src/db/client.ts`              | 修改 | `DOMAIN_COLUMNS`、`IP_SOURCE_COLUMNS` 追加新列                                                                               |
 | `src/db/settings.ts`            | 修改 | `MAX_IPS_PER_TYPE` 白名单、整数校验、读取归一                                                                                |
 | `src/sync/ip-sources.ts`        | 修改 | 策略返回文本；统一解析；返回 IPv4 + IPv6；伴生文件写入/删除                                                                  |
 | `src/sync/github.ts`            | 修改 | 新增 `deleteFileOnGitHub`（GET sha → DELETE，404 静默）                                                                      |
-| `src/sync/domains.ts`           | 修改 | URL 输入分支、同批 URL 缓存、所有 DNS 来源统一截断、`A`/`AAAA` 备注写入与刷新                                                |
+| `src/sync/domains.ts`           | 修改 | URL 输入分支、同批 URL 缓存、三网与深度解析统一走 IP 内核校验与排序、所有 DNS 来源统一截断、`A`/`AAAA` 备注写入与刷新        |
 | `src/routes/api.ts`             | 修改 | 域名/来源输入校验、SQL 列扩展、探测扩展、设置校验                                                                            |
 | `src/routes/github-proxy.ts`    | 修改 | 订阅代理白名单扩展至派生伴生路径（`x.txt` → `x-v6.txt`），读行为与主文件一致                                                 |
 | `src/ui/templates.js`           | 修改 | 域名弹窗输入类型/URL/解析配置；IP 源弹窗解析配置；设置页上限；探测展示 v4/v6；实施前必读 `docs/ui-templates-refactor.md` §10 |
@@ -461,8 +464,8 @@ POST /api/ip_sources/:id/sync
 
 - `A`（IPv4）、`AAAA`（IPv6）。
 - `proxied=false`；TTL 取 `domains.ttl`。
-- IPv4 / IPv6 各取前 N 条（N 默认 20）。
-- CNAME 分支保持不变，不参与截断与备注。
+- IPv4 / IPv6 先按 §7.3 校验、去重、排序，再各取前 N 条（N 默认 20）。
+- CNAME 分支保持不变，不参与校验、排序、截断与备注。
 
 ### 12.4 变更时间备注
 
@@ -563,6 +566,7 @@ POST /api/ip_sources/:id/sync
 8. `test/sync.test.ts`
     - URL→DNS 生成 A/AAAA；
     - 同批缓存只抓一次；
+    - 三网与深度解析统一走 IP 内核校验与排序（乱序取最小 N、`::`/mapped/重复项不产出）；
     - 所有 DNS 来源截断；
     - 备注写入与 PATCH（仅有增删的同步写入，`no_change` 不产生任何 PATCH）；
     - 抓取失败不改记录、0 条两分支、仅 IPv6 删除旧 A；
@@ -591,7 +595,7 @@ POST /api/ip_sources/:id/sync
 
 - `pnpm verify` 全绿。
 - 存量 8 个 IP 源：未出现 IPv6 时，主文件内容逐字节不变。
-- 存量域名：三网、深度解析、浅层克隆逻辑不变；仅新增截断与备注。
+- 存量域名：浅层克隆逻辑不变；三网与深度解析改为走共享内核，属**有意收紧**——`%zone`、`::`、全零展开、IPv4-mapped 与越界 IPv4 会被过滤，结果按 §7.3 去重排序；另新增截断与备注。
 - 新增 URL 输入可完成「抓取 → 解析 → 绑定 → DNS 记录」闭环。
 - GitHub IPv6 伴生文件按规则创建与删除。
 - IPv6 伴生文件可经订阅代理读取，未登记路径仍 404。

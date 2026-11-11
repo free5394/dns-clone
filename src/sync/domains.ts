@@ -17,6 +17,7 @@ import { fetchWithTimeout, fetchWithRetry } from "../util/fetch.ts";
 import { normalizeBatchSize } from "../util/batch-size.ts";
 import { forEachIsolated } from "../util/batch-sync.ts";
 import { normalizeMaxIpsPerType } from "../util/max-ips-per-type.ts";
+import { isValidIpv4, canonicalizeIpv6, isPublishableIpv6, sortIpv4, sortIpv6 } from "../util/ip.ts";
 import { MAX_IPS_PER_TYPE_KEY } from "../db/settings.ts";
 
 interface DomainRow {
@@ -352,7 +353,37 @@ export async function resolveRecordsForDomain(
     return limited;
 }
 
-/** 四分支解析的原始结果（未截断），截断由 resolveRecordsForDomain 统一执行 */
+/**
+ * 把原始 IP 字符串收敛成 A / AAAA 记录（issue #59 / 方案 §7.3）：
+ * 逐项严格校验 → 同类型去重 → 排序。
+ * - IPv4 走 isValidIpv4 + sortIpv4（数值升序）；
+ * - IPv6 走 canonicalizeIpv6 后去重，并按 extractIpv6 的口径排除 `::`、
+ *   全零展开与 IPv4-mapped——这些不是可发布的 AAAA 地址；
+ * - CNAME 不经过这里，仍由调用方原样返回。
+ *
+ * 截断由 resolveRecordsForDomain 在出口统一执行，所以顺序必须在这里定下来：
+ * limitIpRecords 按输入顺序取前 N，排序晚于截断就会取到错的那 N 条（验收 #1）。
+ */
+function buildIpRecords(ipv4s: string[], ipv6s: string[]): DnsRecord[] {
+    const uniqueV4 = new Set<string>();
+    for (const ip of ipv4s) {
+        const text = ip.trim();
+        if (isValidIpv4(text)) uniqueV4.add(text);
+    }
+    const uniqueV6 = new Set<string>();
+    for (const ip of ipv6s) {
+        const canonical = canonicalizeIpv6(ip.trim());
+        if (canonical !== null && isPublishableIpv6(canonical)) uniqueV6.add(canonical);
+    }
+    return [
+        ...sortIpv4([...uniqueV4]).map((ip) => ({ type: "A", content: ip })),
+        ...sortIpv6([...uniqueV6]).map((ip) => ({ type: "AAAA", content: ip })),
+    ];
+}
+
+/**
+ * 四分支解析的原始结果（未截断），截断由 resolveRecordsForDomain 统一执行。
+ */
 async function resolveRawRecordsForDomain(
     domain: DomainRow,
     db: D1Database,
@@ -394,7 +425,9 @@ async function resolveRawRecordsForDomain(
         // 返回空数组交给 syncDomainLogic 走 "无记录" 分支判定 no_change / 抛错。
         if (!syncContext.threeNetworkIps) return [];
         const ips = syncContext.threeNetworkIps[type as "yd" | "dx" | "lt"] || [];
-        return ips.map((ip) => ({ type: "A", content: ip }));
+        // issue #59：上游 HTML 只按形态匹配 `\d{1,3}.` 四段，越界值也会被带进来；
+        // 与深度解析同口径过内核（校验 → 去重 → 数值升序），排序必须先于出口截断。
+        return buildIpRecords(ips, []);
     }
     if (domain.is_deep_resolve) {
         log(`模式: 深度解析 (追踪CNAME)`);
@@ -570,18 +603,9 @@ export async function resolveRecursively(domain: string, log: LogFn, depth = 0):
     log(`(深度 ${depth}) 未发现CNAME，查询最终IP for ${domain}`);
     const ipv4s = await getDnsFromDoh(domain, "A");
     const ipv6s = await getDnsFromDoh(domain, "AAAA");
-    const validIPv4s = ipv4s.filter((ip) =>
-        /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(ip)
-    );
-    const validIPv6s = ipv6s.filter((ip) =>
-        /(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))/.test(
-            ip
-        )
-    );
-    return [
-        ...validIPv4s.map((ip) => ({ type: "A", content: ip })),
-        ...validIPv6s.map((ip) => ({ type: "AAAA", content: ip })),
-    ];
+    // issue #59：与三网分支共用内核（校验 → 去重 → 规范化 → 排序），
+    // 不再各自维护一份正则——旧 IPv6 正则无锚定且放行 %zone，已由 isValidIpv6 取代。
+    return buildIpRecords(ipv4s, ipv6s);
 }
 
 /**

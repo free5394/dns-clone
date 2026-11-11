@@ -2220,3 +2220,129 @@ describe("resolveRecursively 深度解析分支 (issue #54 判据 5)", () => {
         ]);
     });
 });
+
+describe("三网与深度解析统一走 IP 内核 (issue #59)", () => {
+    type DohTable = Record<string, { CNAME?: string[]; A?: string[]; AAAA?: string[] }>;
+
+    /** 桩掉 Cloudflare DoH：每条应答恰为一个地址文本，与真实 DoH 形态一致 */
+    function stubDoh(table: DohTable): void {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                const u = new URL(url);
+                const name = u.searchParams.get("name") ?? "";
+                const type = u.searchParams.get("type") ?? "";
+                const answers = table[name]?.[type as "CNAME" | "A" | "AAAA"] ?? [];
+                return new Response(JSON.stringify({ Answer: answers.map((data) => ({ data })) }), { status: 200 });
+            })
+        );
+    }
+
+    const threeNetworkDomain = {
+        id: 999,
+        source_domain: "internal:hostmonit:yd",
+        target_domain: "x.example.com",
+        zone_id: "test-zone",
+        is_deep_resolve: 0,
+        ttl: 60,
+        is_enabled: 1,
+        is_system: 1,
+    };
+
+    it("三网分支乱序输入按数值升序后截断，「前 N」是数值最小的 N 条", async () => {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => {
+                throw new Error("上下文命中缓存时不应抓取");
+            })
+        );
+        const syncContext = {
+            threeNetworkIps: {
+                yd: ["10.0.0.1", "2.0.0.2", "9.255.255.255", "2.0.0.1"],
+                dx: [],
+                lt: [],
+                source: "CloudFlareYes",
+            },
+            maxIpsPerType: 2,
+        };
+
+        const records = await resolveRecordsForDomain(threeNetworkDomain, env.WUYA, () => {}, syncContext);
+
+        // 排序若发生在截断之后，前 2 条会是 10.0.0.1 / 2.0.0.2
+        expect(records).toEqual([
+            { type: "A", content: "2.0.0.1" },
+            { type: "A", content: "2.0.0.2" },
+        ]);
+    });
+
+    it("三网分支过滤非法 IPv4 并去重（上游只按形态提取，可能带越界值）", async () => {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => {
+                throw new Error("上下文命中缓存时不应抓取");
+            })
+        );
+        const syncContext = {
+            threeNetworkIps: {
+                yd: ["1.1.1.1", "999.1.1.1", "1.1.1.1", "not-an-ip"],
+                dx: [],
+                lt: [],
+                source: "CloudFlareYes",
+            },
+            maxIpsPerType: 20,
+        };
+
+        const records = await resolveRecordsForDomain(threeNetworkDomain, env.WUYA, () => {}, syncContext);
+
+        expect(records).toEqual([{ type: "A", content: "1.1.1.1" }]);
+    });
+
+    it("深度解析 IPv4 与 IPv6 走内核：校验、去重、规范化、排序，:: 与 IPv4-mapped 不产出", async () => {
+        stubDoh({
+            "plain.example.com": {
+                A: ["10.0.0.1", "2.0.0.2", "2.0.0.2", "bad"],
+                AAAA: ["::", "0:0:0:0:0:0:0:0", "::ffff:192.0.2.1", "2400:3200:0::1", "2400:3200::1", "FE80::1"],
+            },
+        });
+
+        const records = await resolveRecursively("plain.example.com", () => {});
+
+        expect(records).toEqual([
+            { type: "A", content: "2.0.0.2" },
+            { type: "A", content: "10.0.0.1" },
+            { type: "AAAA", content: "2400:3200::1" },
+            { type: "AAAA", content: "fe80::1" },
+        ]);
+    });
+
+    it("深度解析的排序先于出口截断，「前 N」同样是数值最小的 N 条", async () => {
+        stubDoh({
+            "plain.example.com": {
+                A: ["10.0.0.1", "2.0.0.2"],
+                AAAA: ["fe80::1", "2001:db8::1", "::1"],
+            },
+        });
+
+        const records = await resolveRecordsForDomain(
+            {
+                id: 999,
+                source_domain: "plain.example.com",
+                target_domain: "x.example.com",
+                zone_id: "test-zone",
+                is_deep_resolve: 1,
+                ttl: 60,
+                is_enabled: 1,
+                is_system: 0,
+            },
+            env.WUYA,
+            () => {},
+            { maxIpsPerType: 1 }
+        );
+
+        // 未排序就截断时这里会是 10.0.0.1 / fe80::1
+        expect(records).toEqual([
+            { type: "A", content: "2.0.0.2" },
+            { type: "AAAA", content: "2001:db8::1" },
+        ]);
+    });
+});

@@ -141,7 +141,7 @@ function isIpv4Mapped(normalized: string): boolean {
  * 可计入 IPv6 结果的地址：排除未指定地址 `::` 与归 IPv4 侧的 mapped 地址。
  * 判定按 RFC 5952 规范写法做，否则 `0:0:0:0:0:0:0:0` 这类全零展开写法会漏过 `::` 比较。
  */
-function isPublishableIpv6(normalized: string): boolean {
+export function isPublishableIpv6(normalized: string): boolean {
     const canonical = canonicalizeIpv6(normalized);
     if (canonical === null) return false;
     return canonical !== "::" && !isIpv4Mapped(canonical);
