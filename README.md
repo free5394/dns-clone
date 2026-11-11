@@ -74,18 +74,18 @@
 
 ### 四种同步模式
 
-`sync/domains.ts` 中 `resolveRecordsForDomain` 按「输入来源 → 内置源前缀 → 深度开关」的顺序分流：
+`sync/domains.ts` 中 `resolveRecordsForDomain` 按「IP 输入类型 → 内置源前缀 → 深度开关」的顺序分流：
 
-| 模式             | 触发条件                                      | 行为                                                                       |
-| ---------------- | --------------------------------------------- | -------------------------------------------------------------------------- |
-| **URL 输入**     | `source_type = 'url'`                         | 抓取 `source_url`，按解析模式取出 IP，写 A/AAAA 记录（≤ 20 条/类型，见下） |
-| **系统内置三网** | `source_domain` 以 `internal:hostmonit:` 开头 | 从 hostmonit 等 HTML 表格源抓取移动/电信/联通 IP，直接写 A 记录            |
-| **深度解析**     | `is_deep_resolve = 1`                         | 递归追踪 CNAME 链（最多 10 层），直到取出最终 IPv4/IPv6，写 A/AAAA 记录    |
-| **浅层克隆**     | `is_deep_resolve = 0`                         | 直接克隆源域名的 CNAME 记录（源必须是 CNAME）                              |
+| 模式             | 触发条件                                      | 行为                                                                    |
+| ---------------- | --------------------------------------------- | ----------------------------------------------------------------------- |
+| **URL 输入**     | `source_type = 'url'`                         | 抓取 `source_url`，按解析模式取出 IP，写 A/AAAA 记录（单类型上限见下）  |
+| **系统内置三网** | `source_domain` 以 `internal:hostmonit:` 开头 | 从 hostmonit 等 HTML 表格源抓取移动/电信/联通 IP，直接写 A 记录         |
+| **深度解析**     | `is_deep_resolve = 1`                         | 递归追踪 CNAME 链（最多 10 层），直到取出最终 IPv4/IPv6，写 A/AAAA 记录 |
+| **浅层克隆**     | `is_deep_resolve = 0`                         | 直接克隆源域名的 CNAME 记录（源必须是 CNAME）                           |
 
-### 输入来源与解析模式
+### IP 输入类型与解析模式
 
-克隆目标有两种输入来源，由 `domains.source_type` 决定（NULL 按 `domain` 处理，存量数据无需回填）：
+克隆目标有两种 IP 输入类型，由 `domains.source_type` 决定（NULL 按 `domain` 处理，存量数据无需回填）：
 
 - **`domain`（域名，默认）**：原来的行为，深度开关可自由切换。
 - **`url`（URL）**：填一个 `http(s)` 地址，系统抓取后解析出 IP 写 A/AAAA。URL 的 hostname 会派生为 `source_domain`，用于在 Cloudflare 上定位同名记录。**URL 类型固定关闭深度解析**——深度解析追踪的是 CNAME 链，对「抓一个 IP 列表接口」没有意义，所以保存时 `is_deep_resolve` 被强制置 0。
@@ -101,8 +101,9 @@
 
 几条运行期约定：
 
-- 解析模式写 `NULL` 或未知值一律按 `auto` 读取，因此旧数据与新数据走同一条路径。
-- `custom_regex` 在保存 / 探测时做静态拦截（嵌套量词、分支重叠等高风险形态），并在运行期把正文截断到 512 KB 再解析，作为 ReDoS 兜底。
+- 解析模式写 `NULL`、空串或未知值一律按 `auto` 读取，因此旧数据与新数据走同一条路径。
+- `custom_regex` 在保存 / 探测时做静态拦截（嵌套量词、分支重叠等高风险形态），作为 ReDoS 兜底。
+- 解析前统一把正文截断到 512 KB（四种模式都生效，是入口处的兜底），避免超大响应拖垮 worker。
 - 抓取失败时保留上次成功写入的记录，本轮记 `failed`；抓取成功但解析出 0 条时，如果目标原本有记录则记 `failed`，原本就没有记录则记 `no_change`。
 - 同一批同步里同一个 URL + 解析配置只抓一次，多个目标共享结果。
 
@@ -387,7 +388,7 @@ pnpm run deploy
 | 方法     | 路径                        | 说明                                       |
 | -------- | --------------------------- | ------------------------------------------ |
 | `GET`    | `/api/domains`              | 列出所有域名（系统域名排前）               |
-| `POST`   | `/api/domains`              | 添加克隆目标（`domain` 或 `url` 输入来源） |
+| `POST`   | `/api/domains`              | 添加克隆目标（`domain` 或 `url` 输入类型） |
 | `PUT`    | `/api/domains/{id}`         | 更新目标（系统域名的 source 不可改）       |
 | `DELETE` | `/api/domains/{id}`         | 删除目标（系统预设禁止删除）               |
 | `GET`    | `/api/domains/{id}/records` | 查询该目标在 Cloudflare 上的当前 DNS 记录  |
@@ -395,7 +396,7 @@ pnpm run deploy
 | `POST`   | `/api/sync`                 | 批量同步所有已启用目标（返回 SSE 日志流）  |
 | `POST`   | `/api/domains/sync_system`  | 仅同步系统预设域名（返回 SSE 日志流）      |
 
-> 目标对象里的这几个字段与 URL 输入相关：`source_type`（`domain` / `url`，NULL 按 `domain`）、`source_url`（`url` 类型必填，`http(s)`，≤2048 字符）、`parse_mode` / `parse_param`（见 [输入来源与解析模式](#输入来源与解析模式)）、`fetch_strategy`（`url` 类型的历史抓取策略，URL 变化时自动丢弃）。系统预设域名不允许切换输入类型，`source` 也不可改。
+> 目标对象里的这几个字段与 URL 输入相关：`source_type`（`domain` / `url`，NULL 按 `domain`）、`source_url`（`url` 类型必填，`http(s)`，≤2048 字符）、`parse_mode` / `parse_param`（见 [IP 输入类型与解析模式](#ip-输入类型与解析模式)）、`fetch_strategy`（`url` 类型的历史抓取策略，URL 变化时自动丢弃）。系统预设域名不允许切换输入类型，`source` 也不可改。
 
 ### IP 源管理
 
@@ -420,7 +421,7 @@ pnpm run deploy
 
 ## 🗄️ 数据表结构
 
-D1 数据库（绑定名 `WUYA`）共 5 张表，由 `initializeAndMigrateDatabase` 在首次请求时幂等创建并补齐缺失列，24 小时内不会重复执行 DDL。
+D1 数据库（绑定名 `WUYA`）共 5 张表，由 `initializeAndMigrateDatabase` 在首次请求时幂等创建并补齐缺失列；迁移版本未变时 24 小时内不会重复执行 DDL。
 
 > 迁移是幂等的：用 `PRAGMA table_info` 对比期望列，缺哪列补哪列（`ALTER TABLE ... ADD COLUMN`）。当前迁移版本为 `2026-11-10-ip-fetch-unification`，新增列全部可空、无需回填；已部署实例在版本号变化后的**首次请求即执行**，不受 24 小时门控影响。回滚只需回退代码，多余列对旧代码无影响。
 
@@ -450,7 +451,7 @@ D1 数据库（绑定名 `WUYA`）共 5 张表，由 `initializeAndMigrateDataba
 | `last_sync_error`     | TEXT        | 上次失败原因                                      |
 | `is_enabled`          | INTEGER     | 1=启用；0=禁用                                    |
 | `is_system`           | INTEGER     | 1=系统预设（不可删，source 不可改）；0=用户添加   |
-| `source_type`         | TEXT        | 输入来源 `domain` / `url`（NULL 按 `domain`）     |
+| `source_type`         | TEXT        | IP 输入类型 `domain` / `url`（NULL 按 `domain`）  |
 | `source_url`          | TEXT        | `url` 类型的抓取地址（`http(s)`，≤2048 字符）     |
 | `parse_mode`          | TEXT        | 解析模式（NULL / 未知值按 `auto`）                |
 | `parse_param`         | TEXT        | 解析参数（`json_path` / `custom_regex` 使用）     |
