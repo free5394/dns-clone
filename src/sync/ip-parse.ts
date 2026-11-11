@@ -8,7 +8,7 @@
 // 解析层自身不抛错：正文为空、非 JSON、路径不存在、正则不可构造一律按「未匹配」返回空结果；
 // 配置错误由 validateParseConfig 在保存 / 探测入口拦截（同一套规则，避免两处漂移）。
 
-import { canonicalizeIpv6, classifyIp, extractIpv4, extractIpv6, sortIpv4, sortIpv6 } from "../util/ip.ts";
+import { classifyIp, dedupeSortedIps, extractIpv4, extractIpv6 } from "../util/ip.ts";
 
 /** 解析模式白名单；NULL / 空串 / 未知值在读取侧按 auto 处理 */
 export const PARSE_MODES = ["auto", "lines", "json_path", "custom_regex"] as const;
@@ -407,9 +407,8 @@ export function parseContent(text: string, mode: unknown, param?: unknown): Pars
             break;
     }
 
-    // IPv6 先规范化为 RFC 5952 写法再去重：等价地址（压缩写法 / 全零段写法）只保留一条
-    const ipv6 = [...new Set(ips.ipv6.map((value) => canonicalizeIpv6(value) ?? value))];
-    return { ipv4: sortIpv4([...new Set(ips.ipv4)]), ipv6: sortIpv6(ipv6) };
+    // 收尾与 DNS 侧共用同一份流水线（§7.3）：规范化后去重、各自排序，规则只维护一处
+    return dedupeSortedIps(ips.ipv4, ips.ipv6);
 }
 
 /**

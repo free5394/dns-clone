@@ -11,6 +11,7 @@ import {
     truncatePerType,
     classifyIp,
     canonicalizeIpv6,
+    canonicalizeIpv4,
 } from "../src/util/ip.ts";
 
 describe("IPv4 严格校验", () => {
@@ -149,6 +150,20 @@ describe("排序与截断", () => {
             ipv4: ["1.1.1.1"],
             ipv6: [],
         });
+    });
+});
+
+describe("IPv4 规范化", () => {
+    it("去掉每段前导零，等值写法归一为同一串", () => {
+        expect(canonicalizeIpv4("01.2.03.004")).toBe("1.2.3.4");
+        expect(canonicalizeIpv4("1.2.3.4")).toBe("1.2.3.4");
+        expect(canonicalizeIpv4(" 0.0.0.0 ")).toBe("0.0.0.0");
+    });
+
+    it("非法形态返回 null", () => {
+        expect(canonicalizeIpv4("999.1.1.1")).toBeNull();
+        expect(canonicalizeIpv4("1.2.3")).toBeNull();
+        expect(canonicalizeIpv4("not-an-ip")).toBeNull();
     });
 });
 

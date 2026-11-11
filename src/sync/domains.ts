@@ -17,7 +17,7 @@ import { fetchWithTimeout, fetchWithRetry } from "../util/fetch.ts";
 import { normalizeBatchSize } from "../util/batch-size.ts";
 import { forEachIsolated } from "../util/batch-sync.ts";
 import { normalizeMaxIpsPerType } from "../util/max-ips-per-type.ts";
-import { isValidIpv4, canonicalizeIpv6, isPublishableIpv6, sortIpv4, sortIpv6 } from "../util/ip.ts";
+import { dedupeSortedIps } from "../util/ip.ts";
 import { MAX_IPS_PER_TYPE_KEY } from "../db/settings.ts";
 
 interface DomainRow {
@@ -356,29 +356,17 @@ export async function resolveRecordsForDomain(
 /**
  * 把原始 IP 字符串收敛成 A / AAAA 记录（issue #59 / 方案 §7.3）：
  * 逐项严格校验 → 同类型去重 → 排序。
- * - IPv4 走 isValidIpv4 + sortIpv4（数值升序）；
- * - IPv6 走 canonicalizeIpv6 后去重，并按 extractIpv6 的口径排除 `::`、
- *   全零展开与 IPv4-mapped——这些不是可发布的 AAAA 地址；
+ * - 去重与排序交给 `dedupeSortedIps`（与 URL 分支共用同一份 §7.3 流水线）：
+ *   IPv4 去前导零后去重 + 数值升序，IPv6 按 RFC 5952 归一后去重 + 字典序，
+ *   并排除不可发布的 `::`、全零展开与 IPv4-mapped；
  * - CNAME 不经过这里，仍由调用方原样返回。
  *
  * 截断由 resolveRecordsForDomain 在出口统一执行，所以顺序必须在这里定下来：
  * limitIpRecords 按输入顺序取前 N，排序晚于截断就会取到错的那 N 条（验收 #1）。
  */
 function buildIpRecords(ipv4s: string[], ipv6s: string[]): DnsRecord[] {
-    const uniqueV4 = new Set<string>();
-    for (const ip of ipv4s) {
-        const text = ip.trim();
-        if (isValidIpv4(text)) uniqueV4.add(text);
-    }
-    const uniqueV6 = new Set<string>();
-    for (const ip of ipv6s) {
-        const canonical = canonicalizeIpv6(ip.trim());
-        if (canonical !== null && isPublishableIpv6(canonical)) uniqueV6.add(canonical);
-    }
-    return [
-        ...sortIpv4([...uniqueV4]).map((ip) => ({ type: "A", content: ip })),
-        ...sortIpv6([...uniqueV6]).map((ip) => ({ type: "AAAA", content: ip })),
-    ];
+    const { ipv4, ipv6 } = dedupeSortedIps(ipv4s, ipv6s);
+    return [...ipv4.map((ip) => ({ type: "A", content: ip })), ...ipv6.map((ip) => ({ type: "AAAA", content: ip }))];
 }
 
 /**

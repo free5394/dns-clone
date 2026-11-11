@@ -2238,6 +2238,16 @@ describe("三网与深度解析统一走 IP 内核 (issue #59)", () => {
         );
     }
 
+    /** 三网分支命中 syncContext 缓存时不应再抓取：抓取即失败 */
+    const stubNoFetch = () => {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => {
+                throw new Error("上下文命中缓存时不应抓取");
+            })
+        );
+    };
+
     const threeNetworkDomain = {
         id: 999,
         source_domain: "internal:hostmonit:yd",
@@ -2250,12 +2260,7 @@ describe("三网与深度解析统一走 IP 内核 (issue #59)", () => {
     };
 
     it("三网分支乱序输入按数值升序后截断，「前 N」是数值最小的 N 条", async () => {
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async () => {
-                throw new Error("上下文命中缓存时不应抓取");
-            })
-        );
+        stubNoFetch();
         const syncContext = {
             threeNetworkIps: {
                 yd: ["10.0.0.1", "2.0.0.2", "9.255.255.255", "2.0.0.1"],
@@ -2276,12 +2281,7 @@ describe("三网与深度解析统一走 IP 内核 (issue #59)", () => {
     });
 
     it("三网分支过滤非法 IPv4 并去重（上游只按形态提取，可能带越界值）", async () => {
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async () => {
-                throw new Error("上下文命中缓存时不应抓取");
-            })
-        );
+        stubNoFetch();
         const syncContext = {
             threeNetworkIps: {
                 yd: ["1.1.1.1", "999.1.1.1", "1.1.1.1", "not-an-ip"],
@@ -2295,6 +2295,25 @@ describe("三网与深度解析统一走 IP 内核 (issue #59)", () => {
         const records = await resolveRecordsForDomain(threeNetworkDomain, env.WUYA, () => {}, syncContext);
 
         expect(records).toEqual([{ type: "A", content: "1.1.1.1" }]);
+    });
+
+    it("三网分支的 IPv4 按规范化值去重：前导零写法不产出第二条 A 记录", async () => {
+        stubNoFetch();
+        const records = await resolveRecordsForDomain(threeNetworkDomain, env.WUYA, () => {}, {
+            threeNetworkIps: {
+                yd: ["01.2.3.4", "1.2.3.4", "9.9.9.9"],
+                dx: [],
+                lt: [],
+                source: "CloudFlareYes",
+            },
+            maxIpsPerType: 20,
+        });
+
+        // 按字面串去重会留下 {"01.2.3.4","1.2.3.4"}，比较器视其等值，排序结果不稳定
+        expect(records).toEqual([
+            { type: "A", content: "1.2.3.4" },
+            { type: "A", content: "9.9.9.9" },
+        ]);
     });
 
     it("深度解析 IPv4 与 IPv6 走内核：校验、去重、规范化、排序，:: 与 IPv4-mapped 不产出", async () => {

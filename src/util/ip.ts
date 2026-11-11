@@ -82,6 +82,20 @@ export function isValidIpv6(text: string): boolean {
     return parseIpv6Groups(text) !== null;
 }
 
+/**
+ * IPv4 规范化：校验后把每段的前导零去掉，返回点分十进制；非法返回 null。
+ * `01.2.3.4` 与 `1.2.3.4` 在这里得到同一字符串，供去重使用（与 canonicalizeIpv6 同口径）。
+ * 注意：数值比较器对两者都算出 1，不规范化就会留下两条等值记录。
+ */
+export function canonicalizeIpv4(text: string): string | null {
+    const trimmed = text.trim();
+    if (!isValidIpv4(trimmed)) return null;
+    return trimmed
+        .split(".")
+        .map((segment) => String(Number(segment)))
+        .join(".");
+}
+
 /** IPv6 归一：去方括号、转小写；非法形态（含 `%zone`）返回 null */
 export function normalizeIpv6(text: string): string | null {
     return parseIpv6Groups(text) === null ? null : stripBrackets(text).toLowerCase();
@@ -211,6 +225,26 @@ export function sortIpv6(list: string[]): string[] {
         if (left === right) return 0;
         return left < right ? -1 : 1;
     });
+}
+
+/**
+ * 收尾流水线：按规范化值去重 → 各自排序（方案 §7.3 第 2–3 条）。
+ * 所有产出 IP 的链路共用这一份，避免「URL 与 DNS 两侧各写一遍、规则漂移」。
+ * - IPv4 去前导零后去重（`01.2.3.4` 与 `1.2.3.4` 只留一条，数值比较器本就视其等值）；
+ * - IPv6 按 RFC 5952 规范写法去重，并排除不可发布的 `::` 与 IPv4-mapped。
+ */
+export function dedupeSortedIps(ipv4s: string[], ipv6s: string[]): { ipv4: string[]; ipv6: string[] } {
+    const v4 = new Set<string>();
+    for (const ip of ipv4s) {
+        const canonical = canonicalizeIpv4(ip);
+        if (canonical !== null) v4.add(canonical);
+    }
+    const v6 = new Set<string>();
+    for (const ip of ipv6s) {
+        const canonical = canonicalizeIpv6(ip);
+        if (canonical !== null && isPublishableIpv6(canonical)) v6.add(canonical);
+    }
+    return { ipv4: sortIpv4([...v4]), ipv6: sortIpv6([...v6]) };
 }
 
 /** IPv4 / IPv6 各自截断到上限，两类互不影响 */

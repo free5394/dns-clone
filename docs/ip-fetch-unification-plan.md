@@ -66,14 +66,14 @@
 
 ### 3.3 域名解析与 DNS 链路
 
-- [domains.ts](../src/sync/domains.ts#L52-L66)：`getDnsFromDoh` 走 Cloudflare DoH，失败返回空数组。
-- [domains.ts](../src/sync/domains.ts#L338-L407)：`resolveRecordsForDomain` 四个分支：
+- [domains.ts](../src/sync/domains.ts#L152-L166)：`getDnsFromDoh` 走 Cloudflare DoH，失败返回空数组。
+- [domains.ts](../src/sync/domains.ts#L375-L428)：`resolveRawRecordsForDomain` 四个分支（`resolveRecordsForDomain` 是它的出口包装，只做统一截断，见 #L339-L354）：
     - `internal:hostmonit:*`：三网优选 IP（HTML 表格解析），同批缓存，失败保留上次成功缓存；
     - `is_deep_resolve=1`：递归跟随 CNAME，最终取 A/AAAA；
     - 否则：浅层克隆，只取 CNAME。
-- [domains.ts](../src/sync/domains.ts#L552-L585)：`resolveRecursively` 内联 IPv4 / IPv6 正则校验（该内联正则已由本方案 §7.1 的共享内核取代，见 §7.3）。
-- [domains.ts](../src/sync/domains.ts#L282-L345)：`syncDomainLogic` 解析 → 空结果判定 → `updateCloudflareDns` → 状态落库。
-- [domains.ts](../src/sync/domains.ts#L427-L529)：`updateCloudflareDns` 分页拉取、差异比对、分块增删；固定 `proxied=false`，TTL 取域名行，**不写 `comment`**。
+- [domains.ts](../src/sync/domains.ts#L573-L597)：`resolveRecursively` 校验并返回最终 A/AAAA（原内联正则已由本方案 §7.1 的共享内核取代，见 §7.3）。
+- [domains.ts](../src/sync/domains.ts#L506-L570)：`syncDomainLogic` 解析 → 空结果判定 → `updateCloudflareDns` → 状态落库。
+- [domains.ts](../src/sync/domains.ts#L654-L792)：`updateCloudflareDns` 分页拉取、差异比对、分块增删；固定 `proxied=false`，TTL 取域名行，**不写 `comment`**。
 
 **现状结论**：域名链路有三种解析方式，浅层克隆不产出 IP；所有来源都没有记录数上限，也没有更新时间备注。
 
@@ -119,7 +119,7 @@
     → 域名：DoH 解析（跟随 CNAME）→ A / AAAA / CNAME
     → URL ：策略链抓正文 → parseContent(parse_mode, parse_param) → IPv4 / IPv6
     → 产出 IP 的分支各自过共享内核：校验 → 去重 → 规范化 → 排序
-      （三网与深度解析同口径；CNAME 分支不产出 IP，不参与校验与排序）
+      （三网与深度解析同口径；CNAME 分支、以及深度解析降级为 CNAME 时都不产出 IP，不参与）
     → 出口统一按 MAX_IPS_PER_TYPE 截断（排序先于截断，故「前 N」即序最小的 N 条）
     → 与 Cloudflare 现有记录比对
        ├ 缺失：新增（带 comment）
@@ -144,8 +144,8 @@
 
 ### 6.1 域名输入
 
-- 复用 [getDnsFromDoh](../src/sync/domains.ts#L52-L66)。
-- 深度解析：复用 [resolveRecursively](../src/sync/domains.ts#L552-L585)，跟随 CNAME 直到最终 A/AAAA；无最终 IP 时回退为 CNAME 记录。最终 A/AAAA 过共享内核校验、去重、规范化与排序（§7.3）。
+- 复用 [getDnsFromDoh](../src/sync/domains.ts#L152-L166)。
+- 深度解析：复用 [resolveRecursively](../src/sync/domains.ts#L573-L597)，跟随 CNAME 直到最终 A/AAAA；无最终 IP 时回退为 CNAME 记录。最终 A/AAAA 过共享内核校验、去重、规范化与排序（§7.3）。
 - 浅层克隆：只取 CNAME，不参与 IP 上限与备注。
 - 域名输入不抓取网页正文，不读取解析配置。
 
@@ -178,6 +178,8 @@
 - `isValidIpv4(text)`
 - `isValidIpv6(text)`：锚定全串匹配 + 结构校验（`::` 至多一次、展开后组数 ≤8、每段 ≤4 位十六进制）。不复用 `domains.ts` 原有的无锚定正则——该正则只在 DoH 场景碰巧可用（每条应答恰为一个干净 IP），放到任意正文上会放行 `::before`、`IP=::1` 等子串误匹配；方案落地后该内联正则已删除，DoH 分支同样改走本内核。
 - `normalizeIpv6(text)`：去方括号、转小写；含 `%zone` 或非法形态返回 null。
+- `canonicalizeIpv4(text)` / `canonicalizeIpv6(text)`：去重前把等值写法收敛到同一字符串——IPv4 去每段前导零，IPv6 按 RFC 5952 压缩；非法返回 null。
+- `dedupeSortedIps({ ipv4, ipv6 })`：§7.3 的收尾流水线（规范化 → 去重 → 各自排序），**URL 分支与 DNS 分支共用这一份**，规则只维护一处。
 - `extractIpv4(text)` / `extractIpv6(text)`：全局匹配提取候选，逐项经 `isValidIpv4` / `isValidIpv6` 严格过滤，再 `Set` 去重。
 - `sortIpv4(list)`：数值升序（沿用现有比较器）。
 - `sortIpv6(list)`：规范化后字典序。
@@ -202,10 +204,10 @@
 ### 7.3 校验、去重、排序、截断
 
 1. 提取后逐项严格校验：IPv4 四段 0–255；IPv6 锚定全串结构校验（`isValidIpv6`，见 7.1）+ 规范化。
-2. IPv4 / IPv6 各自去重；IPv6 按 RFC 5952 规范写法去重（`2001:db8::1` 与 `2001:db8:0:0:0:0:0:1` 视为同一地址），`::` 与 IPv4-mapped 不产出 AAAA。
-3. IPv4 数值升序；IPv6 规范化后字典序。
+2. IPv4 / IPv6 各自按规范化值去重：IPv4 去前导零（`01.2.3.4` 与 `1.2.3.4` 视为同一地址，数值比较器本就视其等值，不归一会留下两条）；IPv6 按 RFC 5952 规范写法去重（`2001:db8::1` 与 `2001:db8:0:0:0:0:0:1` 视为同一地址），`::` 与 IPv4-mapped 不产出 AAAA。
+3. IPv4 数值升序；IPv6 规范化后字典序。两分支的「序」口径不同：IPv4 按数值，IPv6 按规范写法的字符串字典序（`::1` 以 `:` 开头，字典序里排在数字开头的地址之后），同源同类型内部一致即可，不跨类型比较。
 4. DNS 侧各取前 N 条；GitHub 侧不截断。**排序必须早于截断**，否则「前 N」不是序最小的 N 条。
-5. 适用分支：三网（`internal:hostmonit:*`）与深度解析同口径；浅层 CNAME 分支不产出 IP，不参与校验、排序与截断。
+5. 适用分支：三网（`internal:hostmonit:*`）与深度解析同口径；浅层 CNAME 分支不产出 IP，不参与校验、排序与截断。深度解析**只在拿到最终 A/AAAA 时**过内核，降级返回 CNAME 的那条路径同样不产出 IP。
 
 ### 7.4 `custom_regex` 防护
 
@@ -596,6 +598,7 @@ POST /api/ip_sources/:id/sync
 - `pnpm verify` 全绿。
 - 存量 8 个 IP 源：未出现 IPv6 时，主文件内容逐字节不变。
 - 存量域名：浅层克隆逻辑不变；三网与深度解析改为走共享内核，属**有意收紧**——`%zone`、`::`、全零展开、IPv4-mapped 与越界 IPv4 会被过滤，结果按 §7.3 去重排序；另新增截断与备注。
+- 收紧后的失败路径变化已知并接受：若某域名上游全是被过滤值，内核返回空集合；此时 `last_synced_records` 非空会走 `syncDomainLogic` 的「上次曾有记录」分支标 failed，空则按 `no_change` 处理。旧行为是把非法值推给 Cloudflare API 报错，两者都失败，区别只在错误来源更早。
 - 新增 URL 输入可完成「抓取 → 解析 → 绑定 → DNS 记录」闭环。
 - GitHub IPv6 伴生文件按规则创建与删除。
 - IPv6 伴生文件可经订阅代理读取，未登记路径仍 404。
