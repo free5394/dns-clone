@@ -6,6 +6,7 @@ import { env } from "cloudflare:test";
 import {
     DEFAULT_HOSTMONIT_API_KEY,
     FETCH_STRATEGIES,
+    fetchIpsForTarget,
     fetchIpsFromSource,
     fetchIpsWithStrategy,
     fetchThreeNetworkIps,
@@ -66,12 +67,24 @@ describe("策略层错误路径（D3 类别化）", () => {
         await assertion;
     });
 
-    it("源返回 200 但页面无 IP 时，聚合文案逐条标注未匹配，类别为无可用IP", async () => {
+    // issue #55：源站返回 200 但正文里没有 IP 属于「成功但 0 条」，IP 源链路（fetchIpsWithStrategy /
+    // fetchIpsFromSource）据此返回空结果，交由同步层把主文件写成空内容并记 success，不再抛错。
+    it("源返回 200 但页面无 IP 时返回空结果，不再抛 [无可用IP]（issue #55）", async () => {
         vi.stubGlobal(
             "fetch",
             vi.fn(async () => new Response("<table><tbody></tbody></table>", { status: 200 }))
         );
-        const err = await fetchIpsFromSource(makeSource()).then(
+        await expect(fetchIpsFromSource(makeSource())).resolves.toEqual([]);
+    });
+
+    // 同样的空正文，在「未显式要求 0 条当成功」的调用方（不传 emptyWhenNoIps）仍是错误：
+    // 该分支保留诊断价值，逐策略标注谁没匹配到 IP，便于换源/换解析配置。
+    it("不传 emptyWhenNoIps 时仍抛 [无可用IP] 并逐条标注未匹配", async () => {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response("<table><tbody></tbody></table>", { status: 200 }))
+        );
+        const err = await fetchIpsForTarget(makeSource()).then(
             () => {
                 throw new Error("应当失败");
             },
@@ -96,7 +109,8 @@ describe("策略层错误路径（D3 类别化）", () => {
                 return Promise.resolve(new Response("<table><tbody></tbody></table>", { status: 200 }));
             })
         );
-        const pending = fetchIpsFromSource(makeSource());
+        // 未传 emptyWhenNoIps（直调 target 层）时：空正文与抛错混合按真实错误类别收口
+        const pending = fetchIpsForTarget(makeSource());
         const settled = pending.catch((e: unknown) => e as Error);
         for (let i = 0; i < 4; i++) {
             await vi.advanceTimersByTimeAsync(20000);

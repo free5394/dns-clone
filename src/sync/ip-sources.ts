@@ -194,13 +194,23 @@ export async function syncSingleIpSource(
 
         try {
             const { ipv4, ipv6, strategy, configuredStrategy } = await fetchIpsWithStrategy(source, db);
-            // issue #22 P4：日志写实际生效策略；确实发生过回退时才点明从哪个策略退下来的
-            const fellBack = configuredStrategy !== "" && configuredStrategy !== strategy;
-            const strategyNote = fellBack
-                ? `（抓取策略: ${strategy}，已从 ${configuredStrategy} 回退）`
-                : `（抓取策略: ${strategy}）`;
+            // issue #22 P4：日志写实际生效策略；确实发生过回退时才点明从哪个策略退下来的。
+            // issue #55：0 条时 strategy 为空串——既不能拼出「（抓取策略: ）」空占位，
+            // 也不能因为空串 != 配置值而误报「已从 X 回退」（那轮根本没命中任何策略）。
+            const fellBack = strategy !== "" && configuredStrategy !== "" && configuredStrategy !== strategy;
+            const strategyNote =
+                strategy === ""
+                    ? ""
+                    : fellBack
+                      ? `（抓取策略: ${strategy}，已从 ${configuredStrategy} 回退）`
+                      : `（抓取策略: ${strategy}）`;
             // 日志只写策略与两类数量，不落正文（§13.2）
             log(`成功获取 ${ipv4.length} 个IPv4、${ipv6.length} 个IPv6${strategyNote}。`);
+            if (strategy === "") {
+                // 取得正文但解析 0 条：主文件按空内容处理（issue #55），单独说明一句，
+                // 免得管理员把「0 个」当成抓取坏了。
+                log("所有抓取策略均取得正文但未解析到 IP，主文件按空内容处理。");
+            }
 
             // 主文件仍只装 IPv4；IPv6 走伴生文件（issue #51）。两条链路的变更检测彼此独立：
             // 主文件「无变化」不再提前返回，否则纯 IPv4 源永远走不到伴生删除、纯 IPv6 源永远走不到伴生写入。
@@ -361,8 +371,9 @@ export interface StrategyFetchOptions {
     persistStrategy?: (strategy: string, target: StrategyTarget) => Promise<void>;
     /**
      * 全链都取得正文却解析不到 IP 时返回空结果，而不是抛「[无可用IP]」。
-     * 域名 URL 输入用它把「取得正文但 0 条」交给 syncDomainLogic 的 0 条分支判定（§6.3 / 验收 #8）；
-     * IP 源保持既有抛错语义（诊断文案是它的主要价值）。
+     * 两类目标都开：域名 URL 输入靠它把「取得正文但 0 条」交给 syncDomainLogic 的 0 条分支判定（§6.3 / 验收 #8）；
+     * IP 源靠它把空正文变成「主文件写空内容并标 success」（issue #55）。不开时保留抛错语义，
+     * 供需要逐策略诊断的调用方（如直调 fetchIpsForTarget 的探测/诊断路径）使用。
      */
     emptyWhenNoIps?: boolean;
 }
@@ -434,9 +445,14 @@ export async function fetchIpsForTarget(
     throw new Error(`[${category}] 所有抓取策略均未能从该URL获取到IP${detail}，请检查URL或在添加/编辑IP源时重新探测。`);
 }
 
-/** 按策略抓取 IP 源（带排序 + 失败自动回退），回退命中后把策略持久化到 ip_sources */
+/**
+ * 按策略抓取 IP 源（带排序 + 失败自动回退），回退命中后把策略持久化到 ip_sources。
+ * issue #55：源站返回 200 但没有 IP 时按「成功但 0 条」返回空结果，由同步层把主文件写成空内容；
+ * 「全部策略抛错」仍走抛错分支，两条语义不得合并。
+ */
 export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database): Promise<IpFetchResult> {
     return fetchIpsForTarget(source, db, {
+        emptyWhenNoIps: true,
         persistStrategy: db
             ? async (strategy, target) => {
                   await db
