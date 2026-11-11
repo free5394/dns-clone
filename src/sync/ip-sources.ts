@@ -144,6 +144,31 @@ export async function syncScheduledIpSources(env: { WUYA: D1Database }): Promise
     );
 }
 
+type GitHubTarget = { token: string; owner: string; repo: string };
+
+/**
+ * 单个文件的「按内容比对后写入」：远端内容与待写内容 trim 归一后相同就跳过，
+ * 不同才落盘，并返回本轮是否真的写过 —— 主文件与 IPv6 伴生文件的变更检测走同一跳流水线，
+ * 只差两条日志文案，避免两段逐行重复各自漂移。
+ */
+async function writeGitHubFileIfChanged(
+    gh: GitHubTarget,
+    path: string,
+    content: string,
+    message: string,
+    log: LogFn,
+    logs: { unchanged: string; written: string }
+): Promise<boolean> {
+    const remoteContent = await getCurrentGitHubContent({ ...gh, path, log });
+    if (remoteContent !== null && content.trim() === remoteContent.trim()) {
+        log(logs.unchanged);
+        return false;
+    }
+    await updateFileOnGitHub({ ...gh, path, content, message, log });
+    log(logs.written);
+    return true;
+}
+
 /** 单个 IP 源同步入口 */
 export async function syncSingleIpSource(
     id: number,
@@ -158,7 +183,7 @@ export async function syncSingleIpSource(
         if (!githubSettings.token || !githubSettings.owner || !githubSettings.repo) {
             throw new Error("GitHub API设置不完整。");
         }
-        const gh = githubSettings as { token: string; owner: string; repo: string };
+        const gh = githubSettings as GitHubTarget;
         const source = (await db
             .prepare("SELECT * FROM ip_sources WHERE id = ? AND is_enabled = 1")
             .bind(id)
@@ -186,37 +211,23 @@ export async function syncSingleIpSource(
 
             let wroteSomething = false;
 
-            const newContent = ipv4.join("\n");
-            const oldContent = await getCurrentGitHubContent({ ...gh, path: source.github_path, log });
-            if (oldContent !== null && newContent.trim() === oldContent.trim()) {
-                log(`主文件内容无变化，无需更新 GitHub。`);
-            } else {
-                await updateFileOnGitHub({
-                    ...gh,
-                    path: source.github_path,
-                    content: newContent,
-                    message: source.commit_message,
-                    log,
-                });
-                log(`✔ 成功同步到GitHub: ${source.github_path}`);
+            if (
+                await writeGitHubFileIfChanged(gh, source.github_path, ipv4.join("\n"), source.commit_message, log, {
+                    unchanged: "主文件内容无变化，无需更新 GitHub。",
+                    written: `✔ 成功同步到GitHub: ${source.github_path}`,
+                })
+            ) {
                 wroteSomething = true;
             }
 
             // 伴生文件：非空则比对后写入；为空且远端存在才删除（deleteFileOnGitHub 内部 GET 404 时不发 DELETE）
-            const companionContent = ipv6.join("\n");
             if (ipv6.length > 0) {
-                const remoteCompanion = await getCurrentGitHubContent({ ...gh, path: companionPath, log });
-                if (remoteCompanion !== null && companionContent.trim() === remoteCompanion.trim()) {
-                    log(`IPv6 伴生文件内容无变化，无需更新: ${companionPath}`);
-                } else {
-                    await updateFileOnGitHub({
-                        ...gh,
-                        path: companionPath,
-                        content: companionContent,
-                        message: source.commit_message,
-                        log,
-                    });
-                    log(`✔ 成功同步 IPv6 伴生文件到GitHub: ${companionPath}`);
+                if (
+                    await writeGitHubFileIfChanged(gh, companionPath, ipv6.join("\n"), source.commit_message, log, {
+                        unchanged: `IPv6 伴生文件内容无变化，无需更新: ${companionPath}`,
+                        written: `✔ 成功同步 IPv6 伴生文件到GitHub: ${companionPath}`,
+                    })
+                ) {
                     wroteSomething = true;
                 }
             } else if (await deleteFileOnGitHub({ ...gh, path: companionPath, message: source.commit_message, log })) {

@@ -6,19 +6,23 @@ import { companionSourceCandidate, deriveCompanionPath, readFileForSubscriber } 
 
 /**
  * 白名单查询：先按请求路径精确匹配主文件，未命中再按派生规则反查伴生文件所属的源。
- * 反查只给候选，必须用 deriveCompanionPath 正推一次确认 —— 否则任何 `x-v6` 形态都能借白名单读出去。
+ * 主文件与候选主文件一趟 IN 查回来，省掉第二次 D1 往返。
  */
 async function findWhitelistedSource(db: D1Database, path: string): Promise<{ github_path: string } | null> {
-    const exact = await db.prepare("SELECT * FROM ip_sources WHERE github_path = ?").bind(path).first();
-    if (exact) return exact as { github_path: string };
-
     const candidate = companionSourceCandidate(path);
+    const keys = candidate === null ? [path] : [path, candidate];
+    const rows = await db
+        .prepare(`SELECT github_path FROM ip_sources WHERE github_path IN (${keys.map(() => "?").join(", ")})`)
+        .bind(...keys)
+        .all<{ github_path: string }>();
+    const found = rows.results ?? [];
+
+    const exact = found.find((row) => row.github_path === path);
+    if (exact) return exact;
+
+    // 反查只给候选，必须用 deriveCompanionPath 正推一次确认 —— 否则任何 `x-v6` 形态都能借白名单读出去。
     if (candidate === null) return null;
-    const owner = (await db.prepare("SELECT * FROM ip_sources WHERE github_path = ?").bind(candidate).first()) as {
-        github_path: string;
-    } | null;
-    if (!owner || deriveCompanionPath(owner.github_path) !== path) return null;
-    return owner;
+    return found.find((row) => deriveCompanionPath(row.github_path) === path) ?? null;
 }
 
 /** 订阅器友好代理：命中白名单（主文件或已登记源的伴生文件）后由 GitHub module 读穿边缘缓存 */

@@ -210,6 +210,23 @@ function encodeBase64Utf8(content: string): string {
     return btoa(binary);
 }
 
+/**
+ * 写前取 sha（更新与删除共用的同一步骤）：远端不存在（404）返回 null ——
+ * 对更新是「新建文件」，对删除是「远端本就没有」；其余非 2xx 原样抛出。
+ * 传 missingShaError 时，200 但响应缺 sha 直接报错（删除必须带 sha，否则会 422）。
+ */
+async function fetchFileSha(apiUrl: string, token: string, missingShaError?: string): Promise<string | null> {
+    try {
+        const fileResponse = await githubApiRequest(apiUrl, token);
+        const fileData = (await fileResponse.json()) as { sha?: string };
+        if (!fileData.sha && missingShaError) throw new Error(missingShaError);
+        return fileData.sha ?? null;
+    } catch (e) {
+        if (e instanceof HttpError && e.status === 404) return null;
+        throw e;
+    }
+}
+
 /** 更新/创建 GitHub 文件（内容 base64 编码，UTF-8 安全） */
 export async function updateFileOnGitHub({
     token,
@@ -231,14 +248,7 @@ export async function updateFileOnGitHub({
     await ensureRepoExists(token, owner, repo, log);
 
     const apiUrl = buildContentsApiUrl(owner, repo, path);
-    let sha: string | undefined;
-    try {
-        const getFileResponse = await githubApiRequest(apiUrl, token);
-        const fileData = (await getFileResponse.json()) as { sha: string };
-        sha = fileData.sha;
-    } catch (e) {
-        if (!(e instanceof HttpError && e.status === 404)) throw e;
-    }
+    const sha = (await fetchFileSha(apiUrl, token)) ?? undefined;
 
     const body = JSON.stringify({
         message,
@@ -270,18 +280,10 @@ export async function deleteFileOnGitHub({
     log: (msg: string) => void;
 }): Promise<boolean> {
     const apiUrl = buildContentsApiUrl(owner, repo, path);
-    let sha: string;
-    try {
-        const getFileResponse = await githubApiRequest(apiUrl, token);
-        const fileData = (await getFileResponse.json()) as { sha?: string };
-        if (!fileData.sha) throw new Error(`GitHub 未返回文件 '${path}' 的 sha，无法删除。`);
-        sha = fileData.sha;
-    } catch (e) {
-        if (e instanceof HttpError && e.status === 404) {
-            log(`GitHub文件 '${path}' 不存在，无需删除。`);
-            return false;
-        }
-        throw e;
+    const sha = await fetchFileSha(apiUrl, token, `GitHub 未返回文件 '${path}' 的 sha，无法删除。`);
+    if (sha === null) {
+        log(`GitHub文件 '${path}' 不存在，无需删除。`);
+        return false;
     }
 
     await githubApiRequest(apiUrl, token, {

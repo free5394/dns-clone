@@ -4,6 +4,7 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { fetchIpsFromSource, syncSingleIpSource } from "../src/sync/ip-sources.ts";
+import { deriveCompanionPath } from "../src/sync/github.ts";
 import {
     syncDomainLogic,
     syncSystemDomains,
@@ -392,6 +393,17 @@ describe("IP 源主文件语义 (issue #50)", () => {
         return { id: row.id, githubPath };
     }
 
+    async function syncState(id: number): Promise<{ status: string; error: string | null }> {
+        const row = (await env.WUYA.prepare("SELECT last_sync_status, last_sync_error FROM ip_sources WHERE id = ?")
+            .bind(id)
+            .first()) as { last_sync_status: string; last_sync_error: string | null } | null;
+        return { status: row?.last_sync_status ?? "", error: row?.last_sync_error ?? null };
+    }
+
+    async function lastSyncStatus(id: number): Promise<string> {
+        return (await syncState(id)).status;
+    }
+
     async function captureLogs(run: () => Promise<unknown>): Promise<string[]> {
         const logs: string[] = [];
         const spy = vi.spyOn(console, "log").mockImplementation((msg?: unknown) => {
@@ -442,7 +454,7 @@ describe("IP 源主文件语义 (issue #50)", () => {
     it("仅解析到 IPv6 时主文件写空内容，IPv6 写入伴生文件", async () => {
         await seedGitHubSettings();
         const { id, githubPath } = await insertSource("https://example.com/v6.txt");
-        const companionPath = `${githubPath.slice(0, -4)}-v6.txt`;
+        const companionPath = deriveCompanionPath(githubPath);
         const puts: Array<{ path: string; body: string }> = [];
         vi.stubGlobal(
             "fetch",
@@ -480,10 +492,7 @@ describe("IP 源主文件语义 (issue #50)", () => {
         );
         expect(logs.some((line) => line.includes("IPv6 伴生文件"))).toBe(true);
 
-        const row = (await env.WUYA.prepare("SELECT last_sync_status FROM ip_sources WHERE id = ?")
-            .bind(id)
-            .first()) as { last_sync_status: string };
-        expect(row.last_sync_status).toBe("success");
+        expect(await lastSyncStatus(id)).toBe("success");
 
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
     });
@@ -491,7 +500,7 @@ describe("IP 源主文件语义 (issue #50)", () => {
     it("IPv6 为空且远端存在伴生文件时删除，状态记 success", async () => {
         await seedGitHubSettings();
         const { id, githubPath } = await insertSource("https://example.com/drop-v6.txt");
-        const companionPath = `${githubPath.slice(0, -4)}-v6.txt`;
+        const companionPath = deriveCompanionPath(githubPath);
         const deleteCalls: string[] = [];
         vi.stubGlobal(
             "fetch",
@@ -531,10 +540,7 @@ describe("IP 源主文件语义 (issue #50)", () => {
         expect(deleteCalls).toEqual([companionPath]);
         expect(logs.some((line) => line.includes("已删除 IPv6 伴生文件"))).toBe(true);
 
-        const row = (await env.WUYA.prepare("SELECT last_sync_status FROM ip_sources WHERE id = ?")
-            .bind(id)
-            .first()) as { last_sync_status: string };
-        expect(row.last_sync_status).toBe("success");
+        expect(await lastSyncStatus(id)).toBe("success");
 
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
     });
@@ -569,10 +575,7 @@ describe("IP 源主文件语义 (issue #50)", () => {
         expect(methods).not.toContain("PUT");
         expect(logs.some((line) => line.includes("跳过删除"))).toBe(true);
 
-        const row = (await env.WUYA.prepare("SELECT last_sync_status FROM ip_sources WHERE id = ?")
-            .bind(id)
-            .first()) as { last_sync_status: string };
-        expect(row.last_sync_status).toBe("no_change");
+        expect(await lastSyncStatus(id)).toBe("no_change");
 
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
     });
@@ -580,7 +583,7 @@ describe("IP 源主文件语义 (issue #50)", () => {
     it("伴生文件内容一致时不重复写入，但主文件更新仍记 success", async () => {
         await seedGitHubSettings();
         const { id, githubPath } = await insertSource("https://example.com/same-v6.txt");
-        const companionPath = `${githubPath.slice(0, -4)}-v6.txt`;
+        const companionPath = deriveCompanionPath(githubPath);
         const puts: string[] = [];
         vi.stubGlobal(
             "fetch",
@@ -623,10 +626,73 @@ describe("IP 源主文件语义 (issue #50)", () => {
         expect(puts).toEqual([githubPath]);
         expect(logs.some((line) => line.includes("IPv6 伴生文件内容无变化"))).toBe(true);
 
-        const row = (await env.WUYA.prepare("SELECT last_sync_status FROM ip_sources WHERE id = ?")
-            .bind(id)
-            .first()) as { last_sync_status: string };
-        expect(row.last_sync_status).toBe("success");
+        expect(await lastSyncStatus(id)).toBe("success");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("伴生文件写入失败时整轮记 failed，下一轮按内容比对收敛 (issue #51)", async () => {
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/fail-v6.txt");
+        const companionPath = deriveCompanionPath(githubPath);
+        const puts: string[] = [];
+        // 第一轮：主文件写成功、伴生文件 PUT 恒 500，同步应整轮失败
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                const method = (init?.method ?? "GET").toUpperCase();
+                if (url === "https://example.com/fail-v6.txt") {
+                    return new Response("2606:4700:4700::1111", { status: 200 });
+                }
+                if (url === "https://api.github.com/repos/test-owner/test-repo") {
+                    return new Response("{}", { status: 200 });
+                }
+                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                    const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+                    if (method === "PUT") {
+                        if (path === companionPath) {
+                            return new Response(JSON.stringify({ message: "boom" }), { status: 500 });
+                        }
+                        puts.push(path);
+                        return new Response("{}", { status: 200 });
+                    }
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        const logs = await captureLogs(async () => {
+            await expect(syncSingleIpSource(id, env, false)).rejects.toThrow();
+        });
+
+        expect(logs.some((line) => line.includes("同步失败"))).toBe(true);
+        const failed = await syncState(id);
+        expect(failed.status).toBe("failed");
+        expect(failed.error).toBeTruthy();
+
+        // 第二轮：伴生文件已在远端存下同样的内容，主文件也一致 → 全链路无写入，状态收敛为 no_change
+        expect(puts).toEqual([githubPath]);
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                if (url === "https://example.com/fail-v6.txt") {
+                    return new Response("2606:4700:4700::1111", { status: 200 });
+                }
+                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                    const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+                    if (path === githubPath) return new Response("", { status: 200 });
+                    if (path === companionPath) return new Response("2606:4700:4700::1111", { status: 200 });
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        await captureLogs(() => syncSingleIpSource(id, env, false));
+        expect(await lastSyncStatus(id)).toBe("no_change");
 
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
     });

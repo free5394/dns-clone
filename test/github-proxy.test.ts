@@ -233,7 +233,7 @@ describe("handleGitHubFileProxy — IPv6 伴生文件白名单 (issue #51)", () 
 
         expect(res.status).toBe(200);
         expect(await res.text()).toBe("2606:4700:4700::1111");
-        // 上有所读必须是伴生路径本身，不能回落到主文件
+        // 上游所读必须是伴生路径本身，不能回落到主文件
         expect(String(spy.mock.calls[0][0])).toBe(
             "https://api.github.com/repos/test-owner/test-repo/contents/c51-main-v6.txt"
         );

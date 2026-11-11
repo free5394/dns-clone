@@ -1483,6 +1483,33 @@ describe("IP 源伴生路径校验 (issue #51)", () => {
         expect(count.n).toBe(0);
     });
 
+    it("派生伴生路径的单段超过 255 时返回 400，不留到同步期才炸", async () => {
+        const cookie = await loginAndGetCookie();
+        // 主路径总长只有 257，但末段 253 字符：派生出的 "-v6.txt" 把它撑到 256，
+        // 保存阶段就该拒绝——否则每轮同步都在 normalizeGithubPath 里抛错、永不收敛
+        const mainPath = `m51/${"d".repeat(249)}.txt`;
+        const companionPath = `m51/${"d".repeat(249)}-v6.txt`;
+        expect(mainPath.length).toBeLessThan(512);
+        expect(companionPath.length).toBeLessThan(512);
+        expect(companionPath.split("/").at(-1)!.length).toBe(256);
+
+        const res = await postIpSource(cookie, {
+            url: "https://example.com/m51/segment.txt",
+            github_path: mainPath,
+            commit_message: "单段超限",
+            fetch_strategy: "direct_regex",
+        });
+
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error?: string };
+        expect(body.error).toContain("伴生");
+        expect(body.error).toContain("255");
+        const count = (await env.WUYA.prepare("SELECT COUNT(*) AS n FROM ip_sources WHERE github_path = ?")
+            .bind(mainPath)
+            .first()) as { n: number };
+        expect(count.n).toBe(0);
+    });
+
     it("新增源的伴生路径撞上已有源主文件时返回 409", async () => {
         const cookie = await loginAndGetCookie();
         await env.WUYA.prepare(
@@ -1705,7 +1732,7 @@ describe("IP 源路径百分号语义 (高-3)", () => {
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm13/%'").run();
     });
 
-    function postIpSource(cookie: string, githubPath: string) {
+    function postIpSourceWithPath(cookie: string, githubPath: string) {
         return SELF.fetch("https://example.com/api/ip_sources", {
             method: "POST",
             headers: { Cookie: cookie, "Content-Type": "application/json" },
@@ -1720,7 +1747,7 @@ describe("IP 源路径百分号语义 (高-3)", () => {
 
     it("百分号编码路径落库时归一为解码后的同一路径", async () => {
         const cookie = await loginAndGetCookie();
-        const res = await postIpSource(cookie, "m13/a%20b.txt");
+        const res = await postIpSourceWithPath(cookie, "m13/a%20b.txt");
         expect(res.status).toBe(200);
 
         const row = await env.WUYA.prepare("SELECT github_path FROM ip_sources WHERE github_path = ?")
@@ -1731,7 +1758,7 @@ describe("IP 源路径百分号语义 (高-3)", () => {
 
     it("非法百分号转义返回 400 且不落库", async () => {
         const cookie = await loginAndGetCookie();
-        const res = await postIpSource(cookie, "m13/%zz.txt");
+        const res = await postIpSourceWithPath(cookie, "m13/%zz.txt");
         expect(res.status).toBe(400);
         expect(((await res.json()) as { error?: string }).error).toContain("GitHub 文件路径");
 
@@ -1743,7 +1770,7 @@ describe("IP 源路径百分号语义 (高-3)", () => {
 
     it("孤立代理项返回 400 而不是保存成功", async () => {
         const cookie = await loginAndGetCookie();
-        const res = await postIpSource(cookie, "\uD800m13.txt");
+        const res = await postIpSourceWithPath(cookie, "\uD800m13.txt");
         expect(res.status).toBe(400);
         expect(((await res.json()) as { error?: string }).error).toContain("GitHub 文件路径");
     });
