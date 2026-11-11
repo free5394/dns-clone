@@ -5,6 +5,7 @@ import { describe, it, expect } from "vitest";
 import { createDashboardRenderers } from "../src/ui/dashboard-render.js";
 import { escapeHtmlClient, canAddDomains, planSyncCompletionActions } from "../src/ui/dashboard-helpers.js";
 import { getDashboardPage } from "../src/ui/templates.js";
+import { DEFAULT_MAX_IPS_PER_TYPE, MAX_MAX_IPS_PER_TYPE, MIN_MAX_IPS_PER_TYPE } from "../src/util/max-ips-per-type.ts";
 
 const ZONE = "example.com";
 const ORIGIN = "https://dash.test";
@@ -196,16 +197,26 @@ describe("单条同步结束后自动刷新列表 (issue #22 / #42)", () => {
 
 // issue #49：设置页必须能改单类型记录上限，并在保存后回填服务端归一的返回值。
 describe("单类型记录上限设置项 (issue #49)", () => {
-    it("缺失或损坏时渲染默认 20，有值时渲染该值", () => {
-        expect(getDashboardPage([], [], {})).toMatch(/id="maxIpsPerType"[^>]*value="20"/);
-        expect(getDashboardPage([], [], { MAX_IPS_PER_TYPE: "oops" })).toMatch(/id="maxIpsPerType"[^>]*value="20"/);
-        expect(getDashboardPage([], [], { MAX_IPS_PER_TYPE: 200 })).toMatch(/id="maxIpsPerType"[^>]*value="200"/);
-        expect(getDashboardPage([], [], { MAX_IPS_PER_TYPE: 30 })).toMatch(/id="maxIpsPerType"[^>]*value="30"/);
+    // 期望值取自同一处常量（src/util/max-ips-per-type.ts），避免测试与实现各存一份真相
+    const inputTagWith = (value: number) =>
+        new RegExp(
+            `id="maxIpsPerType"[^>]*min="${MIN_MAX_IPS_PER_TYPE}"[^>]*max="${MAX_MAX_IPS_PER_TYPE}"[^>]*value="${value}"`
+        );
+
+    it("缺失或损坏时渲染默认上限，有值时渲染该值", () => {
+        expect(getDashboardPage([], [], {})).toMatch(inputTagWith(DEFAULT_MAX_IPS_PER_TYPE));
+        expect(getDashboardPage([], [], { MAX_IPS_PER_TYPE: "oops" })).toMatch(inputTagWith(DEFAULT_MAX_IPS_PER_TYPE));
+        expect(getDashboardPage([], [], { MAX_IPS_PER_TYPE: MAX_MAX_IPS_PER_TYPE })).toMatch(
+            inputTagWith(MAX_MAX_IPS_PER_TYPE)
+        );
+        expect(getDashboardPage([], [], { MAX_IPS_PER_TYPE: 30 })).toMatch(inputTagWith(30));
     });
 
-    it("输入框受 1-200 约束，避免提交必然被拒的值", () => {
+    it("输入框受范围约束，避免提交必然被拒的值", () => {
         const html = getDashboardPage([], [], {});
-        expect(html).toMatch(/id="maxIpsPerType"[^>]*min="1"[^>]*max="200"/);
+        expect(html).toMatch(
+            new RegExp(`id="maxIpsPerType"[^>]*min="${MIN_MAX_IPS_PER_TYPE}"[^>]*max="${MAX_MAX_IPS_PER_TYPE}"`)
+        );
     });
 
     it("表单保存该字段，并在保存后按服务端返回值回填", () => {

@@ -38,10 +38,14 @@ export function isHostmonitKeyConfigured(stored: string | null | undefined): boo
  */
 export const MAX_IPS_PER_TYPE_KEY = "MAX_IPS_PER_TYPE";
 
-/** 整数范围判据：Number 后可解析为整数且落在 [min, max]；null（已清除）视为不合法 */
-function isIntInRange(value: string | null, min: number, max: number): boolean {
-    if (value === null) return false;
-    const n = Number(value);
+/**
+ * 整数范围判据：把折叠后的文本按 Number 解析为整数且落在 [min, max] 才通过。
+ * folded 为 null 表示该键已被判为显式清除（清除语义由调用方的 isExplicitClear 决定），
+ * 单看本函数不合法，避免「清除」被同时当成一个可落库的数值。
+ */
+function isIntInRange(folded: string | null, min: number, max: number): boolean {
+    if (folded === null) return false;
+    const n = Number(folded);
     return Number.isInteger(n) && n >= min && n <= max;
 }
 

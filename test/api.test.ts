@@ -728,6 +728,20 @@ describe("POST /api/settings (Task 2.6 白名单 + 配对验证)", () => {
         expect(row).toBeNull();
         expect(await readMax()).toBe(20);
     });
+
+    it("非字符串却折叠成空的非法值整批 400，且不落库 (issue #49 复核)", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").run();
+
+        // String([]) === ""，若按折叠结果判「显式清除」会被误判成合法清除并返回 200（方案 §9.5 要求 400）
+        const res = await SELF.fetch("https://example.com/api/settings", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({ MAX_IPS_PER_TYPE: [] }),
+        });
+        expect(res.status).toBe(400);
+        expect(await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").first()).toBeNull();
+    });
 });
 
 describe("GET /api/settings (Task 2.5 敏感字段过滤)", () => {
@@ -1778,6 +1792,8 @@ describe("HOSTMONIT_API_KEY 三态 API 级语义 (issue #31)", () => {
 
 // issue #49：列表投影必须包含新列，旧行读出 null 而不是报错（方案 §15.1.7 归 test/api.test.ts）
 describe("列表投影包含新列 (issue #49)", () => {
+    // 清单是契约锁（issue #49）：列定义真相源在 src/db/client.ts 的 DOMAIN_COLUMNS / IP_SOURCE_COLUMNS，
+    // 这里复刻一份用于断言「投影真的带出这些列」，将来加列时需同步两处。
     const NEW_DOMAIN_COLUMNS = ["source_type", "source_url", "parse_mode", "parse_param", "fetch_strategy"] as const;
     const NEW_IP_SOURCE_COLUMNS = ["parse_mode", "parse_param"] as const;
 
@@ -1823,18 +1839,5 @@ describe("列表投影包含新列 (issue #49)", () => {
         } finally {
             await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(row.meta.last_row_id).run();
         }
-    });
-
-    it("非字符串却折叠成空的非法值整批 400，且不落库 (issue #49 复核)", async () => {
-        const cookie = await loginAndGetCookie();
-        await env.WUYA.prepare("DELETE FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").run();
-
-        const res = await SELF.fetch("https://example.com/api/settings", {
-            method: "POST",
-            headers: { Cookie: cookie, "Content-Type": "application/json" },
-            body: JSON.stringify({ MAX_IPS_PER_TYPE: [] }),
-        });
-        expect(res.status).toBe(400);
-        expect(await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").first()).toBeNull();
     });
 });
