@@ -219,3 +219,88 @@ describe("handleGitHubFileProxy — C4 订阅器读", () => {
         expect(await res.text()).toBe("无法获取对应文件，请稍后重试。");
     });
 });
+
+// issue #51：白名单扩展到已登记源的派生伴生路径，行为与主文件一致；未登记仍 404
+describe("handleGitHubFileProxy — IPv6 伴生文件白名单 (issue #51)", () => {
+    it("已登记源的伴生路径可读，读取的是伴生文件本身", async () => {
+        await seedGitHubSettings();
+        await seedWhitelistEntry("c51-main.txt", "v6");
+        const spy = stubUpstreamSuccess("2606:4700:4700::1111");
+
+        const ctx = createExecutionContext();
+        const res = await handleGitHubFileProxy("c51-main-v6.txt", env, ctx);
+        await waitOnExecutionContext(ctx);
+
+        expect(res.status).toBe(200);
+        expect(await res.text()).toBe("2606:4700:4700::1111");
+        // 上有所读必须是伴生路径本身，不能回落到主文件
+        expect(String(spy.mock.calls[0][0])).toBe(
+            "https://api.github.com/repos/test-owner/test-repo/contents/c51-main-v6.txt"
+        );
+    });
+
+    it("伴生路径与主文件共享响应头约定（Content-Type / 缓存策略）", async () => {
+        await seedGitHubSettings();
+        await seedWhitelistEntry("c51-shape.txt", "v6");
+        stubUpstreamSuccess("2606:4700:4700::1111");
+
+        const ctx = createExecutionContext();
+        const res = await handleGitHubFileProxy("c51-shape-v6.txt", env, ctx);
+        await waitOnExecutionContext(ctx);
+
+        expect(res.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
+        const cacheControl = res.headers.get("Cache-Control") ?? "";
+        expect(cacheControl).toContain("max-age=60");
+        expect(cacheControl).toContain("s-maxage=300");
+    });
+
+    it("未登记源的 -v6 路径仍 404，且不发出上游请求", async () => {
+        await seedGitHubSettings();
+        const spy = stubUpstreamSuccess();
+
+        const ctx = createExecutionContext();
+        const res = await handleGitHubFileProxy("c51-never-registered-v6.txt", env, ctx);
+        await waitOnExecutionContext(ctx);
+
+        expect(res.status).toBe(404);
+        expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("任意 -v6 形态不能借白名单放行（反推候选必须能正推回去）", async () => {
+        await seedGitHubSettings();
+        // 登记的是 x.json（无 .txt），伴生路径是 x.json-v6；请求 x-v6 不能命中
+        await seedWhitelistEntry("c51-abuse.json", "v6");
+        const spy = stubUpstreamSuccess();
+
+        const ctx = createExecutionContext();
+        const res = await handleGitHubFileProxy("c51-abuse-v6", env, ctx);
+        await waitOnExecutionContext(ctx);
+
+        expect(res.status).toBe(404);
+        expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("伴生路径与主文件缓存键互不污染", async () => {
+        await seedGitHubSettings();
+        await seedWhitelistEntry("c51-key.txt", "v6");
+        const mainBody = "1.1.1.1";
+        const v6Body = "2606:4700:4700::1111";
+        const spy = vi.fn(async (url: string) => {
+            const body = String(url).endsWith("c51-key-v6.txt") ? v6Body : mainBody;
+            return new Response(body, { status: 200 });
+        });
+        vi.stubGlobal("fetch", spy);
+
+        const ctx1 = createExecutionContext();
+        const resMain = await handleGitHubFileProxy("c51-key.txt", env, ctx1);
+        await waitOnExecutionContext(ctx1);
+        const ctx2 = createExecutionContext();
+        const resV6 = await handleGitHubFileProxy("c51-key-v6.txt", env, ctx2);
+        await waitOnExecutionContext(ctx2);
+
+        expect(await resMain.text()).toBe(mainBody);
+        expect(await resV6.text()).toBe(v6Body);
+        // 两个文件各自打了一次上游：没有共享缓存键
+        expect(spy).toHaveBeenCalledTimes(2);
+    });
+});

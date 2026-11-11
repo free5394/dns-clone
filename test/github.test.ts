@@ -7,6 +7,9 @@ import {
     updateFileOnGitHub,
     readFileForSubscriber,
     normalizeGithubPath,
+    deriveCompanionPath,
+    companionSourceCandidate,
+    deleteFileOnGitHub,
 } from "../src/sync/github.ts";
 
 afterEach(() => {
@@ -379,5 +382,89 @@ describe("GitHub 路径解码残留百分号 (Q1)", () => {
         await expect(readFileForSubscriber(target, "a%25b.txt")).rejects.toThrow(/GitHub 文件路径/);
         expect(cacheHits).toHaveLength(0);
         expect(spy).not.toHaveBeenCalled();
+    });
+});
+
+describe("IPv6 伴生路径派生 (issue #51)", () => {
+    it(".txt 结尾时替换为 -v6.txt", () => {
+        expect(deriveCompanionPath("ips.txt")).toBe("ips-v6.txt");
+        expect(deriveCompanionPath("dir/sub/ips.txt")).toBe("dir/sub/ips-v6.txt");
+    });
+
+    it("无 .txt 后缀时直接追加 -v6", () => {
+        expect(deriveCompanionPath("ips")).toBe("ips-v6");
+        expect(deriveCompanionPath("dir/ips.json")).toBe("dir/ips.json-v6");
+    });
+
+    it("反推候选只认 -v6.txt / -v6 两种形态", () => {
+        expect(companionSourceCandidate("dir/ips-v6.txt")).toBe("dir/ips.txt");
+        expect(companionSourceCandidate("dir/ips-v6")).toBe("dir/ips");
+        expect(companionSourceCandidate("dir/ips.txt")).toBeNull();
+        expect(companionSourceCandidate("dir/ips-v6.json")).toBeNull();
+    });
+
+    it("派生与反推互为逆运算（主文件形态）", () => {
+        for (const main of ["a.txt", "x/y/z.txt", "plain", "no/eye.txt"]) {
+            expect(companionSourceCandidate(deriveCompanionPath(main))).toBe(main);
+        }
+    });
+});
+
+describe("deleteFileOnGitHub 删除 GitHub 文件 (issue #51)", () => {
+    it("文件存在：先 GET 取 sha，再带 sha DELETE", async () => {
+        const spy = mockFetch((url, init) => {
+            if (init?.method === "DELETE") return json({ commit: { sha: "new" } });
+            return json({ sha: "existing-sha" });
+        });
+        const logs: string[] = [];
+
+        const deleted = await deleteFileOnGitHub({
+            token: "token",
+            owner: "owner",
+            repo: "repo",
+            path: "ips-v6.txt",
+            message: "remove v6",
+            log: (m) => logs.push(m),
+        });
+
+        expect(deleted).toBe(true);
+        const deleteCall = spy.mock.calls.find((c) => c[1]?.method === "DELETE");
+        expect(deleteCall).toBeDefined();
+        const body = JSON.parse(deleteCall![1]!.body as string);
+        expect(body).toEqual({ message: "remove v6", sha: "existing-sha" });
+        expect(logs).toHaveLength(0);
+    });
+
+    it("远端 404：静默返回 false，不发 DELETE", async () => {
+        const spy = mockFetch(() => json({ message: "Not Found" }, 404));
+        const logs: string[] = [];
+
+        const deleted = await deleteFileOnGitHub({
+            token: "token",
+            owner: "owner",
+            repo: "repo",
+            path: "ips-v6.txt",
+            message: "remove v6",
+            log: (m) => logs.push(m),
+        });
+
+        expect(deleted).toBe(false);
+        expect(spy.mock.calls.some((c) => c[1]?.method === "DELETE")).toBe(false);
+        expect(logs.some((line) => line.includes("不存在，无需删除"))).toBe(true);
+    });
+
+    it("非 404 错误（如 403）原样抛出，不静默", async () => {
+        mockFetch(() => json({ message: "Forbidden" }, 403));
+
+        await expect(
+            deleteFileOnGitHub({
+                token: "token",
+                owner: "owner",
+                repo: "repo",
+                path: "ips-v6.txt",
+                message: "remove v6",
+                log: () => {},
+            })
+        ).rejects.toThrow(/403/);
     });
 });

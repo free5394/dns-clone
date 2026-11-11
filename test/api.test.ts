@@ -1447,6 +1447,147 @@ describe("IP 源写库冲突 (M-3)", () => {
     });
 });
 
+// issue #51：伴生路径长度与主文件/伴生文件的双向路径冲突在保存时就要拒绝
+describe("IP 源伴生路径校验 (issue #51)", () => {
+    afterAll(async () => {
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm51/%'").run();
+    });
+
+    function postIpSource(cookie: string, payload: Record<string, unknown>) {
+        return SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+    }
+
+    it("主文件路径合法但派生伴生路径超过 512 时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        // 单段 ≤255：拼成 510 字符的主文件路径，派生后 513 字符（超过 512 上限）
+        const mainPath = `m51/${"a".repeat(200)}/${"b".repeat(200)}/${"c".repeat(100)}.txt`;
+        expect(mainPath.length).toBe(510);
+        expect(mainPath.slice(0, -4).length + "-v6.txt".length).toBe(513);
+
+        const res = await postIpSource(cookie, {
+            url: "https://example.com/m51/too-long.txt",
+            github_path: mainPath,
+            commit_message: "长路径",
+            fetch_strategy: "direct_regex",
+        });
+
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toContain("512");
+        const count = (await env.WUYA.prepare("SELECT COUNT(*) AS n FROM ip_sources WHERE github_path = ?")
+            .bind(mainPath)
+            .first()) as { n: number };
+        expect(count.n).toBe(0);
+    });
+
+    it("新增源的伴生路径撞上已有源主文件时返回 409", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/m51/own.txt", "m51/own.txt", "已有", "direct_regex")
+            .run();
+
+        const res = await postIpSource(cookie, {
+            url: "https://example.com/m51/claim-v6.txt",
+            // m51/own.txt 的伴生文件就是它，主文件不能抢占
+            github_path: "m51/own-v6.txt",
+            commit_message: "抢占伴生",
+            fetch_strategy: "direct_regex",
+        });
+
+        expect(res.status).toBe(409);
+        expect(((await res.json()) as { error?: string }).error).toContain("伴生");
+        const count = (await env.WUYA.prepare("SELECT COUNT(*) AS n FROM ip_sources WHERE github_path = ?")
+            .bind("m51/own-v6.txt")
+            .first()) as { n: number };
+        expect(count.n).toBe(0);
+    });
+
+    it("新增源的伴生路径撞上已有源伴生文件时返回 409（反向）", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/m51/pair.txt", "m51/pair.txt", "已有", "direct_regex")
+            .run();
+
+        const res = await postIpSource(cookie, {
+            url: "https://example.com/m51/pair-v6.txt",
+            // 它的伴生路径是 m51/pair-v6-v6.txt，但主文件本身占用了别人的伴生路径
+            github_path: "m51/pair-v6.txt",
+            commit_message: "撞伴生",
+            fetch_strategy: "direct_regex",
+        });
+
+        expect(res.status).toBe(409);
+    });
+
+    it("更新自身路径不与自身冲突，正常返回 200", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/m51/self.txt", "m51/self.txt", "自更新", "direct_regex")
+            .run();
+        const row = (await env.WUYA.prepare(
+            "SELECT id FROM ip_sources WHERE github_path = 'm51/self.txt'"
+        ).first()) as {
+            id: number;
+        };
+
+        const res = await SELF.fetch(`https://example.com/api/ip_sources/${row.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m51/self.txt",
+                github_path: "m51/self.txt",
+                commit_message: "换个提交信息",
+                fetch_strategy: "direct_regex",
+            }),
+        });
+
+        expect(res.status).toBe(200);
+    });
+
+    it("更新成别的源的伴生路径时返回 409", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.batch([
+            env.WUYA.prepare(
+                "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+            ).bind("https://example.com/m51/keep.txt", "m51/keep.txt", "保留", "direct_regex"),
+            env.WUYA.prepare(
+                "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+            ).bind("https://example.com/m51/move.txt", "m51/move.txt", "改路径", "direct_regex"),
+        ]);
+        const target = (await env.WUYA.prepare(
+            "SELECT id FROM ip_sources WHERE github_path = 'm51/move.txt'"
+        ).first()) as {
+            id: number;
+        };
+
+        const res = await SELF.fetch(`https://example.com/api/ip_sources/${target.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m51/move.txt",
+                github_path: "m51/keep-v6.txt",
+                commit_message: "撞伴生",
+                fetch_strategy: "direct_regex",
+            }),
+        });
+
+        expect(res.status).toBe(409);
+        const after = (await env.WUYA.prepare("SELECT github_path FROM ip_sources WHERE id = ?")
+            .bind(target.id)
+            .first()) as { github_path: string };
+        expect(after.github_path).toBe("m51/move.txt");
+    });
+});
+
 describe("仪表盘记录批量查询 (M-10)", () => {
     /** 插入两个域名并返回 id，测试结束按 id 清理 */
     async function seedDomains(names: string[]): Promise<number[]> {

@@ -416,16 +416,16 @@ describe("IP 源主文件语义 (issue #50)", () => {
                 if (url === "https://example.com/same.txt") {
                     return new Response("2.2.2.2\n1.1.1.1", { status: 200 });
                 }
-                if (
-                    url ===
-                    `https://api.github.com/repos/test-owner/test-repo/contents/${encodeURIComponent(githubPath)}`
-                ) {
+                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
                     if ((init?.method ?? "GET").toUpperCase() === "PUT") {
                         putBodies.push(String(init?.body ?? ""));
                         return new Response("{}", { status: 200 });
                     }
-                    // 线上文件就是排序后的同一内容
-                    return new Response("1.1.1.1\n2.2.2.2", { status: 200 });
+                    // 主文件线上就是排序后的同一内容；伴生文件远端不存在（#51 起仍要 GET 一次判断是否删除）
+                    if (decodeURIComponent(url.split("/contents/")[1]) === githubPath) {
+                        return new Response("1.1.1.1\n2.2.2.2", { status: 200 });
+                    }
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
                 }
                 throw new Error(`未预期的请求: ${url}`);
             })
@@ -439,10 +439,11 @@ describe("IP 源主文件语义 (issue #50)", () => {
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
     });
 
-    it("仅解析到 IPv6 时主文件写空内容，并提示伴生文件后置", async () => {
+    it("仅解析到 IPv6 时主文件写空内容，IPv6 写入伴生文件", async () => {
         await seedGitHubSettings();
-        const { id } = await insertSource("https://example.com/v6.txt");
-        const putBodies: string[] = [];
+        const { id, githubPath } = await insertSource("https://example.com/v6.txt");
+        const companionPath = `${githubPath.slice(0, -4)}-v6.txt`;
+        const puts: Array<{ path: string; body: string }> = [];
         vi.stubGlobal(
             "fetch",
             vi.fn(async (input: unknown, init?: RequestInit) => {
@@ -455,7 +456,10 @@ describe("IP 源主文件语义 (issue #50)", () => {
                 }
                 if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
                     if ((init?.method ?? "GET").toUpperCase() === "PUT") {
-                        putBodies.push(String(init?.body ?? ""));
+                        puts.push({
+                            path: decodeURIComponent(url.split("/contents/")[1]),
+                            body: String(init?.body ?? ""),
+                        });
                         return new Response("{}", { status: 200 });
                     }
                     return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
@@ -466,11 +470,163 @@ describe("IP 源主文件语义 (issue #50)", () => {
 
         const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
 
-        expect(putBodies).toHaveLength(1);
-        const putBody = JSON.parse(putBodies[0]) as { content: string };
-        // 空主文件的 base64 就是空串
-        expect(putBody.content).toBe("");
+        // 主文件（空内容）+ 伴生文件（IPv6）各写一次
+        expect(puts).toHaveLength(2);
+        expect(puts[0].path).toBe(githubPath);
+        expect((JSON.parse(puts[0].body) as { content: string }).content).toBe("");
+        expect(puts[1].path).toBe(companionPath);
+        expect(Buffer.from((JSON.parse(puts[1].body) as { content: string }).content, "base64").toString("utf8")).toBe(
+            "2606:4700:4700::1111"
+        );
         expect(logs.some((line) => line.includes("IPv6 伴生文件"))).toBe(true);
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status FROM ip_sources WHERE id = ?")
+            .bind(id)
+            .first()) as { last_sync_status: string };
+        expect(row.last_sync_status).toBe("success");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("IPv6 为空且远端存在伴生文件时删除，状态记 success", async () => {
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/drop-v6.txt");
+        const companionPath = `${githubPath.slice(0, -4)}-v6.txt`;
+        const deleteCalls: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                const method = (init?.method ?? "GET").toUpperCase();
+                if (url === "https://example.com/drop-v6.txt") {
+                    return new Response("1.1.1.1", { status: 200 });
+                }
+                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                    const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+                    if (method === "DELETE") {
+                        deleteCalls.push(path);
+                        return new Response("{}", { status: 200 });
+                    }
+                    if (path === githubPath) {
+                        // 主文件已是同样的 IPv4，不需要再写
+                        return new Response("1.1.1.1", { status: 200 });
+                    }
+                    if (path === companionPath) {
+                        return new Response(
+                            JSON.stringify({
+                                content: Buffer.from("2606:4700:4700::1111", "utf8").toString("base64"),
+                                sha: "companion-sha",
+                            }),
+                            { status: 200, headers: { "Content-Type": "application/json" } }
+                        );
+                    }
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        expect(deleteCalls).toEqual([companionPath]);
+        expect(logs.some((line) => line.includes("已删除 IPv6 伴生文件"))).toBe(true);
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status FROM ip_sources WHERE id = ?")
+            .bind(id)
+            .first()) as { last_sync_status: string };
+        expect(row.last_sync_status).toBe("success");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("IPv6 为空且远端无伴生文件时不发 DELETE，状态记 no_change", async () => {
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/none-v6.txt");
+        const methods: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                const method = (init?.method ?? "GET").toUpperCase();
+                if (url === "https://example.com/none-v6.txt") {
+                    return new Response("1.1.1.1", { status: 200 });
+                }
+                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                    methods.push(method);
+                    const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+                    if (path === githubPath && method === "GET") {
+                        return new Response("1.1.1.1", { status: 200 });
+                    }
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        expect(methods).not.toContain("DELETE");
+        expect(methods).not.toContain("PUT");
+        expect(logs.some((line) => line.includes("跳过删除"))).toBe(true);
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status FROM ip_sources WHERE id = ?")
+            .bind(id)
+            .first()) as { last_sync_status: string };
+        expect(row.last_sync_status).toBe("no_change");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("伴生文件内容一致时不重复写入，但主文件更新仍记 success", async () => {
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/same-v6.txt");
+        const companionPath = `${githubPath.slice(0, -4)}-v6.txt`;
+        const puts: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                const method = (init?.method ?? "GET").toUpperCase();
+                if (url === "https://example.com/same-v6.txt") {
+                    return new Response("1.1.1.1\n2606:4700:4700::1111", { status: 200 });
+                }
+                if (url === "https://api.github.com/repos/test-owner/test-repo") {
+                    return new Response("{}", { status: 200 });
+                }
+                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                    const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+                    if (method === "PUT") {
+                        puts.push(path);
+                        return new Response("{}", { status: 200 });
+                    }
+                    // 同一个 URL 有两种 GET 语义：变更检测要 raw 正文，写前取 sha 要 JSON
+                    const accept = String((init?.headers as Record<string, string> | undefined)?.["Accept"] ?? "");
+                    if (accept.includes("raw")) {
+                        if (path === githubPath) return new Response("9.9.9.9", { status: 200 });
+                        if (path === companionPath) return new Response("2606:4700:4700::1111", { status: 200 });
+                        return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                    }
+                    if (path === githubPath) {
+                        return new Response(JSON.stringify({ sha: "main-sha" }), {
+                            status: 200,
+                            headers: { "Content-Type": "application/json" },
+                        });
+                    }
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        expect(puts).toEqual([githubPath]);
+        expect(logs.some((line) => line.includes("IPv6 伴生文件内容无变化"))).toBe(true);
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status FROM ip_sources WHERE id = ?")
+            .bind(id)
+            .first()) as { last_sync_status: string };
+        expect(row.last_sync_status).toBe("success");
 
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
     });

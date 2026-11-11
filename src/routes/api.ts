@@ -17,7 +17,7 @@ import type { WaitUntil } from "../util/http.ts";
 import { hashPassword, isAuthenticated, verifyPassword } from "../util/auth.ts";
 import { getZoneName } from "../util/cf.ts";
 import { FETCH_STRATEGIES, resolveHostmonitKey } from "../sync/ip-sources.ts";
-import { normalizeGithubPath } from "../sync/github.ts";
+import { deriveCompanionPath, normalizeGithubPath } from "../sync/github.ts";
 import { parseContent, validateParseConfig, type ParseMode } from "../sync/ip-parse.ts";
 import { syncAllDomains, syncSystemDomains, syncSingleDomain } from "../sync/domains.ts";
 import { syncSingleIpSource, syncAllIpSources } from "../sync/ip-sources.ts";
@@ -513,6 +513,10 @@ function validateGithubPath(path: string): { ok: true; value: string } | { ok: f
     }
     if (normalized.length > 512) return { ok: false, error: "GitHub 文件路径总长必须在 1–512 个字符之间。" };
     if (normalized.trim() !== normalized) return { ok: false, error: "GitHub 文件路径首尾不能包含空白。" };
+    // 派生的 IPv6 伴生路径同样要落在 512 以内（issue #51 / 方案 §9.2）
+    if (deriveCompanionPath(normalized).length > 512) {
+        return { ok: false, error: "派生出的 IPv6 伴生文件路径超过 512 个字符，请缩短 GitHub 文件路径。" };
+    }
     return { ok: true, value: normalized };
 }
 
@@ -559,8 +563,33 @@ function validateIpSourceInput(body: IpSourceInputBody): IpSourceValidation {
 }
 
 /**
+ * 主文件与 IPv6 伴生文件共用同一份 Git 路径命名空间（issue #51）：
+ * A 的主文件不能等于 B 的伴生文件，A 的伴生文件也不能等于 B 的主文件。
+ * 只比较派生后的路径，不比较前缀 —— 这里按字符串全等判定双向冲突。
+ */
+async function findCompanionConflict(
+    db: D1Database,
+    githubPath: string,
+    excludeId: number | undefined
+): Promise<{ conflictPath: string } | null> {
+    const rows = await db.prepare("SELECT id, github_path FROM ip_sources").all<{
+        id: number;
+        github_path: string;
+    }>();
+    const companion = deriveCompanionPath(githubPath);
+    for (const row of rows.results ?? []) {
+        if (excludeId !== undefined && row.id === excludeId) continue;
+        // 新主文件撞了别人的伴生文件，或新伴生文件撞了别人的主文件
+        if (row.github_path === companion || deriveCompanionPath(row.github_path) === githubPath) {
+            return { conflictPath: row.github_path };
+        }
+    }
+    return null;
+}
+
+/**
  * 新增与更新的写库路径只在 SQL、附加绑定与成功文案上不同，
- * 解析、结构校验与唯一键冲突处理保持同一条流水线，避免两处规则各自漂移。
+ * 解析、结构校验、伴生路径冲突与唯一键冲突处理保持同一条流水线，避免两处规则各自漂移。
  */
 async function writeIpSource(
     request: Request,
@@ -571,6 +600,8 @@ async function writeIpSource(
         successMessage: string;
         /** 更新路径专用：id 不存在时 UPDATE 影响 0 行，此时不能报成功 */
         notFoundWhenNoRows?: boolean;
+        /** 更新路径专用：冲突自检需要排除自身 */
+        excludeId?: number;
     }
 ): Promise<Response> {
     const body = await readJsonBody<IpSourceInputBody>(request);
@@ -578,6 +609,19 @@ async function writeIpSource(
     const validation = validateIpSourceInput(body);
     if (!validation.ok) return jsonResponse({ error: validation.error }, 400);
     const { url, github_path, commit_message, fetch_strategy, parse_mode, parse_param } = validation.input;
+    if (options.excludeId !== undefined) {
+        const exists = await db.prepare("SELECT id FROM ip_sources WHERE id = ?").bind(options.excludeId).first();
+        if (!exists) return jsonResponse({ error: "目标不存在。" }, 404);
+    }
+    const conflict = await findCompanionConflict(db, github_path, options.excludeId);
+    if (conflict) {
+        return jsonResponse(
+            {
+                error: `该 GitHub 文件路径与已有IP源 ${conflict.conflictPath} 的 IPv6 伴生文件路径互相冲突。`,
+            },
+            409
+        );
+    }
     try {
         const result = await db
             .prepare(options.sql)
@@ -608,6 +652,7 @@ function apiUpdateIpSource(request: Request, db: D1Database, id: number): Promis
         bindings: [id],
         successMessage: "IP源更新成功。",
         notFoundWhenNoRows: true,
+        excludeId: id,
     });
 }
 

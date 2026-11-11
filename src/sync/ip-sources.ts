@@ -8,7 +8,7 @@ import {
     releaseManualSyncLock,
     createManualSyncLockRenewer,
 } from "../db/client.ts";
-import { getCurrentGitHubContent, updateFileOnGitHub } from "./github.ts";
+import { deleteFileOnGitHub, deriveCompanionPath, getCurrentGitHubContent, updateFileOnGitHub } from "./github.ts";
 import { beijingTimeLog } from "../util/log.ts";
 import { createLogStreamResponse } from "../util/sse.ts";
 import { runWithOptionalLog } from "../util/run-with-log.ts";
@@ -176,41 +176,65 @@ export async function syncSingleIpSource(
                 : `（抓取策略: ${strategy}）`;
             // 日志只写策略与两类数量，不落正文（§13.2）
             log(`成功获取 ${ipv4.length} 个IPv4、${ipv6.length} 个IPv6${strategyNote}。`);
+
+            // 主文件仍只装 IPv4；IPv6 走伴生文件（issue #51）。两条链路的变更检测彼此独立：
+            // 主文件「无变化」不再提前返回，否则纯 IPv4 源永远走不到伴生删除、纯 IPv6 源永远走不到伴生写入。
+            const companionPath = deriveCompanionPath(source.github_path);
             if (ipv4.length === 0 && ipv6.length > 0) {
-                // 主文件继续只装 IPv4：纯 IPv6 源写空内容，伴生文件由后续票（#51）负责
-                log(`仅解析到 IPv6：主文件按空内容处理，IPv6 伴生文件由后续能力写入。`);
+                log(`仅解析到 IPv6：主文件按空内容处理，IPv6 伴生文件为 ${companionPath}。`);
             }
+
+            let wroteSomething = false;
 
             const newContent = ipv4.join("\n");
             const oldContent = await getCurrentGitHubContent({ ...gh, path: source.github_path, log });
-
             if (oldContent !== null && newContent.trim() === oldContent.trim()) {
-                log(`内容无变化，无需更新 GitHub。`);
-                await db
-                    .prepare(
-                        "UPDATE ip_sources SET last_synced_time = CURRENT_TIMESTAMP, last_sync_status = 'no_change', last_sync_error = NULL WHERE id = ?"
-                    )
-                    .bind(id)
-                    .run();
-                log(`✔ 状态更新为内容一致。`);
-                return;
+                log(`主文件内容无变化，无需更新 GitHub。`);
+            } else {
+                await updateFileOnGitHub({
+                    ...gh,
+                    path: source.github_path,
+                    content: newContent,
+                    message: source.commit_message,
+                    log,
+                });
+                log(`✔ 成功同步到GitHub: ${source.github_path}`);
+                wroteSomething = true;
             }
 
-            await updateFileOnGitHub({
-                ...gh,
-                path: source.github_path,
-                content: newContent,
-                message: source.commit_message,
-                log,
-            });
-            log(`✔ 成功同步到GitHub: ${source.github_path}`);
+            // 伴生文件：非空则比对后写入；为空且远端存在才删除（deleteFileOnGitHub 内部 GET 404 时不发 DELETE）
+            const companionContent = ipv6.join("\n");
+            if (ipv6.length > 0) {
+                const remoteCompanion = await getCurrentGitHubContent({ ...gh, path: companionPath, log });
+                if (remoteCompanion !== null && companionContent.trim() === remoteCompanion.trim()) {
+                    log(`IPv6 伴生文件内容无变化，无需更新: ${companionPath}`);
+                } else {
+                    await updateFileOnGitHub({
+                        ...gh,
+                        path: companionPath,
+                        content: companionContent,
+                        message: source.commit_message,
+                        log,
+                    });
+                    log(`✔ 成功同步 IPv6 伴生文件到GitHub: ${companionPath}`);
+                    wroteSomething = true;
+                }
+            } else if (await deleteFileOnGitHub({ ...gh, path: companionPath, message: source.commit_message, log })) {
+                log(`✔ 已删除 IPv6 伴生文件: ${companionPath}`);
+                wroteSomething = true;
+            } else {
+                log(`IPv6 为空且远端无伴生文件，跳过删除: ${companionPath}`);
+            }
 
+            // 整轮无任何写入才算 no_change；有任一文件落盘即 success
+            const status = wroteSomething ? "success" : "no_change";
             await db
                 .prepare(
-                    "UPDATE ip_sources SET last_synced_time = CURRENT_TIMESTAMP, last_sync_status = 'success', last_sync_error = NULL WHERE id = ?"
+                    "UPDATE ip_sources SET last_synced_time = CURRENT_TIMESTAMP, last_sync_status = ?, last_sync_error = NULL WHERE id = ?"
                 )
-                .bind(id)
+                .bind(status, id)
                 .run();
+            log(wroteSomething ? `✔ 状态更新为同步成功。` : `✔ 状态更新为内容一致。`);
         } catch (e) {
             log(`❌ 同步失败: ${e instanceof Error ? e.message : String(e)}`);
             await db

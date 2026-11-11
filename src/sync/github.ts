@@ -89,6 +89,25 @@ export function normalizeGithubPath(path: string): string {
 }
 
 /**
+ * IPv6 伴生文件路径派生（方案 §5.2 / issue #51）：
+ * `x.txt` → `x-v6.txt`；无 `.txt` 后缀时直接加 `-v6`（`x` → `x-v6`）。
+ * 派生只做字符串变换，合法性由调用方用 normalizeGithubPath 复核。
+ */
+export function deriveCompanionPath(githubPath: string): string {
+    return githubPath.endsWith(".txt") ? `${githubPath.slice(0, -4)}-v6.txt` : `${githubPath}-v6`;
+}
+
+/**
+ * 由请求路径反推它的主文件候选（订阅代理白名单反查用）。
+ * 只给出候选，调用方必须再用 deriveCompanionPath 正推一次确认，避免任意 `-v6` 形态被放行。
+ */
+export function companionSourceCandidate(path: string): string | null {
+    if (path.endsWith("-v6.txt")) return `${path.slice(0, -7)}.txt`;
+    if (path.endsWith("-v6")) return path.slice(0, -3);
+    return null;
+}
+
+/**
  * 编码 Contents API 的内容路径：先归一化（一次解码 + 形态校验），再保留 `/` 作为分段逐段编码。
  */
 function encodeContentPath(path: string): string {
@@ -228,6 +247,49 @@ export async function updateFileOnGitHub({
     });
 
     await githubApiRequest(apiUrl, token, { method: "PUT", body });
+}
+
+/**
+ * 删除 GitHub 文件（issue #51）：先 GET 取 sha（删除必须带 sha），再 DELETE。
+ * 远端本就不存在（404）时**不发删除请求**，返回 false —— 重复删除是幂等空操作，不是失败。
+ * 其它非 2xx 原样抛出，由调用方标记该源同步失败。
+ */
+export async function deleteFileOnGitHub({
+    token,
+    owner,
+    repo,
+    path,
+    message,
+    log,
+}: {
+    token: string;
+    owner: string;
+    repo: string;
+    path: string;
+    message: string;
+    log: (msg: string) => void;
+}): Promise<boolean> {
+    const apiUrl = buildContentsApiUrl(owner, repo, path);
+    let sha: string;
+    try {
+        const getFileResponse = await githubApiRequest(apiUrl, token);
+        const fileData = (await getFileResponse.json()) as { sha?: string };
+        if (!fileData.sha) throw new Error(`GitHub 未返回文件 '${path}' 的 sha，无法删除。`);
+        sha = fileData.sha;
+    } catch (e) {
+        if (e instanceof HttpError && e.status === 404) {
+            log(`GitHub文件 '${path}' 不存在，无需删除。`);
+            return false;
+        }
+        throw e;
+    }
+
+    await githubApiRequest(apiUrl, token, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, sha }),
+    });
+    return true;
 }
 
 /**
