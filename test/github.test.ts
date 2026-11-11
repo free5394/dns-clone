@@ -453,6 +453,22 @@ describe("deleteFileOnGitHub 删除 GitHub 文件 (issue #51)", () => {
         expect(logs.some((line) => line.includes("不存在，无需删除"))).toBe(true);
     });
 
+    it("200 但响应缺 sha：直接报错，不发 DELETE", async () => {
+        const spy = mockFetch(() => json({ name: "ips-v6.txt" }));
+
+        await expect(
+            deleteFileOnGitHub({
+                token: "token",
+                owner: "owner",
+                repo: "repo",
+                path: "ips-v6.txt",
+                message: "remove v6",
+                log: () => {},
+            })
+        ).rejects.toThrow(/未返回文件 'ips-v6.txt' 的 sha/);
+        expect(spy.mock.calls.some((c) => c[1]?.method === "DELETE")).toBe(false);
+    });
+
     it("非 404 错误（如 403）原样抛出，不静默", async () => {
         mockFetch(() => json({ message: "Forbidden" }, 403));
 
