@@ -45,3 +45,26 @@ export function escapeHtmlClient(value) {
             })[c]
     );
 }
+/**
+ * 组装「添加/编辑克隆目标」的提交体（issue #52）。
+ * 弹窗同时承载域名与 URL 两种来源，两者的有效字段互斥：
+ * - URL 类型：深度解析强制关闭（0），URL / 解析配置按输入归一，解析参数空串归一为 null；
+ * - 域名类型：URL 与解析配置一律为 null，深度开关按用户勾选。
+ * 抽成纯函数是因为这段组装逻辑会被表单直接调用——按源码字符串断言组不出来「URL 时深度开关
+ * 被强制写成 0」这类行为契约（CODING_STANDARDS.md §前端行为测试）。
+ */
+export function buildDomainSavePayload(input) {
+    const isUrl = input.sourceType === "url";
+    const parseParam = String(input.parseParam ?? "").trim();
+    return {
+        source_type: isUrl ? "url" : "domain",
+        source_domain: String(input.sourceDomain ?? ""),
+        source_url: isUrl ? String(input.sourceUrl ?? "").trim() : null,
+        parse_mode: isUrl ? input.parseMode : null,
+        parse_param: isUrl && parseParam !== "" ? parseParam : null,
+        target_domain_prefix: String(input.targetDomainPrefix ?? "").trim(),
+        is_deep_resolve: isUrl ? 0 : input.isDeepResolve ? 1 : 0,
+        ttl: parseInt(input.ttl, 10),
+        notes: input.notes ?? "",
+    };
+}

@@ -2553,4 +2553,98 @@ describe("域名 URL 输入类型 (issue #52)", () => {
         expect(target).toHaveProperty("fetch_strategy");
         await env.WUYA.prepare("DELETE FROM domains WHERE target_domain = ?").bind("url-proj.example.com").run();
     });
+
+    it("IPv6 字面量 URL 的派生主机名不合规时拒绝保存（§9.5）", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "http://[2606:4700::1111]/list.txt",
+            target_domain_prefix: "url-ipv6",
+            ttl: 60,
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("主机名格式无效");
+        const rows = await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("url-ipv6.example.com")
+            .all();
+        expect(rows.results.length).toBe(0);
+    });
+
+    it("URL 改动后不沿用为旧 URL 缓存的历史策略", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, parse_param, fetch_strategy, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 60, NULL, 0)"
+        )
+            .bind(
+                "ips.example.com",
+                "url",
+                "https://ips.example.com/list.txt",
+                "auto",
+                null,
+                "jina_reader",
+                "url-strategy.example.com",
+                "test-zone-id"
+            )
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("url-strategy.example.com")
+            .first()) as { id: number };
+        const res = await SELF.fetch(`https://example.com/api/domains/${row.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_url: "https://other.example.com/list.txt",
+                target_domain_prefix: "url-strategy",
+                ttl: 60,
+            }),
+        });
+        expect(res.status).toBe(200);
+        const after = (await env.WUYA.prepare("SELECT source_url, fetch_strategy FROM domains WHERE id = ?")
+            .bind(row.id)
+            .first()) as { source_url: string; fetch_strategy: string | null };
+        expect(after.source_url).toBe("https://other.example.com/list.txt");
+        expect(after.fetch_strategy).toBeNull();
+        await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(row.id).run();
+    });
+
+    it("PUT 保留原 URL 时不丢弃已探测到的策略", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, parse_param, fetch_strategy, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 60, NULL, 0)"
+        )
+            .bind(
+                "ips.example.com",
+                "url",
+                "https://ips.example.com/list.txt",
+                "auto",
+                null,
+                "jina_reader",
+                "url-keep-strategy.example.com",
+                "test-zone-id"
+            )
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("url-keep-strategy.example.com")
+            .first()) as { id: number };
+        const res = await SELF.fetch(`https://example.com/api/domains/${row.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_url: "https://ips.example.com/list.txt",
+                target_domain_prefix: "url-keep-strategy",
+                ttl: 300,
+            }),
+        });
+        expect(res.status).toBe(200);
+        const after = (await env.WUYA.prepare("SELECT fetch_strategy, ttl FROM domains WHERE id = ?")
+            .bind(row.id)
+            .first()) as { fetch_strategy: string | null; ttl: number };
+        expect(after.fetch_strategy).toBe("jina_reader");
+        expect(after.ttl).toBe(300);
+        await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(row.id).run();
+    });
 });

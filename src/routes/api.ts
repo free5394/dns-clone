@@ -320,6 +320,99 @@ async function resolveZoneName(
 /** URL 类型目标的 URL 长度上限（方案 §6.2 / §9.1） */
 const MAX_SOURCE_URL_LENGTH = 2048;
 
+/** 域名/URL 两种来源共同接受的 hostname 形态（DNS label 拼接，最长 253） */
+const HOSTNAME_PATTERN =
+    /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+/** 目标前缀：单个 DNS label 或 @（@ 单独判定） */
+const DOMAIN_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+/** 系统内置源白名单（三网优选 IP） */
+const INTERNAL_SOURCE_PATTERN = /^internal:hostmonit:(yd|dx|lt)$/;
+
+/** 输入来源类型的归一结果：与 domains 表的五个来源列 + 强制深度解析覆盖值一一对应 */
+interface NormalizedDomainSource {
+    sourceDomain: string;
+    sourceType: "domain" | "url";
+    sourceUrl: string | null;
+    parseMode: string | null;
+    parseParam: string | null;
+    fetchStrategy: string | null;
+    /** URL 类型固定为 0；域名类型为 null（沿用请求里的 is_deep_resolve） */
+    forcedDeepResolve: number | null;
+}
+
+export type DomainSourceNormalization = { ok: true; value: NormalizedDomainSource } | { ok: false; error: string };
+
+/**
+ * 按输入来源类型归一化源配置（方案 §9.1 / §9.5 校验矩阵）。
+ * 纯函数：不读库、不依赖请求上下文，便于单独验证校验矩阵；落库与 CF 凭据解析留在调用方。
+ * - URL 类型：必填、≤2048、过 SSRF 校验、解析配置归一；由 URL 派生 hostname 作为 source_domain，
+ *   再对该派生值做 hostname 形态校验（§9.5：派生值同样受限，避免把方括号 IPv6 字面量落库）；
+ *   同时强制关闭深度解析（§9.1）。
+ * - 域名类型：既有 hostname / 内置源校验不变；URL 相关列与历史策略一律清空（§8.1）。
+ * - URL 改变时丢弃历史策略：旧策略是给旧 URL 缓存的结果，沿用会让新 URL 首轮用错策略。
+ */
+export function normalizeDomainSourceInput(input: {
+    requestedType: "domain" | "url";
+    sourceDomain: string;
+    sourceUrl: unknown;
+    parseMode: unknown;
+    parseParam: unknown;
+    previousUrl: string | null;
+    previousFetchStrategy: string | null;
+}): DomainSourceNormalization {
+    if (input.requestedType === "url") {
+        const rawUrl = String(input.sourceUrl ?? "").trim();
+        if (!rawUrl) return { ok: false, error: "URL 类型必须填写 source_url。" };
+        if (rawUrl.length > MAX_SOURCE_URL_LENGTH) {
+            return { ok: false, error: `URL 长度不能超过 ${MAX_SOURCE_URL_LENGTH} 个字符。` };
+        }
+        let parsedUrl: URL;
+        try {
+            parsedUrl = assertSafeHttpUrl(rawUrl);
+        } catch (e) {
+            return { ok: false, error: e instanceof Error ? e.message : "URL 校验失败。" };
+        }
+        const parseConfig = validateParseConfig(input.parseMode, input.parseParam);
+        if (!parseConfig.ok) return { ok: false, error: parseConfig.error };
+        // 派生 hostname 后同样过形态校验（§9.5）：派生值不受信任，不能只判非空
+        const derivedHost = parsedUrl.hostname;
+        if (!derivedHost || !HOSTNAME_PATTERN.test(derivedHost)) {
+            return { ok: false, error: "URL 主机名格式无效，请使用常见的域名形式。" };
+        }
+        return {
+            ok: true,
+            value: {
+                sourceDomain: derivedHost,
+                sourceType: "url",
+                sourceUrl: rawUrl,
+                parseMode: parseConfig.mode,
+                parseParam: parseConfig.param,
+                fetchStrategy: rawUrl === input.previousUrl ? input.previousFetchStrategy : null,
+                forcedDeepResolve: 0,
+            },
+        };
+    }
+    const source = input.sourceDomain;
+    if (!source || (!source.startsWith("internal:") && !HOSTNAME_PATTERN.test(source))) {
+        return { ok: false, error: "源域名格式无效。" };
+    }
+    if (source.startsWith("internal:") && !INTERNAL_SOURCE_PATTERN.test(source)) {
+        return { ok: false, error: "内置源域名格式无效。" };
+    }
+    return {
+        ok: true,
+        value: {
+            sourceDomain: source,
+            sourceType: "domain",
+            sourceUrl: null,
+            parseMode: null,
+            parseParam: null,
+            fetchStrategy: null,
+            forcedDeepResolve: null,
+        },
+    };
+}
+
 async function handleDomainMutation(
     request: Request,
     db: D1Database,
@@ -359,16 +452,20 @@ async function handleDomainMutation(
     let existing: {
         source_domain: string;
         source_type: string | null;
+        source_url: string | null;
         fetch_strategy: string | null;
         is_system: number;
     } | null = null;
     if (isUpdate && id) {
         existing = (await db
-            .prepare("SELECT source_domain, source_type, fetch_strategy, is_system FROM domains WHERE id = ?")
+            .prepare(
+                "SELECT source_domain, source_type, source_url, fetch_strategy, is_system FROM domains WHERE id = ?"
+            )
             .bind(id)
             .first()) as {
             source_domain: string;
             source_type: string | null;
+            source_url: string | null;
             fetch_strategy: string | null;
             is_system: number;
         } | null;
@@ -389,55 +486,28 @@ async function handleDomainMutation(
     }
     const prefix = String(target_domain_prefix ?? "").trim() || "@";
     const effectiveTtl = ttl === undefined ? 60 : ttl;
-    const hostnamePattern =
-        /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
-    const labelPattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 
-    // 按输入来源类型归一化源配置（方案 §9.1）
-    let source: string;
-    let sourceTypeValue: "domain" | "url";
-    let sourceUrlValue: string | null = null;
-    let parseModeValue: string | null = null;
-    let parseParamValue: string | null = null;
-    let forcedDeepResolve: number | null = null;
-    let nextFetchStrategy: string | null = existing?.fetch_strategy ?? null;
-    if (requestedType === "url") {
-        const rawUrl = String(source_url ?? "").trim();
-        if (!rawUrl) return jsonResponse({ error: "URL 类型必须填写 source_url。" }, 400);
-        if (rawUrl.length > MAX_SOURCE_URL_LENGTH) {
-            return jsonResponse({ error: `URL 长度不能超过 ${MAX_SOURCE_URL_LENGTH} 个字符。` }, 400);
-        }
-        let parsedUrl: URL;
-        try {
-            parsedUrl = assertSafeHttpUrl(rawUrl);
-        } catch (e) {
-            const message = e instanceof Error ? e.message : "URL 校验失败。";
-            return jsonResponse({ error: message }, 400);
-        }
-        const parseConfig = validateParseConfig(parse_mode, parse_param);
-        if (!parseConfig.ok) return jsonResponse({ error: parseConfig.error }, 400);
-        // URL 类型由 URL 派生 hostname 存入 source_domain（满足非空约束，仅用于展示）
-        source = parsedUrl.hostname;
-        if (!source) return jsonResponse({ error: "URL 缺少主机名。" }, 400);
-        sourceTypeValue = "url";
-        sourceUrlValue = rawUrl;
-        parseModeValue = parseConfig.mode;
-        parseParamValue = parseConfig.param;
-        // URL 类型强制关闭深度解析（方案 §9.1）
-        forcedDeepResolve = 0;
-    } else {
-        source = rawSource;
-        if (!source || (!source.startsWith("internal:") && !hostnamePattern.test(source))) {
-            return jsonResponse({ error: "源域名格式无效。" }, 400);
-        }
-        if (source.startsWith("internal:") && !/^internal:hostmonit:(yd|dx|lt)$/.test(source)) {
-            return jsonResponse({ error: "内置源域名格式无效。" }, 400);
-        }
-        // 域名类型不读解析配置，切换来源类型时清空 URL 相关列与历史策略（方案 §8.1）
-        sourceTypeValue = "domain";
-        nextFetchStrategy = null;
-    }
-    if (prefix !== "@" && !labelPattern.test(prefix)) {
+    // 按输入来源类型归一化源配置（方案 §9.1 / §9.5）；校验矩阵抽成纯函数由单测直接驱动
+    const normalized = normalizeDomainSourceInput({
+        requestedType,
+        sourceDomain: rawSource,
+        sourceUrl: source_url,
+        parseMode: parse_mode,
+        parseParam: parse_param,
+        previousUrl: existing?.source_url ?? null,
+        previousFetchStrategy: existing?.fetch_strategy ?? null,
+    });
+    if (!normalized.ok) return jsonResponse({ error: normalized.error }, 400);
+    const {
+        sourceDomain: source,
+        sourceType: sourceTypeValue,
+        sourceUrl: sourceUrlValue,
+        parseMode: parseModeValue,
+        parseParam: parseParamValue,
+        fetchStrategy: nextFetchStrategy,
+        forcedDeepResolve,
+    } = normalized.value;
+    if (prefix !== "@" && !DOMAIN_LABEL_PATTERN.test(prefix)) {
         return jsonResponse({ error: "目标前缀必须是单个 DNS label 或 @。" }, 400);
     }
     if (
@@ -462,45 +532,43 @@ async function handleDomainMutation(
         const zoneName = resolved.zoneName;
         const target_domain = prefix === "@" ? zoneName : `${prefix}.${zoneName}`;
 
+        // 两条 SQL 共用同一份列清单与绑定顺序（列清单即真相源），避免 11 个参数在 UPDATE/INSERT 间漂移
+        const sourceColumns = [
+            "source_domain",
+            "source_type",
+            "source_url",
+            "parse_mode",
+            "parse_param",
+            "fetch_strategy",
+        ];
+        const targetColumns = ["target_domain", "zone_id", "is_deep_resolve", "ttl", "notes"];
+        const bindings = [
+            source,
+            sourceTypeValue,
+            sourceUrlValue,
+            parseModeValue,
+            parseParamValue,
+            nextFetchStrategy,
+            target_domain,
+            zoneId,
+            deepResolveValue,
+            effectiveTtl,
+            notes || null,
+        ];
+
         if (isUpdate && id) {
+            const assignments = [...sourceColumns, ...targetColumns].map((column) => `${column}=?`).join(", ");
             await db
-                .prepare(
-                    "UPDATE domains SET source_domain=?, source_type=?, source_url=?, parse_mode=?, parse_param=?, fetch_strategy=?, target_domain=?, zone_id=?, is_deep_resolve=?, ttl=?, notes=? WHERE id=?"
-                )
-                .bind(
-                    source,
-                    sourceTypeValue,
-                    sourceUrlValue,
-                    parseModeValue,
-                    parseParamValue,
-                    nextFetchStrategy,
-                    target_domain,
-                    zoneId,
-                    deepResolveValue,
-                    effectiveTtl,
-                    notes || null,
-                    id
-                )
+                .prepare(`UPDATE domains SET ${assignments} WHERE id=?`)
+                .bind(...bindings, id)
                 .run();
             return jsonResponse({ success: true, message: "目标更新成功。" });
         }
         await db
             .prepare(
-                "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, parse_param, fetch_strategy, target_domain, zone_id, is_deep_resolve, ttl, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                `INSERT INTO domains (${[...sourceColumns, ...targetColumns].join(", ")}) VALUES (${bindings.map(() => "?").join(", ")})`
             )
-            .bind(
-                source,
-                sourceTypeValue,
-                sourceUrlValue,
-                parseModeValue,
-                parseParamValue,
-                nextFetchStrategy,
-                target_domain,
-                zoneId,
-                deepResolveValue,
-                effectiveTtl,
-                notes || null
-            )
+            .bind(...bindings)
             .run();
         return jsonResponse({ success: true, message: "目标添加成功。" });
     } catch (e) {

@@ -1,5 +1,10 @@
 // templates.js — UI 模板函数（阶段 E 从 index.legacy.js 拆出）
-import { escapeHtmlClient, canAddDomains, planSyncCompletionActions } from "./dashboard-helpers.js";
+import {
+    escapeHtmlClient,
+    canAddDomains,
+    planSyncCompletionActions,
+    buildDomainSavePayload,
+} from "./dashboard-helpers.js";
 import { createDashboardRenderers } from "./dashboard-render.js";
 import { createApiFetch } from "./dashboard-api.js";
 // 单类型记录上限的唯一归一实现（issue #49）：模板层不重复定义默认值
@@ -648,6 +653,8 @@ function getDashboardScript(domains, ipSources, settings) {
   const esc = ${escapeHtmlClient.toString()};
   // 按钮可用性判定与服务器端渲染共用同一份实现（issue #21）
   const canAddDomains = ${canAddDomains.toString()};
+  // 保存体组装来自 ./dashboard-helpers.js（issue #52）：URL/域名两种来源的字段互斥规则只有一处实现
+  const buildDomainSavePayload = ${buildDomainSavePayload.toString()};
 
   const formatBeijingTime = (isoStr) => { if (!isoStr) return '从未'; const d = new Date(isoStr); return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(d).replace(/\\//g, '-'); };
 ` +
@@ -767,7 +774,8 @@ function getDashboardInteractionScript() {
       document.getElementById('source_url').required = isUrl;
       const deepSwitch = document.getElementById('is_deep_resolve');
       deepSwitch.disabled = isUrl;
-      if (isUrl) deepSwitch.checked = false;
+      // URL 固定深度关闭；从 URL 切回域名时恢复默认开启，否则会静默保存成深度关闭的目标
+      deepSwitch.checked = !isUrl;
   };
   window.onDomainSourceTypeChange = () => {
       window.setDomainSourceType(document.getElementById('source_type').value);
@@ -778,7 +786,17 @@ function getDashboardInteractionScript() {
       const sourceType = document.getElementById('source_type').value;
       const parseMode = document.getElementById('domain_parse_mode').value;
       const parseParam = document.getElementById('domain_parse_param').value.trim();
-      const payload = { source_type: sourceType, source_domain: document.getElementById('source_domain').value, source_url: sourceType === 'url' ? document.getElementById('source_url').value.trim() : null, parse_mode: sourceType === 'url' ? parseMode : null, parse_param: sourceType === 'url' && parseParam !== '' ? parseParam : null, target_domain_prefix: document.getElementById('target_domain_prefix').value.trim(), is_deep_resolve: sourceType === 'url' ? 0 : document.getElementById('is_deep_resolve').checked, ttl: parseInt(document.getElementById('ttl').value), notes: document.getElementById('notes').value };
+      const payload = buildDomainSavePayload({
+          sourceType: sourceType,
+          sourceDomain: document.getElementById('source_domain').value,
+          sourceUrl: document.getElementById('source_url').value,
+          parseMode: parseMode,
+          parseParam: parseParam,
+          targetDomainPrefix: document.getElementById('target_domain_prefix').value,
+          isDeepResolve: document.getElementById('is_deep_resolve').checked,
+          ttl: document.getElementById('ttl').value,
+          notes: document.getElementById('notes').value,
+      });
       const url = id ? '/api/domains/' + id : '/api/domains'; const method = id ? 'PUT' : 'POST';
       try { const result = await apiFetch(url, { method, body: JSON.stringify(payload) }); showNotification(result.message, 'success'); closeModal('domainModal'); await refreshDomains(); } catch (e) { showNotification(\`保存失败: \${e.message}\`, 'error'); }
   }

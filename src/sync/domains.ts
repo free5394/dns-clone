@@ -9,6 +9,7 @@ import {
     createManualSyncLockRenewer,
 } from "../db/client.ts";
 import { fetchIpsForTarget, fetchThreeNetworkIps } from "./ip-sources.ts";
+import { normalizeParseMode } from "./ip-parse.ts";
 import { beijingTimeLog } from "../util/log.ts";
 import { runWithOptionalLog } from "../util/run-with-log.ts";
 import type { WaitUntil } from "../util/http.ts";
@@ -52,16 +53,26 @@ interface SyncContext {
     threeNetworkIps?: ThreeNetworkIpsCache;
     /**
      * URL 类型目标的同批抓取结果缓存（方案 §6.3）。
-     * 键 = url + parse_mode + parse_param，同批内相同配置只抓一次；
+     * 键 = url + 归一后的 parse_mode + parse_param，同批内相同配置只抓一次；
      * 只缓存成功结果（取得正文且解析到 ≥1 个 IP），失败不缓存——与三网 FIX-15/FIX-16 语义一致。
+     * 缓存同时记住实际生效策略：命中方同样要落库，否则第二个目标下轮仍从空策略起试（验收 #6）。
      */
-    urlRecords?: Map<string, DnsRecord[]>;
+    urlRecords?: Map<string, CachedUrlRecords>;
 }
 
-/** URL 类型目标的缓存键：三个字段共同决定解析结果，任一不同即视为不同请求 */
+/** 同批 URL 抓取缓存值：记录集合 + 本次实际生效的抓取策略 */
+interface CachedUrlRecords {
+    records: DnsRecord[];
+    strategy: string;
+}
+
+/**
+ * URL 类型目标的缓存键：三个字段共同决定解析结果，任一不同即视为不同请求。
+ * parse_mode 先归一再入键：存量行可能是 NULL、新行是 "auto"，两者语义相同，不归一就会重复抓取。
+ */
 function urlRecordsCacheKey(domain: DomainRow): string {
     const url = (domain.source_url ?? "").trim();
-    return `${url}\u0000${domain.parse_mode ?? ""}\u0000${domain.parse_param ?? ""}`;
+    return `${url}\u0000${normalizeParseMode(domain.parse_mode)}\u0000${domain.parse_param ?? ""}`;
 }
 
 type LogFn = (msg: string) => void;
@@ -301,6 +312,15 @@ export async function resolveRecordsForDomain(
 }
 
 /**
+ * 把本次实际生效的抓取策略写回 domains（验收 #6）。
+ * 只落库，不做去重判断：调用方知道自己是否已经写过同一策略，避免这里靠猜 target 的当前值。
+ */
+async function persistFetchStrategy(db: D1Database, strategy: string, target: { id: number }): Promise<void> {
+    if (!strategy) return;
+    await db.prepare("UPDATE domains SET fetch_strategy = ? WHERE id = ?").bind(strategy, target.id).run();
+}
+
+/**
  * URL 类型目标：复用 IP 源的策略链取正文，经统一解析层得 IPv4/IPv6 并映射成 A/AAAA（方案 §6.2 / §6.3）。
  * - 同批缓存：键 = url + parse_mode + parse_param，只缓存成功结果；同批同配置只抓一次。
  * - 取得正文但解析 0 条：不写缓存，返回空集合交由 syncDomainLogic 的 0 条分支判定。
@@ -315,8 +335,14 @@ async function resolveUrlRecordsForDomain(
     const cacheKey = urlRecordsCacheKey(domain);
     const cached = syncContext.urlRecords?.get(cacheKey);
     if (cached) {
-        log(`模式: URL 抓取 (同批缓存命中，${cached.length} 条记录)`);
-        return cached;
+        log(`模式: URL 抓取 (同批缓存命中，${cached.records.length} 条记录)`);
+        // 命中缓存也要落库：抓取只发生在第一个目标上，策略也只写进了它那一行；
+        // 后续目标若跳过落库，下一轮仍从空策略起试，验收 #6「下一轮优先尝试」就不成立。
+        if ((domain.fetch_strategy ?? "") !== cached.strategy) {
+            await persistFetchStrategy(db, cached.strategy, domain);
+        }
+        domain.fetch_strategy = cached.strategy;
+        return cached.records;
     }
     const url = (domain.source_url ?? "").trim();
     if (!url) throw new Error(`URL 类型目标 ${domain.target_domain} 缺少 URL，请重新编辑该目标。`);
@@ -333,7 +359,7 @@ async function resolveUrlRecordsForDomain(
         {
             // 回退命中后把实际生效策略持久化到 domains，下一轮优先尝试（验收 #6）
             persistStrategy: async (strategy, target) => {
-                await db.prepare("UPDATE domains SET fetch_strategy = ? WHERE id = ?").bind(strategy, target.id).run();
+                await persistFetchStrategy(db, strategy, target);
             },
             // 取得正文但 0 条不抛错：交给 syncDomainLogic 走「上次有无记录」两分支（验收 #8）
             emptyWhenNoIps: true,
@@ -355,8 +381,8 @@ async function resolveUrlRecordsForDomain(
         log("未解析到任何 IP，交由同步逻辑按上次记录判定。");
         return [];
     }
-    if (!syncContext.urlRecords) syncContext.urlRecords = new Map<string, DnsRecord[]>();
-    syncContext.urlRecords.set(cacheKey, records);
+    if (!syncContext.urlRecords) syncContext.urlRecords = new Map<string, CachedUrlRecords>();
+    syncContext.urlRecords.set(cacheKey, { records, strategy: result.strategy });
     return records;
 }
 

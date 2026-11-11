@@ -1346,4 +1346,121 @@ describe("URL 类型目标端到端 (issue #52)", () => {
         expect(attempted).toHaveLength(1);
         expect(attempted[0]).toContain("r.jina.ai");
     });
+
+    it("一条策略抛错、另一条取得正文但 0 条时按 0 条分支处理（§13.1）", async () => {
+        const domain = await insertUrlDomain({ target: "url-mixed-empty.example.com" });
+        // direct_regex 抛 HTTP 500，其余策略都成功取回正文但不含任何 IP
+        const calls = stubCfAndSource((url) => {
+            if (url.includes("r.jina.ai") || url.includes("codetabs") || url.includes("PhantomJsCloud")) {
+                return new Response("这个列表已经下架了", { status: 200 });
+            }
+            return new Response("boom", { status: 500 });
+        });
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status, last_sync_error FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_sync_error: string | null };
+        // 有策略真的取回了正文，只是里面没 IP —— 属于「成功但 0 条」，不该被其它策略的异常改判为抓取失败
+        expect(row.last_sync_status).toBe("no_change");
+        expect(row.last_sync_error).toBeNull();
+        expect(calls.filter((c) => c.url.includes("api.cloudflare.com"))).toHaveLength(0);
+    });
+
+    it("同批缓存命中的目标也会把实际生效策略落库（验收 #6）", async () => {
+        const domainA = await insertUrlDomain({ target: "url-cache-a.example.com" });
+        const domainB = await insertUrlDomain({ target: "url-cache-b.example.com" });
+        stubCfAndSource((url) => {
+            if (url.includes("r.jina.ai")) return new Response("5.5.5.5", { status: 200 });
+            return new Response("blocked", { status: 403 });
+        });
+        const syncContext = {};
+
+        await resolveRecordsForDomain(domainA, env.WUYA, () => {}, syncContext);
+        await resolveRecordsForDomain(domainB, env.WUYA, () => {}, syncContext);
+
+        const rows = (await env.WUYA.prepare(
+            "SELECT target_domain, fetch_strategy FROM domains WHERE target_domain IN (?, ?) ORDER BY target_domain"
+        )
+            .bind("url-cache-a.example.com", "url-cache-b.example.com")
+            .all()) as { results: { target_domain: string; fetch_strategy: string | null }[] };
+        // 抓取只发生在 A 上，B 命中缓存；但 B 也必须落库，否则下一轮它仍从空策略起试
+        expect(rows.results.map((r) => r.fetch_strategy)).toEqual(["jina_reader", "jina_reader"]);
+    });
+
+    it("parse_mode 为 NULL 与 auto 视为同一抓取配置，只抓一次", async () => {
+        const domainA = await insertUrlDomain({ target: "url-null-mode-a.example.com", parse_mode: null });
+        const domainB = await insertUrlDomain({ target: "url-null-mode-b.example.com", parse_mode: "auto" });
+        let sourceHits = 0;
+        stubCfAndSource(() => {
+            sourceHits++;
+            return new Response("1.1.1.1", { status: 200 });
+        });
+        const syncContext = {};
+
+        const recordsA = await resolveRecordsForDomain(domainA, env.WUYA, () => {}, syncContext);
+        const recordsB = await resolveRecordsForDomain(domainB, env.WUYA, () => {}, syncContext);
+
+        expect(sourceHits).toBe(1);
+        expect(recordsB).toEqual(recordsA);
+    });
+
+    it("集成：URL 目标手动同步写入记录，二次同步内容一致时不产生任何写操作（§15.2）", async () => {
+        const domain = await insertUrlDomain({ target: "url-e2e.example.com" });
+        const remote: { id: string; type: string; content: string; proxied: boolean; ttl: number }[] = [];
+        const calls: { url: string; method: string; body?: string }[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string, init?: RequestInit) => {
+                const method = init?.method ?? "GET";
+                if (url.includes("api.cloudflare.com")) {
+                    calls.push({ url, method, body: typeof init?.body === "string" ? init.body : undefined });
+                    if (method === "GET") {
+                        return new Response(JSON.stringify({ success: true, result: remote }), { status: 200 });
+                    }
+                    if (method === "POST") {
+                        const body = JSON.parse(init?.body as string) as { type: string; content: string };
+                        remote.push({
+                            id: `rec-${remote.length + 1}`,
+                            type: body.type,
+                            content: body.content,
+                            proxied: false,
+                            ttl: 60,
+                        });
+                        return new Response(JSON.stringify({ success: true, result: {} }), { status: 200 });
+                    }
+                    return new Response(JSON.stringify({ success: true, result: {} }), { status: 200 });
+                }
+                calls.push({ url, method });
+                return new Response("2.2.2.2\n1.1.1.1", { status: 200 });
+            })
+        );
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const first = (await env.WUYA.prepare("SELECT last_sync_status, last_synced_records FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_synced_records: string };
+        expect(first.last_sync_status).toBe("success");
+        expect(JSON.parse(first.last_synced_records)).toEqual([
+            { type: "A", content: "1.1.1.1" },
+            { type: "A", content: "2.2.2.2" },
+        ]);
+
+        // 二次同步：正文与远端记录都不变
+        const fresh = (await env.WUYA.prepare("SELECT * FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as Parameters<typeof syncDomainLogic>[0];
+        calls.length = 0;
+        await syncDomainLogic(fresh, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const second = (await env.WUYA.prepare("SELECT last_sync_status, last_synced_records FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_synced_records: string };
+        expect(second.last_sync_status).toBe("no_change");
+        expect(JSON.parse(second.last_synced_records)).toEqual(JSON.parse(first.last_synced_records));
+        const writes = calls.filter((c) => c.url.includes("api.cloudflare.com") && c.method !== "GET");
+        expect(writes).toEqual([]);
+    });
 });

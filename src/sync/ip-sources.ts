@@ -391,6 +391,8 @@ export async function fetchIpsForTarget(
     };
 
     let lastError: unknown;
+    // 是否至少有一条策略「成功取到正文但解析 0 条」：与「全部抓取抛错」是两种不同语义（§13.1）
+    let fetchedWithoutIps = false;
     const attempts: string[] = [];
     for (const name of orderedNames) {
         const fn = FETCH_STRATEGIES[name];
@@ -409,6 +411,7 @@ export async function fetchIpsForTarget(
             }
             // 空结果也记账：源站返回 200 但没有 IP 时若静默跳过，诊断文案只剩抛错的策略，
             // 会把人误导成"换个代理就好"（实测 id=8 页面 tbody 为空，文案却只显示 proxy_codetabs 超时）
+            fetchedWithoutIps = true;
             attempts.push(`${name}: 未匹配到 IP`);
         } catch (e) {
             lastError = e;
@@ -417,8 +420,12 @@ export async function fetchIpsForTarget(
     }
     // D3 类别化文案：类别前缀 + 每策略摘要，随 last_sync_error 落库（只存 e.message，本文案即 message）
     const detail = attempts.length > 0 ? `（${attempts.join("; ")}）` : "";
+    // §13.1「成功但 0 条」与「抓取抛错」是两条不同分支：只要有一条策略成功取到正文却没有 IP，
+    // 就属于前者——哪怕其它策略抛过错，也不能被 lastError 短路成抓取失败（否则 DNS 侧会误标 failed）。
+    if (options.emptyWhenNoIps && (fetchedWithoutIps || lastError === undefined)) {
+        return { ipv4: [], ipv6: [], strategy: "", configuredStrategy };
+    }
     if (lastError === undefined) {
-        if (options.emptyWhenNoIps) return { ipv4: [], ipv6: [], strategy: "", configuredStrategy };
         throw new Error(
             `[无可用IP] 所有抓取策略均未能从该URL获取到IP${detail}，源站页面未返回任何 IP，请确认该列表是否已下架或在添加/编辑IP源时更换源。`
         );

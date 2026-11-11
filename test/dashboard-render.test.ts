@@ -3,7 +3,12 @@
 
 import { describe, it, expect } from "vitest";
 import { createDashboardRenderers } from "../src/ui/dashboard-render.js";
-import { escapeHtmlClient, canAddDomains, planSyncCompletionActions } from "../src/ui/dashboard-helpers.js";
+import {
+    escapeHtmlClient,
+    canAddDomains,
+    planSyncCompletionActions,
+    buildDomainSavePayload,
+} from "../src/ui/dashboard-helpers.js";
 import { getDashboardPage } from "../src/ui/templates.js";
 import { DEFAULT_MAX_IPS_PER_TYPE, MAX_MAX_IPS_PER_TYPE, MIN_MAX_IPS_PER_TYPE } from "../src/util/max-ips-per-type.ts";
 
@@ -338,22 +343,81 @@ describe("URL 类型域名 (issue #52)", () => {
 
     it("来源切换会互斥显示域名/URL 输入并锁定深度开关", () => {
         const html = getDashboardPage([], [], {});
-        // 静态契约（issue #52）：DOM 接线只能在页面脚本里锁；服务端行为由 API 用例覆盖。
+        // 静态契约（issue #52）：DOM 接线只能在页面脚本里锁——选择器存在性与元素显隐联动
+        // 脱离 DOM 无法驱动，符合 CODING_STANDARDS.md §豁免条件；深度开关的取值契约由下方
+        // buildDomainSavePayload 行为用例覆盖。
         expect(html).toContain("window.setDomainSourceType = (type) =>");
         expect(html).toContain("document.getElementById('domainSourceDomainGroup').hidden = isUrl;");
         expect(html).toContain("document.getElementById('domainSourceUrlGroup').hidden = !isUrl;");
         expect(html).toContain("deepSwitch.disabled = isUrl;");
-        expect(html).toContain("if (isUrl) deepSwitch.checked = false;");
     });
 
-    it("编辑回填 URL 字段，保存时按类型提交", () => {
+    it("编辑回填 URL 字段，保存体由行为用例覆盖", () => {
         const html = getDashboardPage([], [], {});
-
+        // 静态契约（issue #52）：回填是纯 DOM 读值/写值，脱离 DOM 无法驱动；
+        // 保存体组装已抽成 buildDomainSavePayload，由下方行为用例直接驱动。
         expect(html).toContain("window.setDomainSourceType(domain.source_type === 'url' ? 'url' : 'domain');");
         expect(html).toContain("document.getElementById('source_url').value = domain.source_url || '';");
         expect(html).toContain("document.getElementById('domain_parse_mode').value = domain.parse_mode || 'auto';");
         expect(html).toContain("document.getElementById('domain_parse_param').value = domain.parse_param || '';");
-        expect(html).toContain("source_type: sourceType,");
-        expect(html).toContain("is_deep_resolve: sourceType === 'url' ? 0 :");
+        // 保存体组装已抽成 buildDomainSavePayload 并注入页面脚本，这里只锁注入接线存在
+        expect(html).toContain("const buildDomainSavePayload = function buildDomainSavePayload(input) {");
+    });
+});
+
+// issue #52：保存体组装抽成纯函数后直接驱动行为，而不是断言页面脚本里的字符串。
+describe("域名保存体组装 (issue #52)", () => {
+    const base = {
+        sourceDomain: "src.test",
+        sourceUrl: "  https://ips.example.com/list.txt  ",
+        parseMode: "json_path",
+        parseParam: " data.list ",
+        targetDomainPrefix: " sub ",
+        isDeepResolve: true,
+        ttl: "300",
+        notes: "备注",
+    };
+
+    it("URL 类型：深度解析强制为 0，URL 与解析配置按输入归一", () => {
+        const payload = buildDomainSavePayload({ ...base, sourceType: "url" });
+
+        expect(payload).toEqual({
+            source_type: "url",
+            source_domain: "src.test",
+            source_url: "https://ips.example.com/list.txt",
+            parse_mode: "json_path",
+            parse_param: "data.list",
+            target_domain_prefix: "sub",
+            is_deep_resolve: 0,
+            ttl: 300,
+            notes: "备注",
+        });
+    });
+
+    it("URL 类型空解析参数归一为 null，不落空串", () => {
+        const payload = buildDomainSavePayload({ ...base, sourceType: "url", parseParam: "   " });
+
+        expect(payload.parse_param).toBeNull();
+    });
+
+    it("域名类型：URL 与解析配置一律为 null，深度开关按勾选提交", () => {
+        const on = buildDomainSavePayload({ ...base, sourceType: "domain" });
+        const off = buildDomainSavePayload({ ...base, sourceType: "domain", isDeepResolve: false });
+
+        expect(on.source_url).toBeNull();
+        expect(on.parse_mode).toBeNull();
+        expect(on.parse_param).toBeNull();
+        expect(on.is_deep_resolve).toBe(1);
+        expect(off.is_deep_resolve).toBe(0);
+    });
+
+    it("从 URL 切回域名时不会沿用被锁死的深度关闭", () => {
+        // 弹窗在 URL 模式下把深度开关置灰关闭，切回域名后开关恢复可用且默认开启；
+        // 这里锁定「未勾选」才提交 0，避免切换后被静默保存成深度关闭的目标。
+        const payload = buildDomainSavePayload({ ...base, sourceType: "domain", isDeepResolve: false });
+
+        expect(payload.source_type).toBe("domain");
+        expect(payload.is_deep_resolve).toBe(0);
+        expect(buildDomainSavePayload({ ...base, sourceType: "domain", isDeepResolve: true }).is_deep_resolve).toBe(1);
     });
 });
