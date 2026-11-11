@@ -210,6 +210,8 @@ describe("单类型记录上限设置项 (issue #49)", () => {
 
     it("表单保存该字段，并在保存后按服务端返回值回填", () => {
         const html = getDashboardPage([], [], {});
+        // 静态契约（issue #49）：只锁「读输入并入保存体 / 保存后回填」两处 DOM 接线，
+        // 脱离 DOM（getElementById）无法转成行为测试，与 issue #42 的豁免条件一致。
         expect(html).toContain(
             "settingsToSave.MAX_IPS_PER_TYPE = document.getElementById('maxIpsPerType').value.trim();"
         );

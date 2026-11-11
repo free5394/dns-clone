@@ -27,10 +27,10 @@ import {
     HOSTMONIT_API_KEY,
     MAX_IPS_PER_TYPE_KEY,
     isHostmonitKeyConfigured,
-    normalizeMaxIpsPerType,
     normalizeSettingsInput,
     validateEffectiveSettings,
 } from "../db/settings.ts";
+import { normalizeMaxIpsPerType } from "../util/max-ips-per-type.ts";
 
 /** 检测 D1/SQLite UNIQUE 约束违例（D1 同时支持 message 与 code 两种错误呈现方式） */
 const isUniqueViolation = (e: unknown): boolean =>
@@ -227,7 +227,7 @@ async function apiGetSettings(request: Request, db: D1Database): Promise<Respons
     return jsonResponse({
         ...settings,
         // issue #49：读取归一——缺失或损坏的存量值回退默认 20（与 normalizeBatchSize 同风格）
-        MAX_IPS_PER_TYPE: normalizeMaxIpsPerType(settings[MAX_IPS_PER_TYPE_KEY]),
+        [MAX_IPS_PER_TYPE_KEY]: normalizeMaxIpsPerType(settings[MAX_IPS_PER_TYPE_KEY]),
         zoneName: zoneName || "",
         CF_CONFIGURED: Boolean(token && zoneId),
         GITHUB_CONFIGURED: Boolean(github.token && github.owner && github.repo),

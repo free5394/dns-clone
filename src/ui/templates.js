@@ -3,7 +3,12 @@ import { escapeHtmlClient, canAddDomains, planSyncCompletionActions } from "./da
 import { createDashboardRenderers } from "./dashboard-render.js";
 import { createApiFetch } from "./dashboard-api.js";
 // 单类型记录上限的唯一归一实现（issue #49）：模板层不重复定义默认值
-import { normalizeMaxIpsPerType } from "../db/settings.ts";
+import {
+    DEFAULT_MAX_IPS_PER_TYPE,
+    MAX_MAX_IPS_PER_TYPE,
+    MIN_MAX_IPS_PER_TYPE,
+    normalizeMaxIpsPerType,
+} from "../util/max-ips-per-type.ts";
 // 纯 JS 文件（tsc 不参与）：内含大量浏览器端 JS 模板字符串
 
 // HTML 实体转义：所有插值到模板字符串的用户控制字段必须经过 escapeHtml
@@ -556,7 +561,7 @@ export function getDashboardPage(domains, ipSources, settings) {
                 </fieldset>
                  <fieldset><legend><i class="fa-solid fa-network-wired"></i> 三网优选IP源设置</legend><label for="threeNetworkSource">三网采集源</label><select id="threeNetworkSource"><option value="CloudFlareYes" ${settings.THREE_NETWORK_SOURCE === "CloudFlareYes" ? "selected" : ""}>CloudFlareYes</option><option value="api.uouin.com" ${settings.THREE_NETWORK_SOURCE === "api.uouin.com" ? "selected" : ""}>api.uouin.com</option><option value="wetest.vip" ${settings.THREE_NETWORK_SOURCE === "wetest.vip" ? "selected" : ""}>wetest.vip</option></select><small>为系统预设的电信/移动/联通域名选择IP来源。更改后保存设置将自动同步一次系统域名。</small>
                 </fieldset>
-                <fieldset><legend><i class="fa-solid fa-list-ol"></i> DNS 记录设置</legend><label for="maxIpsPerType">单类型记录上限 (MAX_IPS_PER_TYPE)</label><input type="number" id="maxIpsPerType" min="1" max="200" step="1" value="${normalizeMaxIpsPerType(settings.MAX_IPS_PER_TYPE)}"><small>每个 DNS 类型（A / AAAA）最多保留的记录条数，范围 1–200。留空并保存表示恢复默认 20。</small>
+                <fieldset><legend><i class="fa-solid fa-list-ol"></i> DNS 记录设置</legend><label for="maxIpsPerType">单类型记录上限 (MAX_IPS_PER_TYPE)</label><input type="number" id="maxIpsPerType" min="${MIN_MAX_IPS_PER_TYPE}" max="${MAX_MAX_IPS_PER_TYPE}" step="1" value="${normalizeMaxIpsPerType(settings.MAX_IPS_PER_TYPE)}"><small>每个 DNS 类型（A / AAAA）最多保留的记录条数，范围 ${MIN_MAX_IPS_PER_TYPE}–${MAX_MAX_IPS_PER_TYPE}。留空并保存表示恢复默认 ${DEFAULT_MAX_IPS_PER_TYPE}。</small>
                  </fieldset>
                  <fieldset><legend><i class="fa-solid fa-key"></i> IP 源抓取设置</legend><label for="hostmonitKey">hostmonit 接口 Key</label><input type="password" id="hostmonitKey" value="" placeholder="留空沿用内置默认 Key（已自定义时留空保持不变）"><label><input type="checkbox" id="hostmonitClear"> 清除自定义 Key（恢复内置默认）</label><small>hostmonit 三网优选 IP 接口的公开 key，对方轮换或限流后在此更新，保存后下一次同步即生效。</small>
                 </fieldset>

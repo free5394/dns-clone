@@ -7,15 +7,18 @@ import {
     validateEffectiveSettings,
     normalizeHostmonitKey,
     isHostmonitKeyConfigured,
-    normalizeMaxIpsPerType,
     MAX_IPS_PER_TYPE_KEY,
-    DEFAULT_MAX_IPS_PER_TYPE,
-    MIN_MAX_IPS_PER_TYPE,
-    MAX_MAX_IPS_PER_TYPE,
     WRITABLE_SETTING_KEYS,
     SECRET_SETTING_KEYS,
     SENSITIVE_SETTINGS_KEYS,
 } from "../src/db/settings.ts";
+// 说明：归一与常量已迁到 util（与 batch-size.ts 同形），设置键名与写入白名单仍在 db/settings.ts。
+import {
+    normalizeMaxIpsPerType,
+    DEFAULT_MAX_IPS_PER_TYPE,
+    MIN_MAX_IPS_PER_TYPE,
+    MAX_MAX_IPS_PER_TYPE,
+} from "../src/util/max-ips-per-type.ts";
 
 describe("normalizeSettingsInput 清洗", () => {
     it("丢弃白名单之外的键", () => {
@@ -173,6 +176,16 @@ describe("MAX_IPS_PER_TYPE 写入校验与读取归一 (issue #49)", () => {
         expect(result.ok).toBe(false);
         if (result.ok) return;
         expect(result.error).toContain("MAX_IPS_PER_TYPE");
+    });
+
+    it("非字符串却折叠成空的输入按非法拒绝，不能当成清除 (issue #49 复核)", () => {
+        // String([]) === ""，若按折叠后的 null 判断会被误判成显式清除并返回 200（方案 §9.5 要求 400）
+        for (const value of [[], [""]] as const) {
+            const result = normalizeSettingsInput({ MAX_IPS_PER_TYPE: value });
+            expect(result.ok).toBe(false);
+            if (result.ok) return;
+            expect(result.error).toContain("MAX_IPS_PER_TYPE");
+        }
     });
 
     it("null 与空串表示显式清除，不算非法（读取时回退默认）", () => {
