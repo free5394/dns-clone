@@ -317,6 +317,9 @@ async function resolveZoneName(
     return { ok: true, zoneName };
 }
 
+/** URL 类型目标的 URL 长度上限（方案 §6.2 / §9.1） */
+const MAX_SOURCE_URL_LENGTH = 2048;
+
 async function handleDomainMutation(
     request: Request,
     db: D1Database,
@@ -325,23 +328,62 @@ async function handleDomainMutation(
 ): Promise<Response> {
     const body = await readJsonBody<{
         source_domain?: string;
+        source_type?: unknown;
+        source_url?: unknown;
+        parse_mode?: unknown;
+        parse_param?: unknown;
         target_domain_prefix?: string;
         is_deep_resolve?: unknown;
         ttl?: number;
         notes?: string;
     }>(request);
     if (body === null) return BAD_JSON();
-    const { source_domain, target_domain_prefix, is_deep_resolve, ttl, notes } = body;
-    const source = String(source_domain ?? "").trim();
+    const {
+        source_domain,
+        source_type,
+        source_url,
+        parse_mode,
+        parse_param,
+        target_domain_prefix,
+        is_deep_resolve,
+        ttl,
+        notes,
+    } = body;
+    const rawSource = String(source_domain ?? "").trim();
+    // 输入来源类型：只接受 domain / url（方案 §9.1）；更新时缺省沿用该行已有类型
+    const declaredType = String(source_type ?? "").trim();
+    if (declaredType !== "" && declaredType !== "domain" && declaredType !== "url") {
+        return jsonResponse({ error: "source_type 必须为 domain 或 url。" }, 400);
+    }
 
-    let existing: { source_domain: string; is_system: number } | null = null;
+    let existing: {
+        source_domain: string;
+        source_type: string | null;
+        fetch_strategy: string | null;
+        is_system: number;
+    } | null = null;
     if (isUpdate && id) {
-        existing = (await db.prepare("SELECT source_domain, is_system FROM domains WHERE id = ?").bind(id).first()) as {
+        existing = (await db
+            .prepare("SELECT source_domain, source_type, fetch_strategy, is_system FROM domains WHERE id = ?")
+            .bind(id)
+            .first()) as {
             source_domain: string;
+            source_type: string | null;
+            fetch_strategy: string | null;
             is_system: number;
         } | null;
         if (!existing) return jsonResponse({ error: "目标不存在。" }, 404);
-        if (existing.is_system === 1 && existing.source_domain !== source) {
+    }
+    // 未显式声明时：新建按域名，更新沿用该行已有类型
+    const requestedType: "domain" | "url" =
+        declaredType === "url" || (declaredType === "" && existing?.source_type === "url") ? "url" : "domain";
+    // 系统预设域名固定为域名输入，不允许切换输入类型（方案 §8.1）
+    if (existing && existing.is_system === 1) {
+        const existingType = existing.source_type === "url" ? "url" : "domain";
+        if (existingType !== requestedType) {
+            return jsonResponse({ error: "系统预设域名不允许切换输入类型。" }, 403);
+        }
+        if (requestedType === "domain" && existing.source_domain !== rawSource) {
             return jsonResponse({ error: "系统预设域名的源域名不可修改。" }, 403);
         }
     }
@@ -350,11 +392,50 @@ async function handleDomainMutation(
     const hostnamePattern =
         /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
     const labelPattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
-    if (!source || (!source.startsWith("internal:") && !hostnamePattern.test(source))) {
-        return jsonResponse({ error: "源域名格式无效。" }, 400);
-    }
-    if (source.startsWith("internal:") && !/^internal:hostmonit:(yd|dx|lt)$/.test(source)) {
-        return jsonResponse({ error: "内置源域名格式无效。" }, 400);
+
+    // 按输入来源类型归一化源配置（方案 §9.1）
+    let source: string;
+    let sourceTypeValue: "domain" | "url";
+    let sourceUrlValue: string | null = null;
+    let parseModeValue: string | null = null;
+    let parseParamValue: string | null = null;
+    let forcedDeepResolve: number | null = null;
+    let nextFetchStrategy: string | null = existing?.fetch_strategy ?? null;
+    if (requestedType === "url") {
+        const rawUrl = String(source_url ?? "").trim();
+        if (!rawUrl) return jsonResponse({ error: "URL 类型必须填写 source_url。" }, 400);
+        if (rawUrl.length > MAX_SOURCE_URL_LENGTH) {
+            return jsonResponse({ error: `URL 长度不能超过 ${MAX_SOURCE_URL_LENGTH} 个字符。` }, 400);
+        }
+        let parsedUrl: URL;
+        try {
+            parsedUrl = assertSafeHttpUrl(rawUrl);
+        } catch (e) {
+            const message = e instanceof Error ? e.message : "URL 校验失败。";
+            return jsonResponse({ error: message }, 400);
+        }
+        const parseConfig = validateParseConfig(parse_mode, parse_param);
+        if (!parseConfig.ok) return jsonResponse({ error: parseConfig.error }, 400);
+        // URL 类型由 URL 派生 hostname 存入 source_domain（满足非空约束，仅用于展示）
+        source = parsedUrl.hostname;
+        if (!source) return jsonResponse({ error: "URL 缺少主机名。" }, 400);
+        sourceTypeValue = "url";
+        sourceUrlValue = rawUrl;
+        parseModeValue = parseConfig.mode;
+        parseParamValue = parseConfig.param;
+        // URL 类型强制关闭深度解析（方案 §9.1）
+        forcedDeepResolve = 0;
+    } else {
+        source = rawSource;
+        if (!source || (!source.startsWith("internal:") && !hostnamePattern.test(source))) {
+            return jsonResponse({ error: "源域名格式无效。" }, 400);
+        }
+        if (source.startsWith("internal:") && !/^internal:hostmonit:(yd|dx|lt)$/.test(source)) {
+            return jsonResponse({ error: "内置源域名格式无效。" }, 400);
+        }
+        // 域名类型不读解析配置，切换来源类型时清空 URL 相关列与历史策略（方案 §8.1）
+        sourceTypeValue = "domain";
+        nextFetchStrategy = null;
     }
     if (prefix !== "@" && !labelPattern.test(prefix)) {
         return jsonResponse({ error: "目标前缀必须是单个 DNS label 或 @。" }, 400);
@@ -370,6 +451,7 @@ async function handleDomainMutation(
     }
     const deepResolve = normalizeDeepResolve(is_deep_resolve);
     if (!deepResolve.ok) return jsonResponse({ error: "is_deep_resolve 必须为 0 或 1。" }, 400);
+    const deepResolveValue = forcedDeepResolve ?? deepResolve.value ?? 1;
     try {
         const { zoneId, token } = await getCfApiSettings(db);
         if (!token || !zoneId) {
@@ -383,17 +465,42 @@ async function handleDomainMutation(
         if (isUpdate && id) {
             await db
                 .prepare(
-                    "UPDATE domains SET source_domain=?, target_domain=?, zone_id=?, is_deep_resolve=?, ttl=?, notes=? WHERE id=?"
+                    "UPDATE domains SET source_domain=?, source_type=?, source_url=?, parse_mode=?, parse_param=?, fetch_strategy=?, target_domain=?, zone_id=?, is_deep_resolve=?, ttl=?, notes=? WHERE id=?"
                 )
-                .bind(source, target_domain, zoneId, deepResolve.value ?? 1, effectiveTtl, notes || null, id)
+                .bind(
+                    source,
+                    sourceTypeValue,
+                    sourceUrlValue,
+                    parseModeValue,
+                    parseParamValue,
+                    nextFetchStrategy,
+                    target_domain,
+                    zoneId,
+                    deepResolveValue,
+                    effectiveTtl,
+                    notes || null,
+                    id
+                )
                 .run();
             return jsonResponse({ success: true, message: "目标更新成功。" });
         }
         await db
             .prepare(
-                "INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, notes) VALUES (?, ?, ?, ?, ?, ?)"
+                "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, parse_param, fetch_strategy, target_domain, zone_id, is_deep_resolve, ttl, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
-            .bind(source, target_domain, zoneId, deepResolve.value ?? 1, effectiveTtl, notes || null)
+            .bind(
+                source,
+                sourceTypeValue,
+                sourceUrlValue,
+                parseModeValue,
+                parseParamValue,
+                nextFetchStrategy,
+                target_domain,
+                zoneId,
+                deepResolveValue,
+                effectiveTtl,
+                notes || null
+            )
             .run();
         return jsonResponse({ success: true, message: "目标添加成功。" });
     } catch (e) {

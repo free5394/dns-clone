@@ -344,15 +344,45 @@ export async function resolveHostmonitKey(db: D1Database): Promise<string> {
     return normalizeHostmonitKey(stored) || DEFAULT_HOSTMONIT_API_KEY;
 }
 
-/** 按策略抓取 IP（带排序 + 失败自动回退），并回报实际生效的策略 */
-export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database): Promise<IpFetchResult> {
-    assertSafeHttpUrl(source.url);
+/**
+ * 抓取目标的最小形状：IP 源与域名（URL 输入）两类目标都能满足。
+ * 策略链只关心 URL 与解析配置，抓到的结果落到哪张表由调用方注入（§6.3）。
+ */
+export interface StrategyTarget {
+    id: number;
+    url: string;
+    fetch_strategy?: string | null;
+    parse_mode?: string | null;
+    parse_param?: string | null;
+}
+
+export interface StrategyFetchOptions {
+    /** 回退命中后持久化实际生效的策略；不传则只就地改写 target.fetch_strategy（不落库） */
+    persistStrategy?: (strategy: string, target: StrategyTarget) => Promise<void>;
+    /**
+     * 全链都取得正文却解析不到 IP 时返回空结果，而不是抛「[无可用IP]」。
+     * 域名 URL 输入用它把「取得正文但 0 条」交给 syncDomainLogic 的 0 条分支判定（§6.3 / 验收 #8）；
+     * IP 源保持既有抛错语义（诊断文案是它的主要价值）。
+     */
+    emptyWhenNoIps?: boolean;
+}
+
+/**
+ * 按策略抓取并解析 IP（带排序 + 失败自动回退），并回报实际生效的策略。
+ * 单一真相源：策略表、适用性判定、回退顺序与聚合错误文案都只在这里演进。
+ */
+export async function fetchIpsForTarget(
+    target: StrategyTarget,
+    db?: D1Database,
+    options: StrategyFetchOptions = {}
+): Promise<IpFetchResult> {
+    assertSafeHttpUrl(target.url);
     // 列可空：NULL 归一到空串，避免日志里出现「已从 null 回退」
-    const configuredStrategy = source.fetch_strategy ?? "";
+    const configuredStrategy = target.fetch_strategy ?? "";
     // 构造尝试顺序：缓存策略优先，回退策略按声明顺序依次尝试
     const strategyNames = Object.keys(FETCH_STRATEGIES).filter((n) => {
         const applies = STRATEGY_APPLIES[n];
-        return !applies || applies(source.url);
+        return !applies || applies(target.url);
     });
     const orderedNames = [configuredStrategy, ...strategyNames.filter((n) => n !== configuredStrategy)];
     // 设置页保存后下一次抓取立即生效：每次抓取都重新读取，不缓存到模块级变量
@@ -367,18 +397,13 @@ export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database)
         if (!fn) continue;
         try {
             // 策略只返回正文；「成功」= 取得正文且统一解析后至少 1 个 IP（IPv4/IPv6 合计，§6.2）
-            const text = await fn(source.url, context);
-            const { ipv4, ipv6 } = parseContent(text, source.parse_mode, source.parse_param);
+            const text = await fn(target.url, context);
+            const { ipv4, ipv6 } = parseContent(text, target.parse_mode, target.parse_param);
             if (ipv4.length > 0 || ipv6.length > 0) {
                 if (name !== configuredStrategy) {
-                    // 回退策略命中：更新传入对象的 fetch_strategy（调用方可感知），若提供了 db 则持久化
-                    (source as { fetch_strategy: string }).fetch_strategy = name;
-                    if (db) {
-                        await db
-                            .prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE id = ?")
-                            .bind(name, source.id)
-                            .run();
-                    }
+                    // 回退策略命中：更新传入对象的 fetch_strategy（调用方可感知），由调用方决定是否落库
+                    (target as { fetch_strategy: string }).fetch_strategy = name;
+                    if (options.persistStrategy) await options.persistStrategy(name, target);
                 }
                 return { ipv4, ipv6, strategy: name, configuredStrategy };
             }
@@ -393,12 +418,27 @@ export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database)
     // D3 类别化文案：类别前缀 + 每策略摘要，随 last_sync_error 落库（只存 e.message，本文案即 message）
     const detail = attempts.length > 0 ? `（${attempts.join("; ")}）` : "";
     if (lastError === undefined) {
+        if (options.emptyWhenNoIps) return { ipv4: [], ipv6: [], strategy: "", configuredStrategy };
         throw new Error(
             `[无可用IP] 所有抓取策略均未能从该URL获取到IP${detail}，源站页面未返回任何 IP，请确认该列表是否已下架或在添加/编辑IP源时更换源。`
         );
     }
     const category = describeErrorCategory(lastError);
     throw new Error(`[${category}] 所有抓取策略均未能从该URL获取到IP${detail}，请检查URL或在添加/编辑IP源时重新探测。`);
+}
+
+/** 按策略抓取 IP 源（带排序 + 失败自动回退），回退命中后把策略持久化到 ip_sources */
+export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database): Promise<IpFetchResult> {
+    return fetchIpsForTarget(source, db, {
+        persistStrategy: db
+            ? async (strategy, target) => {
+                  await db
+                      .prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE id = ?")
+                      .bind(strategy, target.id)
+                      .run();
+              }
+            : undefined,
+    });
 }
 
 /** @internal 兼容测试/旧调用方；生产同步走 fetchIpsWithStrategy（需要实际生效的策略信息）。 */

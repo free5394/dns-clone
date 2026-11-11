@@ -2223,3 +2223,334 @@ describe("列表投影包含新列 (issue #49)", () => {
         }
     });
 });
+
+describe("域名 URL 输入类型 (issue #52)", () => {
+    /** POST /api/domains 的薄封装，自动带 Cookie 与 JSON 头 */
+    async function postDomain(cookie: string, payload: Record<string, unknown>) {
+        return await SELF.fetch("https://example.com/api/domains", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+    }
+
+    it("URL 类型保存成功：派生 hostname、强制关闭深度解析、写入解析配置", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "https://ips.example.com/list.json?v=1",
+            parse_mode: "json_path",
+            parse_param: "data.list",
+            target_domain_prefix: "url-save",
+            is_deep_resolve: 1,
+            ttl: 60,
+            notes: "URL 目标",
+        });
+        expect(res.status).toBe(200);
+        const row = (await env.WUYA.prepare(
+            "SELECT source_domain, source_type, source_url, parse_mode, parse_param, is_deep_resolve FROM domains WHERE target_domain = ?"
+        )
+            .bind("url-save.example.com")
+            .first()) as {
+            source_domain: string;
+            source_type: string;
+            source_url: string;
+            parse_mode: string;
+            parse_param: string;
+            is_deep_resolve: number;
+        };
+        expect(row.source_domain).toBe("ips.example.com");
+        expect(row.source_type).toBe("url");
+        expect(row.source_url).toBe("https://ips.example.com/list.json?v=1");
+        expect(row.parse_mode).toBe("json_path");
+        expect(row.parse_param).toBe("data.list");
+        // URL 类型强制关闭深度解析，即使请求里传了 1
+        expect(row.is_deep_resolve).toBe(0);
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain = ?").bind("url-save.example.com").run();
+    });
+
+    it("域名类型忽略 URL 相关字段，写库为 domain 且解析配置清空", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const res = await postDomain(cookie, {
+            source_type: "domain",
+            source_domain: "plain.example.com",
+            source_url: "https://should-be-ignored.example.com/list.txt",
+            parse_mode: "custom_regex",
+            parse_param: "\\d+",
+            target_domain_prefix: "plain",
+            ttl: 60,
+        });
+        expect(res.status).toBe(200);
+        const row = (await env.WUYA.prepare(
+            "SELECT source_domain, source_type, source_url, parse_mode, parse_param FROM domains WHERE target_domain = ?"
+        )
+            .bind("plain.example.com")
+            .first()) as {
+            source_domain: string;
+            source_type: string;
+            source_url: string | null;
+            parse_mode: string | null;
+            parse_param: string | null;
+        };
+        expect(row.source_domain).toBe("plain.example.com");
+        expect(row.source_type).toBe("domain");
+        expect(row.source_url).toBeNull();
+        expect(row.parse_mode).toBeNull();
+        expect(row.parse_param).toBeNull();
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain = ?").bind("plain.example.com").run();
+    });
+
+    it("缺少 source_url 时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postDomain(cookie, { source_type: "url", target_domain_prefix: "no-url" });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("source_url");
+    });
+
+    it("source_url 超过 2048 字符时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const longUrl = "https://example.com/" + "a".repeat(2100);
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: longUrl,
+            target_domain_prefix: "long-url",
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("2048");
+    });
+
+    it("非 http/https 协议返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "ftp://example.com/ips.txt",
+            target_domain_prefix: "bad-scheme",
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("http/https");
+    });
+
+    it("内网地址被 SSRF 校验拦截", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "http://169.254.169.254/latest/meta-data/",
+            target_domain_prefix: "ssrf",
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("内网");
+    });
+
+    it("解析模式非法时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "https://example.com/ips.txt",
+            parse_mode: "bad_mode",
+            target_domain_prefix: "bad-mode",
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("解析模式");
+    });
+
+    it.each([[""], [null]])("解析模式缺省（%s）按 auto 落库", async (mode) => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const prefix = mode === "" ? "default-mode-empty" : "default-mode-null";
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "https://example.com/ips.txt",
+            parse_mode: mode,
+            target_domain_prefix: prefix,
+        });
+        expect(res.status).toBe(200);
+        const row = (await env.WUYA.prepare("SELECT parse_mode, parse_param FROM domains WHERE target_domain = ?")
+            .bind(`${prefix}.example.com`)
+            .first()) as { parse_mode: string; parse_param: string | null };
+        expect(row.parse_mode).toBe("auto");
+        expect(row.parse_param).toBeNull();
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain = ?").bind(`${prefix}.example.com`).run();
+    });
+
+    it("json_path 缺少解析参数时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "https://example.com/ips.json",
+            parse_mode: "json_path",
+            target_domain_prefix: "no-param",
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("json_path");
+    });
+
+    it("source_type 非法时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postDomain(cookie, { source_type: "ftp", target_domain_prefix: "bad-type" });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("source_type");
+    });
+
+    it("系统预设域名不允许切换输入类型（403）", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system) VALUES (?, ?, ?, 1, 60, ?, 1)"
+        )
+            .bind("internal:hostmonit:lt", "lt.example.com", "test-zone-id", "系统")
+            .run();
+        const sysRow = (await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("lt.example.com")
+            .first()) as { id: number };
+        const res = await SELF.fetch(`https://example.com/api/domains/${sysRow.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_type: "url",
+                source_url: "https://example.com/ips.txt",
+                source_domain: "internal:hostmonit:lt",
+                target_domain_prefix: "lt",
+                ttl: 60,
+            }),
+        });
+        expect(res.status).toBe(403);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("不允许切换输入类型");
+        const after = (await env.WUYA.prepare("SELECT source_domain, source_type FROM domains WHERE id = ?")
+            .bind(sysRow.id)
+            .first()) as { source_domain: string; source_type: string | null };
+        expect(after.source_domain).toBe("internal:hostmonit:lt");
+        expect(after.source_type).toBeNull();
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain = ?").bind("lt.example.com").run();
+    });
+
+    it("PUT 未显式传 source_type 时沿用该行已有类型（URL 保持 URL）", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, parse_param, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 60, NULL, 0)"
+        )
+            .bind(
+                "ips.example.com",
+                "url",
+                "https://ips.example.com/list.txt",
+                "auto",
+                null,
+                "url-keep.example.com",
+                "test-zone-id"
+            )
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("url-keep.example.com")
+            .first()) as { id: number };
+        const res = await SELF.fetch(`https://example.com/api/domains/${row.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_url: "https://ips.example.com/list-v2.txt",
+                target_domain_prefix: "url-keep",
+                ttl: 60,
+            }),
+        });
+        expect(res.status).toBe(200);
+        const after = (await env.WUYA.prepare(
+            "SELECT source_type, source_url, source_domain, is_deep_resolve FROM domains WHERE id = ?"
+        )
+            .bind(row.id)
+            .first()) as {
+            source_type: string;
+            source_url: string;
+            source_domain: string;
+            is_deep_resolve: number;
+        };
+        expect(after.source_type).toBe("url");
+        expect(after.source_url).toBe("https://ips.example.com/list-v2.txt");
+        expect(after.source_domain).toBe("ips.example.com");
+        expect(after.is_deep_resolve).toBe(0);
+        await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(row.id).run();
+    });
+
+    it("从 URL 切回域名时清空 URL 相关列与历史策略", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, parse_param, fetch_strategy, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 60, NULL, 0)"
+        )
+            .bind(
+                "ips.example.com",
+                "url",
+                "https://ips.example.com/list.txt",
+                "auto",
+                null,
+                "jina_reader",
+                "url-to-domain.example.com",
+                "test-zone-id"
+            )
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("url-to-domain.example.com")
+            .first()) as { id: number };
+        const res = await SELF.fetch(`https://example.com/api/domains/${row.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_type: "domain",
+                source_domain: "target.example.com",
+                target_domain_prefix: "url-to-domain",
+                ttl: 60,
+            }),
+        });
+        expect(res.status).toBe(200);
+        const after = (await env.WUYA.prepare(
+            "SELECT source_type, source_url, parse_mode, parse_param, fetch_strategy, source_domain FROM domains WHERE id = ?"
+        )
+            .bind(row.id)
+            .first()) as {
+            source_type: string;
+            source_url: string | null;
+            parse_mode: string | null;
+            parse_param: string | null;
+            fetch_strategy: string | null;
+            source_domain: string;
+        };
+        expect(after.source_type).toBe("domain");
+        expect(after.source_domain).toBe("target.example.com");
+        expect(after.source_url).toBeNull();
+        expect(after.parse_mode).toBeNull();
+        expect(after.parse_param).toBeNull();
+        expect(after.fetch_strategy).toBeNull();
+        await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(row.id).run();
+    });
+
+    it("GET /api/domains 投影包含 URL 类型字段", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "https://projection.example.com/list.txt",
+            parse_mode: "lines",
+            target_domain_prefix: "url-proj",
+            ttl: 60,
+        });
+        expect(res.status).toBe(200);
+        const listRes = await SELF.fetch("https://example.com/api/domains", { headers: { Cookie: cookie } });
+        const list = (await listRes.json()) as Record<string, unknown>[];
+        const target = list.find((d) => d.target_domain === "url-proj.example.com");
+        expect(target).toBeDefined();
+        expect(target?.source_type).toBe("url");
+        expect(target?.source_url).toBe("https://projection.example.com/list.txt");
+        expect(target?.parse_mode).toBe("lines");
+        expect(target?.parse_param).toBeNull();
+        expect(target).toHaveProperty("fetch_strategy");
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain = ?").bind("url-proj.example.com").run();
+    });
+});

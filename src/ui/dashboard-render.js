@@ -36,11 +36,22 @@ export function createDashboardRenderers({ escapeHtml, getZoneName, formatBeijin
             : `<span class="domain-cell" title="${escapeHtml(domain.target_domain)}">${escapeHtml(prefix)}</span>`;
         const isSystem = domain.is_system;
         const systemClass = isSystem ? "system-domain" : "";
-        const sourceDisplay = isSystem ? "系统内置" : domain.source_domain;
+        // 输入来源（issue #52）：系统内置 > URL 来源（展示完整 URL + 解析模式）> 域名
+        const isUrlSource = !isSystem && domain.source_type === "url";
+        const rawSourceUrl = typeof domain.source_url === "string" ? domain.source_url : "";
+        // 解析模式只做白名单映射：未知值 / 存量 NULL 一律显示 auto，原始值不进入 HTML
+        const parseModeLabels = { auto: "自动", lines: "按行", json_path: "JSON 路径", custom_regex: "自定义正则" };
+        const rawParseMode = typeof domain.parse_mode === "string" ? domain.parse_mode.trim() : "";
+        const parseModeLabel = Object.prototype.hasOwnProperty.call(parseModeLabels, rawParseMode)
+            ? parseModeLabels[rawParseMode]
+            : "自动";
+        const sourceDisplay = isSystem ? "系统内置" : isUrlSource ? rawSourceUrl : domain.source_domain;
+        const sourceTitle = isUrlSource ? rawSourceUrl : domain.source_domain;
+        const sourceHint = isUrlSource ? `<small class="domain-cell">解析: ${escapeHtml(parseModeLabel)}</small>` : "";
 
         return `
       <div class="domain-card row-grid ${systemClass}" id="domain-card-${domain.id}">
-          <div class="card-col"><span class="col-label">克隆目标</span><span class="domain-cell" title="${escapeHtml(domain.target_domain)}" data-target="${escapeHtml(domain.target_domain)}" onclick="window.copyToClipboard(this.dataset.target)">${displayContent}</span><small class="domain-cell" title="${escapeHtml(domain.source_domain)}">${escapeHtml(sourceDisplay)}</small></div>
+          <div class="card-col"><span class="col-label">克隆目标</span><span class="domain-cell" title="${escapeHtml(domain.target_domain)}" data-target="${escapeHtml(domain.target_domain)}" onclick="window.copyToClipboard(this.dataset.target)">${displayContent}</span><small class="domain-cell" title="${escapeHtml(sourceTitle)}">${escapeHtml(sourceDisplay)}</small>${sourceHint}</div>
           <div class="card-col"><span class="col-label">当前解析</span><div class="records-placeholder" data-domain-id="${domain.id}"><i class="fa-solid fa-spinner fa-spin"></i> 正在查询...</div></div>
           <div class="card-col"><span class="col-label">上次同步</span><div>${renderStatus(domain)}</div><small>${formatBeijingTime(domain.last_synced_time)}</small></div>
           <div class="card-actions"><button class="outline" onclick="window.individualSync(${domain.id})">同步</button><button class="secondary outline" onclick="window.openModal('domainModal', ${domain.id})" ${isSystem ? "disabled" : ""}>编辑</button><button class="contrast outline" onclick="window.deleteDomain(${domain.id})" ${isSystem ? "disabled" : ""}>删除</button></div>

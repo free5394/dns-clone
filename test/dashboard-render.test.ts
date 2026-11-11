@@ -270,3 +270,90 @@ describe("IP 源解析配置弹窗 (issue #50)", () => {
         expect(html).toContain("parse_param: parseParamInput === '' ? null : parseParamInput");
     });
 });
+
+// issue #52：URL 类型域名的卡片展示与弹窗接线。
+describe("URL 类型域名 (issue #52)", () => {
+    it("URL 来源展示完整 URL 与解析模式标签，而不是 hostname", () => {
+        const { renderDomainCard } = makeRenderers();
+        const html = renderDomainCard(
+            domain({
+                source_domain: "ips.example.com",
+                source_type: "url",
+                source_url: "https://ips.example.com/list.json?v=1",
+                parse_mode: "json_path",
+            })
+        );
+
+        expect(html).toContain("https://ips.example.com/list.json?v=1");
+        expect(html).toContain("解析: JSON 路径");
+    });
+
+    it("URL 与解析配置做 HTML 逃逸，不注入标签", () => {
+        const { renderDomainCard } = makeRenderers();
+        const html = renderDomainCard(
+            domain({
+                source_type: "url",
+                source_url: 'https://evil.test/"><script>alert(1)</script>',
+                parse_mode: "lines",
+            })
+        );
+
+        expect(html).not.toContain("<script>");
+        expect(html).toContain("&lt;script&gt;");
+    });
+
+    it("未知解析模式与存量 NULL 一律显示「自动」", () => {
+        const { renderDomainCard } = makeRenderers();
+
+        expect(
+            renderDomainCard(domain({ source_type: "url", source_url: "https://a.test/x", parse_mode: null }))
+        ).toContain("解析: 自动");
+        expect(
+            renderDomainCard(domain({ source_type: "url", source_url: "https://a.test/x", parse_mode: "unknown_mode" }))
+        ).toContain("解析: 自动");
+    });
+
+    it("域名类型不渲染解析模式提示，系统内置优先于 URL 字段", () => {
+        const { renderDomainCard } = makeRenderers();
+
+        expect(renderDomainCard(domain({ source_type: "domain", source_domain: "src.test" }))).not.toContain("解析:");
+        const systemHtml = renderDomainCard(
+            domain({ is_system: 1, source_type: "url", source_url: "https://should-not-show.test/x" })
+        );
+        expect(systemHtml).toContain("系统内置");
+        expect(systemHtml).not.toContain("should-not-show.test");
+    });
+
+    it("弹窗包含输入来源切换与 URL 解析配置控件", () => {
+        const html = getDashboardPage([], [], {});
+
+        expect(html).toContain('id="source_type"');
+        expect(html).toContain('<option value="domain">域名</option>');
+        expect(html).toContain('<option value="url">URL</option>');
+        expect(html).toContain('id="source_url"');
+        expect(html).toContain('maxlength="2048"');
+        expect(html).toContain('id="domain_parse_mode"');
+        expect(html).toContain('id="domain_parse_param" maxlength="512"');
+    });
+
+    it("来源切换会互斥显示域名/URL 输入并锁定深度开关", () => {
+        const html = getDashboardPage([], [], {});
+        // 静态契约（issue #52）：DOM 接线只能在页面脚本里锁；服务端行为由 API 用例覆盖。
+        expect(html).toContain("window.setDomainSourceType = (type) =>");
+        expect(html).toContain("document.getElementById('domainSourceDomainGroup').hidden = isUrl;");
+        expect(html).toContain("document.getElementById('domainSourceUrlGroup').hidden = !isUrl;");
+        expect(html).toContain("deepSwitch.disabled = isUrl;");
+        expect(html).toContain("if (isUrl) deepSwitch.checked = false;");
+    });
+
+    it("编辑回填 URL 字段，保存时按类型提交", () => {
+        const html = getDashboardPage([], [], {});
+
+        expect(html).toContain("window.setDomainSourceType(domain.source_type === 'url' ? 'url' : 'domain');");
+        expect(html).toContain("document.getElementById('source_url').value = domain.source_url || '';");
+        expect(html).toContain("document.getElementById('domain_parse_mode').value = domain.parse_mode || 'auto';");
+        expect(html).toContain("document.getElementById('domain_parse_param').value = domain.parse_param || '';");
+        expect(html).toContain("source_type: sourceType,");
+        expect(html).toContain("is_deep_resolve: sourceType === 'url' ? 0 :");
+    });
+});

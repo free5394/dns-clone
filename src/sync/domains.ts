@@ -8,7 +8,7 @@ import {
     releaseManualSyncLock,
     createManualSyncLockRenewer,
 } from "../db/client.ts";
-import { fetchThreeNetworkIps } from "./ip-sources.ts";
+import { fetchIpsForTarget, fetchThreeNetworkIps } from "./ip-sources.ts";
 import { beijingTimeLog } from "../util/log.ts";
 import { runWithOptionalLog } from "../util/run-with-log.ts";
 import type { WaitUntil } from "../util/http.ts";
@@ -26,6 +26,12 @@ interface DomainRow {
     last_synced_records?: string | null;
     is_enabled: number;
     is_system: number;
+    // issue #52 / 方案 §8.1：来源类型与 URL 解析配置。列可空，存量数据读出 null 按域名目标处理
+    source_type?: string | null;
+    source_url?: string | null;
+    parse_mode?: string | null;
+    parse_param?: string | null;
+    fetch_strategy?: string | null;
 }
 
 interface DnsRecord {
@@ -44,6 +50,18 @@ interface ThreeNetworkIpsCache {
 /** 域名同步共享上下文：跨多个域名同步时复用的派生状态 */
 interface SyncContext {
     threeNetworkIps?: ThreeNetworkIpsCache;
+    /**
+     * URL 类型目标的同批抓取结果缓存（方案 §6.3）。
+     * 键 = url + parse_mode + parse_param，同批内相同配置只抓一次；
+     * 只缓存成功结果（取得正文且解析到 ≥1 个 IP），失败不缓存——与三网 FIX-15/FIX-16 语义一致。
+     */
+    urlRecords?: Map<string, DnsRecord[]>;
+}
+
+/** URL 类型目标的缓存键：三个字段共同决定解析结果，任一不同即视为不同请求 */
+function urlRecordsCacheKey(domain: DomainRow): string {
+    const url = (domain.source_url ?? "").trim();
+    return `${url}\u0000${domain.parse_mode ?? ""}\u0000${domain.parse_param ?? ""}`;
 }
 
 type LogFn = (msg: string) => void;
@@ -223,7 +241,8 @@ export async function syncSystemDomains(
 }
 
 /**
- * 根据域名配置解析需更新的 DNS 记录（三分支策略）
+ * 根据域名配置解析需更新的 DNS 记录（四分支策略）
+ * - source_type=url：抓取 URL 正文并经统一解析层得 IPv4/IPv6（issue #52）
  * - internal:hostmonit:*：系统内置三网优选 IP
  * - is_deep_resolve=1：递归解析 CNAME 链
  * - 否则：浅层克隆（源域名必须是 CNAME）
@@ -234,6 +253,9 @@ export async function resolveRecordsForDomain(
     log: LogFn,
     syncContext: SyncContext
 ): Promise<DnsRecord[]> {
+    if (domain.source_type === "url") {
+        return await resolveUrlRecordsForDomain(domain, db, log, syncContext);
+    }
     if (domain.source_domain.startsWith("internal:hostmonit:")) {
         const type = domain.source_domain.split(":")[2];
         const sourceName = (await getSetting(db, "THREE_NETWORK_SOURCE")) || "CloudFlareYes";
@@ -276,6 +298,66 @@ export async function resolveRecordsForDomain(
     const cnames = await getDnsFromDoh(domain.source_domain, "CNAME");
     if (cnames.length > 0) return [{ type: "CNAME", content: cnames[0].replace(/\.$/, "") }];
     throw new Error(`在浅层克隆模式下，源域名 ${domain.source_domain} 必须是一个CNAME记录。`);
+}
+
+/**
+ * URL 类型目标：复用 IP 源的策略链取正文，经统一解析层得 IPv4/IPv6 并映射成 A/AAAA（方案 §6.2 / §6.3）。
+ * - 同批缓存：键 = url + parse_mode + parse_param，只缓存成功结果；同批同配置只抓一次。
+ * - 取得正文但解析 0 条：不写缓存，返回空集合交由 syncDomainLogic 的 0 条分支判定。
+ * - 抓取抛错：不写缓存、向上抛，由 syncDomainLogic 标 failed 且不改动现有 DNS。
+ */
+async function resolveUrlRecordsForDomain(
+    domain: DomainRow,
+    db: D1Database,
+    log: LogFn,
+    syncContext: SyncContext
+): Promise<DnsRecord[]> {
+    const cacheKey = urlRecordsCacheKey(domain);
+    const cached = syncContext.urlRecords?.get(cacheKey);
+    if (cached) {
+        log(`模式: URL 抓取 (同批缓存命中，${cached.length} 条记录)`);
+        return cached;
+    }
+    const url = (domain.source_url ?? "").trim();
+    if (!url) throw new Error(`URL 类型目标 ${domain.target_domain} 缺少 URL，请重新编辑该目标。`);
+    log(`模式: URL 抓取 (${url})`);
+    const result = await fetchIpsForTarget(
+        {
+            id: domain.id,
+            url,
+            fetch_strategy: domain.fetch_strategy ?? null,
+            parse_mode: domain.parse_mode ?? null,
+            parse_param: domain.parse_param ?? null,
+        },
+        db,
+        {
+            // 回退命中后把实际生效策略持久化到 domains，下一轮优先尝试（验收 #6）
+            persistStrategy: async (strategy, target) => {
+                await db.prepare("UPDATE domains SET fetch_strategy = ? WHERE id = ?").bind(strategy, target.id).run();
+            },
+            // 取得正文但 0 条不抛错：交给 syncDomainLogic 走「上次有无记录」两分支（验收 #8）
+            emptyWhenNoIps: true,
+        }
+    );
+    // 回退命中时同步内存对象，同一 DomainRow 后续复用可感知（与 ip_sources 侧就地改写口径一致）
+    if (result.strategy !== "" && result.strategy !== result.configuredStrategy) {
+        domain.fetch_strategy = result.strategy;
+    }
+    const records: DnsRecord[] = [
+        ...result.ipv4.map((ip) => ({ type: "A", content: ip })),
+        ...result.ipv6.map((ip) => ({ type: "AAAA", content: ip })),
+    ];
+    log(
+        `取得 ${result.ipv4.length} 个 IPv4 / ${result.ipv6.length} 个 IPv6（策略: ${result.strategy || "全部未命中"}）`
+    );
+    if (records.length === 0) {
+        // §6.3：全链取得正文但解析 0 条时不写缓存（避免空结果污染同批其它目标）
+        log("未解析到任何 IP，交由同步逻辑按上次记录判定。");
+        return [];
+    }
+    if (!syncContext.urlRecords) syncContext.urlRecords = new Map<string, DnsRecord[]>();
+    syncContext.urlRecords.set(cacheKey, records);
+    return records;
 }
 
 /** 核心同步逻辑：解析 → 比对 → 写回 Cloudflare DNS → 状态更新 */

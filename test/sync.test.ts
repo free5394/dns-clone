@@ -1092,3 +1092,258 @@ describe("updateCloudflareDns 编码与全量分页", () => {
         expect(deleteCalls).toHaveLength(1);
     });
 });
+
+describe("URL 类型目标端到端 (issue #52)", () => {
+    /** 插入一条 URL 类型目标并返回整行 */
+    async function insertUrlDomain(overrides: {
+        target: string;
+        url?: string;
+        parse_mode?: string | null;
+        parse_param?: string | null;
+        fetch_strategy?: string | null;
+        last_synced_records?: string | null;
+        last_sync_status?: string | null;
+    }) {
+        const url = overrides.url ?? "https://example.com/ips.txt";
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, parse_param, fetch_strategy, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system, is_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 60, NULL, 0, 1)"
+        )
+            .bind(
+                new URL(url).hostname,
+                "url",
+                url,
+                overrides.parse_mode ?? "auto",
+                overrides.parse_param ?? null,
+                overrides.fetch_strategy ?? null,
+                overrides.target,
+                "test-zone-id"
+            )
+            .run();
+        if (overrides.last_synced_records !== undefined || overrides.last_sync_status !== undefined) {
+            await env.WUYA.prepare(
+                "UPDATE domains SET last_synced_records = ?, last_sync_status = ? WHERE target_domain = ?"
+            )
+                .bind(overrides.last_synced_records ?? null, overrides.last_sync_status ?? null, overrides.target)
+                .run();
+        }
+        return (await env.WUYA.prepare("SELECT * FROM domains WHERE target_domain = ?")
+            .bind(overrides.target)
+            .first()) as {
+            id: number;
+            source_domain: string;
+            source_type: string | null;
+            source_url: string | null;
+            parse_mode: string | null;
+            parse_param: string | null;
+            fetch_strategy: string | null;
+            target_domain: string;
+            zone_id: string;
+            is_deep_resolve: number;
+            ttl: number;
+            last_synced_records: string | null;
+            is_enabled: number;
+            is_system: number;
+        };
+    }
+
+    /** 记录发往 Cloudflare API 的调用，列表接口按传入的现有记录返回 */
+    function stubCfAndSource(sourceFn: (url: string) => Response | Promise<Response>, existing: unknown[] = []) {
+        const calls: { url: string; method: string; body?: string }[] = [];
+        const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+            if (url.includes("api.cloudflare.com")) {
+                const method = init?.method ?? "GET";
+                calls.push({ url, method, body: typeof init?.body === "string" ? init.body : undefined });
+                if (method === "GET") {
+                    return new Response(JSON.stringify({ success: true, result: existing }), { status: 200 });
+                }
+                return new Response(JSON.stringify({ success: true, result: {} }), { status: 200 });
+            }
+            calls.push({ url, method: init?.method ?? "GET" });
+            return await sourceFn(url);
+        });
+        vi.stubGlobal("fetch", fetchMock);
+        return calls;
+    }
+
+    it("由 URL 正文生成 A 记录并写入 Cloudflare（数值升序）", async () => {
+        const domain = await insertUrlDomain({ target: "url-a.example.com" });
+        const calls = stubCfAndSource(() => new Response("3.3.3.3\n1.1.1.1\n10.0.0.1\n2.2.2.2", { status: 200 }));
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status, last_synced_records FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_synced_records: string };
+        expect(row.last_sync_status).toBe("success");
+        expect(JSON.parse(row.last_synced_records)).toEqual([
+            { type: "A", content: "1.1.1.1" },
+            { type: "A", content: "2.2.2.2" },
+            { type: "A", content: "3.3.3.3" },
+            { type: "A", content: "10.0.0.1" },
+        ]);
+        const posts = calls.filter((c) => c.method === "POST" && c.url.includes("api.cloudflare.com"));
+        expect(posts).toHaveLength(4);
+        const posted = posts.map((c) => JSON.parse(c.body as string)) as { content: string; type: string }[];
+        expect(posted.every((p) => p.type === "A")).toBe(true);
+        expect(posted.map((p) => p.content)).toEqual(["1.1.1.1", "2.2.2.2", "3.3.3.3", "10.0.0.1"]);
+    });
+
+    it("IPv4 与 IPv6 同时生成，IPv6 规范化后字典序排列", async () => {
+        const domain = await insertUrlDomain({ target: "url-dual.example.com" });
+        const calls = stubCfAndSource(
+            () => new Response("2001:0db8:0000:0000:0000:0000:0000:0002\n2001:db8::1\n8.8.8.8", { status: 200 })
+        );
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const row = (await env.WUYA.prepare("SELECT last_synced_records FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_synced_records: string };
+        expect(JSON.parse(row.last_synced_records)).toEqual([
+            { type: "A", content: "8.8.8.8" },
+            { type: "AAAA", content: "2001:db8::1" },
+            { type: "AAAA", content: "2001:db8::2" },
+        ]);
+        const posted = calls
+            .filter((c) => c.method === "POST" && c.url.includes("api.cloudflare.com"))
+            .map((c) => JSON.parse(c.body as string).type as string);
+        expect(posted.sort()).toEqual(["A", "AAAA", "AAAA"]);
+    });
+
+    it("同批内相同 url + parse_mode + parse_param 只抓取一次", async () => {
+        const domainA = await insertUrlDomain({ target: "url-share-a.example.com" });
+        const domainB = await insertUrlDomain({ target: "url-share-b.example.com" });
+        let sourceHits = 0;
+        stubCfAndSource(() => {
+            sourceHits++;
+            return new Response("1.1.1.1", { status: 200 });
+        });
+        const syncContext = {};
+
+        const recordsA = await resolveRecordsForDomain(domainA, env.WUYA, () => {}, syncContext);
+        const recordsB = await resolveRecordsForDomain(domainB, env.WUYA, () => {}, syncContext);
+
+        expect(sourceHits).toBe(1);
+        expect(recordsA).toEqual([{ type: "A", content: "1.1.1.1" }]);
+        expect(recordsB).toEqual(recordsA);
+    });
+
+    it("解析配置不同则各自抓取（缓存键含 parse_mode）", async () => {
+        const domainA = await insertUrlDomain({ target: "url-key-a.example.com", parse_mode: "lines" });
+        const domainB = await insertUrlDomain({ target: "url-key-b.example.com", parse_mode: "auto" });
+        let sourceHits = 0;
+        stubCfAndSource(() => {
+            sourceHits++;
+            return new Response("1.1.1.1", { status: 200 });
+        });
+        const syncContext = {};
+
+        await resolveRecordsForDomain(domainA, env.WUYA, () => {}, syncContext);
+        await resolveRecordsForDomain(domainB, env.WUYA, () => {}, syncContext);
+
+        expect(sourceHits).toBe(2);
+    });
+
+    it("抓取全部失败时标记 failed 且不改动现有 DNS", async () => {
+        const domain = await insertUrlDomain({ target: "url-fail.example.com" });
+        const calls = stubCfAndSource(() => new Response("boom", { status: 500 }));
+
+        await expect(syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {})).rejects.toThrow(
+            /所有抓取策略均未能从该URL获取到IP/
+        );
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status, last_sync_error FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_sync_error: string | null };
+        expect(row.last_sync_status).toBe("failed");
+        expect(row.last_sync_error).toBeTruthy();
+        // 抓取阶段就失败，根本不该进入 Cloudflare 写回
+        expect(calls.filter((c) => c.url.includes("api.cloudflare.com"))).toHaveLength(0);
+    });
+
+    it("取得正文但解析 0 条：上次无记录 → no_change", async () => {
+        const domain = await insertUrlDomain({ target: "url-empty-new.example.com", last_synced_records: null });
+        const calls = stubCfAndSource(() => new Response("这里没有任何 IP", { status: 200 }));
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string };
+        expect(row.last_sync_status).toBe("no_change");
+        expect(calls.filter((c) => c.url.includes("api.cloudflare.com"))).toHaveLength(0);
+    });
+
+    it("取得正文但解析 0 条：上次有记录 → failed 且保留旧记录", async () => {
+        const previous = JSON.stringify([{ type: "A", content: "9.9.9.9" }]);
+        const domain = await insertUrlDomain({
+            target: "url-empty-old.example.com",
+            last_synced_records: previous,
+            last_sync_status: "success",
+        });
+        const calls = stubCfAndSource(() => new Response("这里没有任何 IP", { status: 200 }));
+
+        await expect(syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {})).rejects.toThrow(
+            /上次曾有记录/
+        );
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status, last_synced_records FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_synced_records: string };
+        expect(row.last_sync_status).toBe("failed");
+        expect(row.last_synced_records).toBe(previous);
+        expect(calls.filter((c) => c.url.includes("api.cloudflare.com"))).toHaveLength(0);
+    });
+
+    it("仅解析到 IPv6 时生成 AAAA 并删除旧 A", async () => {
+        const domain = await insertUrlDomain({ target: "url-v6only.example.com" });
+        const calls = stubCfAndSource(
+            () => new Response("2001:db8::5", { status: 200 }),
+            [{ id: "old-a", type: "A", content: "9.9.9.9", proxied: false, ttl: 60 }]
+        );
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const deletes = calls.filter((c) => c.method === "DELETE");
+        expect(deletes).toHaveLength(1);
+        expect(deletes[0].url).toContain("old-a");
+        const posts = calls.filter((c) => c.method === "POST" && c.url.includes("api.cloudflare.com"));
+        expect(posts).toHaveLength(1);
+        expect(JSON.parse(posts[0].body as string)).toMatchObject({ type: "AAAA", content: "2001:db8::5" });
+    });
+
+    it("策略回退命中后把实际生效策略持久化到 domains", async () => {
+        const domain = await insertUrlDomain({ target: "url-fallback.example.com" });
+        stubCfAndSource((url) => {
+            // direct_regex 直连源站失败，jina_reader 命中
+            if (url.includes("r.jina.ai")) return new Response("5.5.5.5", { status: 200 });
+            return new Response("blocked", { status: 403 });
+        });
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const row = (await env.WUYA.prepare("SELECT fetch_strategy FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { fetch_strategy: string | null };
+        expect(row.fetch_strategy).toBe("jina_reader");
+    });
+
+    it("回退后下一轮优先使用已持久化策略", async () => {
+        const domain = await insertUrlDomain({
+            target: "url-fallback-priority.example.com",
+            fetch_strategy: "jina_reader",
+        });
+        const attempted: string[] = [];
+        stubCfAndSource((url) => {
+            attempted.push(url);
+            if (url.includes("r.jina.ai")) return new Response("5.5.5.5", { status: 200 });
+            return new Response("blocked", { status: 403 });
+        });
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        // 首轮只打一次：缓存策略优先且直接命中，不再尝试其它策略
+        expect(attempted).toHaveLength(1);
+        expect(attempted[0]).toContain("r.jina.ai");
+    });
+});
