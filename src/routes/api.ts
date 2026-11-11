@@ -591,17 +591,23 @@ async function checkCompanionConflict(
     }>();
     const companion = deriveCompanionPath(githubPath);
     let targetSeen = false;
+    let conflictPath: string | null = null;
     for (const row of rows.results ?? []) {
         if (excludeId !== undefined && row.id === excludeId) {
             targetSeen = true;
             continue;
         }
         // 新主文件撞了别人的伴生文件，或新伴生文件撞了别人的主文件
-        if (row.github_path === companion || deriveCompanionPath(row.github_path) === githubPath) {
-            return { status: "conflict", conflictPath: row.github_path };
+        if (
+            conflictPath === null &&
+            (row.github_path === companion || deriveCompanionPath(row.github_path) === githubPath)
+        ) {
+            conflictPath = row.github_path;
         }
     }
+    // 「目标不存在」优先于「路径冲突」：更新一个已被删掉的 id 时，报 404 才是使用者能据以行动的信息
     if (excludeId !== undefined && !targetSeen) return { status: "missing" };
+    if (conflictPath !== null) return { status: "conflict", conflictPath };
     return { status: "ok" };
 }
 

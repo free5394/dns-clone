@@ -1449,6 +1449,8 @@ describe("IP 源写库冲突 (M-3)", () => {
 
 // issue #51：伴生路径长度与主文件/伴生文件的双向路径冲突在保存时就要拒绝
 describe("IP 源伴生路径校验 (issue #51)", () => {
+    const ABSENT_ID = 987654321;
+
     afterAll(async () => {
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm51/%'").run();
     });
@@ -1612,6 +1614,30 @@ describe("IP 源伴生路径校验 (issue #51)", () => {
             .bind(target.id)
             .first()) as { github_path: string };
         expect(after.github_path).toBe("m51/move.txt");
+    });
+
+    it("更新一个已不存在的 id 且路径撞别人时，报 404 而不是 409", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/m51/gone.txt", "m51/gone.txt", "占位", "direct_regex")
+            .run();
+
+        const res = await SELF.fetch(`https://example.com/api/ip_sources/${ABSENT_ID}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m51/gone.txt",
+                // 这条路径本身会撞上 m51/gone.txt 的伴生文件，但目标行不存在，404 优先
+                github_path: "m51/gone-v6.txt",
+                commit_message: "目标不存在",
+                fetch_strategy: "direct_regex",
+            }),
+        });
+
+        expect(res.status).toBe(404);
+        expect(((await res.json()) as { error?: string }).error).toBe("目标不存在。");
     });
 });
 
