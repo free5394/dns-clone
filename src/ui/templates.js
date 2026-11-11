@@ -2,6 +2,8 @@
 import { escapeHtmlClient, canAddDomains, planSyncCompletionActions } from "./dashboard-helpers.js";
 import { createDashboardRenderers } from "./dashboard-render.js";
 import { createApiFetch } from "./dashboard-api.js";
+// 单类型记录上限的唯一归一实现（issue #49）：模板层不重复定义默认值
+import { normalizeMaxIpsPerType } from "../db/settings.ts";
 // 纯 JS 文件（tsc 不参与）：内含大量浏览器端 JS 模板字符串
 
 // HTML 实体转义：所有插值到模板字符串的用户控制字段必须经过 escapeHtml
@@ -554,7 +556,9 @@ export function getDashboardPage(domains, ipSources, settings) {
                 </fieldset>
                  <fieldset><legend><i class="fa-solid fa-network-wired"></i> 三网优选IP源设置</legend><label for="threeNetworkSource">三网采集源</label><select id="threeNetworkSource"><option value="CloudFlareYes" ${settings.THREE_NETWORK_SOURCE === "CloudFlareYes" ? "selected" : ""}>CloudFlareYes</option><option value="api.uouin.com" ${settings.THREE_NETWORK_SOURCE === "api.uouin.com" ? "selected" : ""}>api.uouin.com</option><option value="wetest.vip" ${settings.THREE_NETWORK_SOURCE === "wetest.vip" ? "selected" : ""}>wetest.vip</option></select><small>为系统预设的电信/移动/联通域名选择IP来源。更改后保存设置将自动同步一次系统域名。</small>
                 </fieldset>
-                <fieldset><legend><i class="fa-solid fa-key"></i> IP 源抓取设置</legend><label for="hostmonitKey">hostmonit 接口 Key</label><input type="password" id="hostmonitKey" value="" placeholder="留空沿用内置默认 Key（已自定义时留空保持不变）"><label><input type="checkbox" id="hostmonitClear"> 清除自定义 Key（恢复内置默认）</label><small>hostmonit 三网优选 IP 接口的公开 key，对方轮换或限流后在此更新，保存后下一次同步即生效。</small>
+                <fieldset><legend><i class="fa-solid fa-list-ol"></i> DNS 记录设置</legend><label for="maxIpsPerType">单类型记录上限 (MAX_IPS_PER_TYPE)</label><input type="number" id="maxIpsPerType" min="1" max="200" step="1" value="${normalizeMaxIpsPerType(settings.MAX_IPS_PER_TYPE)}"><small>每个 DNS 类型（A / AAAA）最多保留的记录条数，范围 1–200。留空并保存表示恢复默认 20。</small>
+                 </fieldset>
+                 <fieldset><legend><i class="fa-solid fa-key"></i> IP 源抓取设置</legend><label for="hostmonitKey">hostmonit 接口 Key</label><input type="password" id="hostmonitKey" value="" placeholder="留空沿用内置默认 Key（已自定义时留空保持不变）"><label><input type="checkbox" id="hostmonitClear"> 清除自定义 Key（恢复内置默认）</label><small>hostmonit 三网优选 IP 接口的公开 key，对方轮换或限流后在此更新，保存后下一次同步即生效。</small>
                 </fieldset>
                 <fieldset><legend><i class="fa-brands fa-github"></i> GitHub API 设置</legend><label for="githubToken">GitHub Token</label><input type="password" id="githubToken" value="" placeholder="${settings.GITHUB_CONFIGURED ? "已配置，留空保持不变" : "具有 repo 权限的 Personal Access Token"}"><label><input type="checkbox" id="githubClear"> 清除已保存的 GitHub 配置</label><label for="githubOwner">GitHub 用户名/组织名</label><input type="text" id="githubOwner" value="${escapeHtml(settings.GITHUB_OWNER || "")}" placeholder="例如: my-username"><label for="githubRepo">仓库名称</label><input type="text" id="githubRepo" value="${escapeHtml(settings.GITHUB_REPO || "")}" placeholder="例如: my-dns-records">
                     <details class="tutorial-details"><summary>如何获取 GitHub API 信息？</summary><div class="tutorial-content"><ol><li><strong>获取 GitHub Token:</strong><ol type="a"><li>登录 <a href="https://github.com/" target="_blank">GitHub</a>，点击右上角头像，进入 <strong>“Settings”</strong>。</li><li>在左侧菜单中，选择 <strong>“Developer settings”</strong> &rarr; <strong>“Personal access tokens”</strong> &rarr; <strong>“Tokens (classic)”</strong>。</li><li>点击 <strong>“Generate new token”</strong>，并选择 <strong>“Generate new token (classic)”</strong>。</li><li>为令牌添加描述（Note），设置合适的过期时间（Expiration）。</li><li>在 <strong>“Select scopes”</strong> 部分，勾选 <code>repo</code> 权限。</li><li>点击页面底部的 <strong>“Generate token”</strong>，并复制生成的令牌。<strong>注意：令牌仅显示一次，请妥善保管。</strong></li></ol></li><li><strong>获取用户名/组织名 和 仓库名称:</strong><ol type="a"><li><strong>用户名/组织名</strong> 就是您的GitHub个人主页URL中，github.com后面的那部分，或者您组织的主页URL。</li><li><strong>仓库名称</strong> 是您在GitHub上创建的，用来存储IP文件的仓库的名字。如果仓库不存在，系统将在第一次同步时自动为您创建为私有仓库。</li></ol></li></ol></div></details>
@@ -860,6 +864,8 @@ function getDashboardSyncScript() {
       const newThreeNetworkSource = document.getElementById('threeNetworkSource').value;
 
       const settingsToSave = { THREE_NETWORK_SOURCE: newThreeNetworkSource };
+      // issue #49：单类型记录上限；留空即清除，服务端读取时回退默认 20
+      settingsToSave.MAX_IPS_PER_TYPE = document.getElementById('maxIpsPerType').value.trim();
       if (document.getElementById('cfClear').checked) {
           Object.assign(settingsToSave, { CF_API_TOKEN: null, CF_ZONE_ID: null });
       } else {
@@ -903,6 +909,7 @@ function getDashboardSyncScript() {
           document.getElementById('githubClear').checked = false;
           document.getElementById('cfToken').value = '';
           document.getElementById('cfZoneId').value = currentSettings.CF_ZONE_ID || '';
+          document.getElementById('maxIpsPerType').value = currentSettings.MAX_IPS_PER_TYPE;
           document.getElementById('githubToken').value = '';
           document.getElementById('githubOwner').value = currentSettings.GITHUB_OWNER || '';
           document.getElementById('githubRepo').value = currentSettings.GITHUB_REPO || '';

@@ -7,6 +7,11 @@ import {
     validateEffectiveSettings,
     normalizeHostmonitKey,
     isHostmonitKeyConfigured,
+    normalizeMaxIpsPerType,
+    MAX_IPS_PER_TYPE_KEY,
+    DEFAULT_MAX_IPS_PER_TYPE,
+    MIN_MAX_IPS_PER_TYPE,
+    MAX_MAX_IPS_PER_TYPE,
     WRITABLE_SETTING_KEYS,
     SECRET_SETTING_KEYS,
     SENSITIVE_SETTINGS_KEYS,
@@ -141,5 +146,59 @@ describe("hostmonit key 判据一致性 (issue #37 R2)", () => {
         expect(normalizeHostmonitKey(null)).toBe("");
         expect(normalizeHostmonitKey(undefined)).toBe("");
         expect(normalizeHostmonitKey("  key  ")).toBe("key");
+    });
+});
+
+describe("MAX_IPS_PER_TYPE 写入校验与读取归一 (issue #49)", () => {
+    it("在白名单内，且不属于密钥/敏感分组", () => {
+        expect(WRITABLE_SETTING_KEYS.has(MAX_IPS_PER_TYPE_KEY)).toBe(true);
+        expect(SECRET_SETTING_KEYS.has(MAX_IPS_PER_TYPE_KEY)).toBe(false);
+        expect(SENSITIVE_SETTINGS_KEYS.has(MAX_IPS_PER_TYPE_KEY)).toBe(false);
+    });
+
+    it("接受 1 与 200 两个边界值并落为字符串", () => {
+        const low = normalizeSettingsInput({ MAX_IPS_PER_TYPE: MIN_MAX_IPS_PER_TYPE });
+        expect(low.ok).toBe(true);
+        if (!low.ok) return;
+        expect(low.settings.MAX_IPS_PER_TYPE).toBe("1");
+
+        const high = normalizeSettingsInput({ MAX_IPS_PER_TYPE: MAX_MAX_IPS_PER_TYPE });
+        expect(high.ok).toBe(true);
+        if (!high.ok) return;
+        expect(high.settings.MAX_IPS_PER_TYPE).toBe("200");
+    });
+
+    it.each(["0", "201", "1.5", "abc", "-1", "20abc"])("非法值 %s 被拒绝且整批失败", (value) => {
+        const result = normalizeSettingsInput({ MAX_IPS_PER_TYPE: value, THREE_NETWORK_SOURCE: "wetest.vip" });
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error).toContain("MAX_IPS_PER_TYPE");
+    });
+
+    it("null 与空串表示显式清除，不算非法（读取时回退默认）", () => {
+        for (const value of [null, ""] as const) {
+            const result = normalizeSettingsInput({ MAX_IPS_PER_TYPE: value });
+            expect(result.ok).toBe(true);
+            if (!result.ok) return;
+            expect(result.settings.MAX_IPS_PER_TYPE).toBeNull();
+        }
+    });
+
+    it("读取归一：缺失、空值、非整数、越界与脏字符串一律回退 20", () => {
+        for (const raw of [null, undefined, "", "   ", "abc", "1.5", "0", "-3", "201", "1e3"]) {
+            expect(normalizeMaxIpsPerType(raw)).toBe(DEFAULT_MAX_IPS_PER_TYPE);
+        }
+        expect(DEFAULT_MAX_IPS_PER_TYPE).toBe(20);
+    });
+
+    it("读取归一：范围内整数原样返回（含写入后的往返）", () => {
+        expect(normalizeMaxIpsPerType("1")).toBe(1);
+        expect(normalizeMaxIpsPerType("200")).toBe(200);
+        expect(normalizeMaxIpsPerType(" 30 ")).toBe(30);
+
+        const written = normalizeSettingsInput({ MAX_IPS_PER_TYPE: "30" });
+        expect(written.ok).toBe(true);
+        if (!written.ok) return;
+        expect(normalizeMaxIpsPerType(written.settings.MAX_IPS_PER_TYPE)).toBe(30);
     });
 });

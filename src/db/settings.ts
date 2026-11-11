@@ -30,6 +30,28 @@ export function isHostmonitKeyConfigured(stored: string | null | undefined): boo
     return normalizeHostmonitKey(stored) !== "";
 }
 
+/**
+ * DNS 单类型记录上限的设置键（issue #49 / 方案 §8.4）。
+ * 默认 20，范围 1–200 整数；缺失或损坏的存量值读取时一律回退默认。
+ */
+export const MAX_IPS_PER_TYPE_KEY = "MAX_IPS_PER_TYPE";
+export const DEFAULT_MAX_IPS_PER_TYPE = 20;
+export const MIN_MAX_IPS_PER_TYPE = 1;
+export const MAX_MAX_IPS_PER_TYPE = 200;
+
+/**
+ * 归一 MAX_IPS_PER_TYPE：缺失、空值、非整数或越界都回退默认值（与 normalizeBatchSize 同风格）。
+ * 写入校验拦不住存量脏数据（手工改库、旧版本遗留），读取侧必须自己兜底。
+ */
+export function normalizeMaxIpsPerType(raw: string | null | undefined): number {
+    if (raw === null || raw === undefined) return DEFAULT_MAX_IPS_PER_TYPE;
+    const text = String(raw).trim();
+    if (text === "") return DEFAULT_MAX_IPS_PER_TYPE;
+    const n = Number(text);
+    if (!Number.isInteger(n) || n < MIN_MAX_IPS_PER_TYPE || n > MAX_MAX_IPS_PER_TYPE) return DEFAULT_MAX_IPS_PER_TYPE;
+    return n;
+}
+
 /** 用户可在设置页写入的全部配置键（配对校验与合并有效配置时使用） */
 export const CONFIG_SETTING_KEYS = [...CF_CONFIG_KEYS, ...GITHUB_CONFIG_KEYS] as const;
 
@@ -39,6 +61,7 @@ export const WRITABLE_SETTING_KEYS: ReadonlySet<string> = new Set<string>([
     HOSTMONIT_API_KEY,
     "THREE_NETWORK_SOURCE",
     "BATCH_SIZE",
+    MAX_IPS_PER_TYPE_KEY,
 ]);
 
 /** 密钥类键：空字符串表示「保持不变」，不能被当成清除指令 */
@@ -55,7 +78,7 @@ export const SENSITIVE_SETTINGS_KEYS: ReadonlySet<string> = new Set<string>([
     "PASSWORD_SALT",
 ]);
 
-/** 清洗结果：白名单过滤 + 空值语义 + BATCH_SIZE 范围，任一失败即整批拒绝 */
+/** 清洗结果：白名单过滤 + 空值语义 + BATCH_SIZE / MAX_IPS_PER_TYPE 范围，任一失败即整批拒绝 */
 export type SettingsInputResult = { ok: true; settings: Record<string, string | null> } | { ok: false; error: string };
 
 /**
@@ -64,6 +87,8 @@ export type SettingsInputResult = { ok: true; settings: Record<string, string | 
  * - null / undefined 表示显式清除
  * - 空字符串：Secret 类键表示「保持不变」，其它键表示清除
  * - BATCH_SIZE 必须是 1..MAX 的整数，负数在 SQLite LIMIT 中等于无上限
+ * - MAX_IPS_PER_TYPE 必须是 1..200 的整数；null 与空串是显式清除（读取时回退默认 20），
+ *   只有非 null 的非法值才整批拒绝
  */
 export function normalizeSettingsInput(raw: Record<string, unknown>): SettingsInputResult {
     const settings: Record<string, string | null> = {};
@@ -84,6 +109,15 @@ export function normalizeSettingsInput(raw: Record<string, unknown>): SettingsIn
             const n = Number(settings[key]);
             if (settings[key] === null || !Number.isInteger(n) || n < 1 || n > MAX_BATCH_SIZE) {
                 return { ok: false, error: `BATCH_SIZE 必须为 1 到 ${MAX_BATCH_SIZE} 之间的整数。` };
+            }
+        }
+        if (key === MAX_IPS_PER_TYPE_KEY && settings[key] !== null) {
+            const n = Number(settings[key]);
+            if (!Number.isInteger(n) || n < MIN_MAX_IPS_PER_TYPE || n > MAX_MAX_IPS_PER_TYPE) {
+                return {
+                    ok: false,
+                    error: `MAX_IPS_PER_TYPE 必须为 ${MIN_MAX_IPS_PER_TYPE} 到 ${MAX_MAX_IPS_PER_TYPE} 之间的整数。`,
+                };
             }
         }
     }

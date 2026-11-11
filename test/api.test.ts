@@ -661,6 +661,73 @@ describe("POST /api/settings (Task 2.6 白名单 + 配对验证)", () => {
         const row = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'BATCH_SIZE'").first();
         expect(row).toBeNull();
     });
+
+    it("接受 1-200 内的 MAX_IPS_PER_TYPE 并在刷新后回传同一值 (issue #49)", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/settings", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({ MAX_IPS_PER_TYPE: 30 }),
+        });
+        expect(res.status).toBe(200);
+        const row = (await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").first()) as {
+            value: string;
+        } | null;
+        expect(row?.value).toBe("30");
+
+        // 刷新（GET）必须回传同一个值，设置页据此回填
+        const get = await SELF.fetch("https://example.com/api/settings", { headers: { Cookie: cookie } });
+        expect(get.status).toBe(200);
+        expect(((await get.json()) as { MAX_IPS_PER_TYPE: number }).MAX_IPS_PER_TYPE).toBe(30);
+    });
+
+    it("拒绝非法 MAX_IPS_PER_TYPE 且不覆盖已存值 (issue #49)", async () => {
+        const cookie = await loginAndGetCookie();
+        // 同文件用例共享 D1 状态：先放一个合法值，验证被拒的请求既不 200 也不覆盖它
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('MAX_IPS_PER_TYPE', '25') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run();
+        for (const bad of [0, 201, 1.5, -1, "abc"]) {
+            const res = await SELF.fetch("https://example.com/api/settings", {
+                method: "POST",
+                headers: { Cookie: cookie, "Content-Type": "application/json" },
+                body: JSON.stringify({ MAX_IPS_PER_TYPE: bad }),
+            });
+            expect(res.status, `MAX_IPS_PER_TYPE=${JSON.stringify(bad)} 应被拒绝`).toBe(400);
+        }
+        const row = (await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").first()) as {
+            value: string;
+        } | null;
+        expect(row?.value).toBe("25");
+    });
+
+    it("缺失、损坏或清除后 MAX_IPS_PER_TYPE 一律回退 20 (issue #49)", async () => {
+        const cookie = await loginAndGetCookie();
+        const readMax = async (): Promise<number> => {
+            const res = await SELF.fetch("https://example.com/api/settings", { headers: { Cookie: cookie } });
+            return ((await res.json()) as { MAX_IPS_PER_TYPE: number }).MAX_IPS_PER_TYPE;
+        };
+
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").run();
+        expect(await readMax()).toBe(20);
+
+        // 损坏的存量值（手工改库或旧版本遗留）同样回退，而不是把脏值透给前端
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('MAX_IPS_PER_TYPE', 'oops') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run();
+        expect(await readMax()).toBe(20);
+
+        // 显式清除：null 落为删除指令，读取回到默认 20
+        const cleared = await SELF.fetch("https://example.com/api/settings", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({ MAX_IPS_PER_TYPE: null }),
+        });
+        expect(cleared.status).toBe(200);
+        const row = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").first();
+        expect(row).toBeNull();
+        expect(await readMax()).toBe(20);
+    });
 });
 
 describe("GET /api/settings (Task 2.5 敏感字段过滤)", () => {

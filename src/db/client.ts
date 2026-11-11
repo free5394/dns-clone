@@ -165,9 +165,13 @@ export async function getGitHubSettings(db: D1Database) {
 export const DOMAIN_COLUMNS =
     "id, source_domain, target_domain, zone_id, is_deep_resolve, ttl, notes, " +
     "strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_time) as last_synced_time, " +
-    "last_sync_status, last_sync_error, is_enabled, is_system";
+    "last_sync_status, last_sync_error, is_enabled, is_system, " +
+    // issue #49 / 方案 §8.1：新增列进入投影，旧数据读出 null（不报错）
+    "source_type, source_url, parse_mode, parse_param, fetch_strategy";
 
 export const IP_SOURCE_COLUMNS =
     "id, url, github_path, commit_message, fetch_strategy, " +
     "strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_time) as last_synced_time, " +
-    "last_sync_status, last_sync_error, is_enabled";
+    "last_sync_status, last_sync_error, is_enabled, " +
+    // issue #49 / 方案 §8.2：新增列进入投影，旧数据读出 null（不报错）
+    "parse_mode, parse_param";

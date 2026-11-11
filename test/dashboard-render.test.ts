@@ -193,3 +193,26 @@ describe("单条同步结束后自动刷新列表 (issue #22 / #42)", () => {
         expect(html).toContain("for (const action of planSyncCompletionActions(");
     });
 });
+
+// issue #49：设置页必须能改单类型记录上限，并在保存后回填服务端归一的返回值。
+describe("单类型记录上限设置项 (issue #49)", () => {
+    it("缺失或损坏时渲染默认 20，有值时渲染该值", () => {
+        expect(getDashboardPage([], [], {})).toMatch(/id="maxIpsPerType"[^>]*value="20"/);
+        expect(getDashboardPage([], [], { MAX_IPS_PER_TYPE: "oops" })).toMatch(/id="maxIpsPerType"[^>]*value="20"/);
+        expect(getDashboardPage([], [], { MAX_IPS_PER_TYPE: 200 })).toMatch(/id="maxIpsPerType"[^>]*value="200"/);
+        expect(getDashboardPage([], [], { MAX_IPS_PER_TYPE: 30 })).toMatch(/id="maxIpsPerType"[^>]*value="30"/);
+    });
+
+    it("输入框受 1-200 约束，避免提交必然被拒的值", () => {
+        const html = getDashboardPage([], [], {});
+        expect(html).toMatch(/id="maxIpsPerType"[^>]*min="1"[^>]*max="200"/);
+    });
+
+    it("表单保存该字段，并在保存后按服务端返回值回填", () => {
+        const html = getDashboardPage([], [], {});
+        expect(html).toContain(
+            "settingsToSave.MAX_IPS_PER_TYPE = document.getElementById('maxIpsPerType').value.trim();"
+        );
+        expect(html).toContain("document.getElementById('maxIpsPerType').value = currentSettings.MAX_IPS_PER_TYPE;");
+    });
+});
