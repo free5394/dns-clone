@@ -9,6 +9,7 @@ import {
     syncDomainLogic,
     syncSystemDomains,
     resolveRecordsForDomain,
+    resolveRecursively,
     processInChunks,
     updateCloudflareDns,
     formatChangeComment,
@@ -1804,5 +1805,104 @@ describe("DNS 全来源截断与变更时间备注 (issue #53)", () => {
         expect(records).toEqual([{ type: "A", content: "1.1.1.1" }]);
 
         await env.WUYA.prepare("DELETE FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").run();
+    });
+});
+
+describe("resolveRecursively 深度解析分支 (issue #54 判据 5)", () => {
+    type DohTable = Record<string, { CNAME?: string[]; A?: string[]; AAAA?: string[] }>;
+
+    /** 桩掉 Cloudflare DoH，返回实际查询过的 name/type 序列 */
+    function stubDoh(table: DohTable): string[] {
+        const queried: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                const u = new URL(url);
+                const name = u.searchParams.get("name") ?? "";
+                const type = u.searchParams.get("type") ?? "";
+                queried.push(`${name}|${type}`);
+                const answers = table[name]?.[type as "CNAME" | "A" | "AAAA"] ?? [];
+                return new Response(JSON.stringify({ Answer: answers.map((data) => ({ data })) }), { status: 200 });
+            })
+        );
+        return queried;
+    }
+
+    function collectLogs(): { logs: string[]; log: (msg: string) => void } {
+        const logs: string[] = [];
+        return { logs, log: (msg: string) => void logs.push(msg) };
+    }
+
+    it("沿 CNAME 链逐层追踪到最终 A/AAAA，并去掉目标末尾的点", async () => {
+        const queried = stubDoh({
+            "a.example.com": { CNAME: ["b.example.com."] },
+            "b.example.com": { CNAME: ["c.example.com."] },
+            "c.example.com": { A: ["1.2.3.4"], AAAA: ["2400:3200::1"] },
+        });
+        const { logs, log } = collectLogs();
+
+        const records = await resolveRecursively("a.example.com", log);
+
+        expect(records).toEqual([
+            { type: "A", content: "1.2.3.4" },
+            { type: "AAAA", content: "2400:3200::1" },
+        ]);
+        expect(queried).toEqual([
+            "a.example.com|CNAME",
+            "b.example.com|CNAME",
+            "c.example.com|CNAME",
+            "c.example.com|A",
+            "c.example.com|AAAA",
+        ]);
+        // 深度逐层递增，且 CNAME 目标已剥离末尾点
+        expect(logs).toContain("(深度 0) 发现CNAME -> b.example.com");
+        expect(logs).toContain("(深度 1) 发现CNAME -> c.example.com");
+        expect(logs).toContain("(深度 2) 未发现CNAME，查询最终IP for c.example.com");
+    });
+
+    it("子层无 CNAME 也无 IP 时回退克隆该 CNAME", async () => {
+        stubDoh({ "a.example.com": { CNAME: ["b.example.com."] } });
+        const { logs, log } = collectLogs();
+
+        const records = await resolveRecursively("a.example.com", log);
+
+        expect(records).toEqual([{ type: "CNAME", content: "b.example.com" }]);
+        expect(logs).toContain("(深度 1) CNAME b.example.com 未解析到最终IP，将直接克隆此CNAME记录。");
+    });
+
+    it("CNAME 链超过 10 层时中止并记错误日志，不再继续查询", async () => {
+        const table: DohTable = {};
+        for (let i = 0; i < 11; i++) {
+            table[`d${i}.example.com`] = { CNAME: [`d${i + 1}.example.com.`] };
+        }
+        const queried = stubDoh(table);
+        const { logs, log } = collectLogs();
+
+        const records = await resolveRecursively("d0.example.com", log);
+
+        // 第 11 层（depth 11 > MAX_DEPTH）直接中止，未发起 DoH 查询
+        expect(queried).toEqual(Array.from({ length: 11 }, (_, i) => `d${i}.example.com|CNAME`));
+        expect(logs).toContain("错误：解析深度超过 10 层，可能存在CNAME循环。中止解析 d11.example.com。");
+        // 中止信号为空 → 第 10 层回退克隆该 CNAME 并向上冒泡
+        expect(records).toEqual([{ type: "CNAME", content: "d11.example.com" }]);
+    });
+
+    it("无 CNAME 时过滤掉非 IP 应答，A 与 AAAA 分类型返回", async () => {
+        stubDoh({
+            "plain.example.com": {
+                A: ["2.2.2.2", "not-an-ip"],
+                AAAA: ["2400:3200::1", "also-not-an-ip"],
+            },
+        });
+        const { log } = collectLogs();
+
+        const records = await resolveRecursively("plain.example.com", log);
+
+        expect(records).toEqual([
+            { type: "A", content: "2.2.2.2" },
+            { type: "AAAA", content: "2400:3200::1" },
+        ]);
+        // 注：两侧正则都未加锚点（^...$），"300.1.1.1"/"zzzz::1" 这类畸形串会被放行；
+        // 这是存量实现问题，不在本票（文档 + 验证）范围内，已单独记录。
     });
 });
