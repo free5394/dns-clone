@@ -4,6 +4,8 @@ import {
     canAddDomains,
     planSyncCompletionActions,
     buildDomainSavePayload,
+    buildIpSourceSavePayload,
+    buildIpSourceProbePayload,
 } from "./dashboard-helpers.js";
 import { createDashboardRenderers } from "./dashboard-render.js";
 import { createApiFetch } from "./dashboard-api.js";
@@ -655,6 +657,9 @@ function getDashboardScript(domains, ipSources, settings) {
   const canAddDomains = ${canAddDomains.toString()};
   // 保存体组装来自 ./dashboard-helpers.js（issue #52）：URL/域名两种来源的字段互斥规则只有一处实现
   const buildDomainSavePayload = ${buildDomainSavePayload.toString()};
+  // IP 源提交体同样来自 ./dashboard-helpers.js（issue #57）：保存与探测的解析参数归一只有一处实现
+  const buildIpSourceSavePayload = ${buildIpSourceSavePayload.toString()};
+  const buildIpSourceProbePayload = ${buildIpSourceProbePayload.toString()};
 
   const formatBeijingTime = (isoStr) => { if (!isoStr) return '从未'; const d = new Date(isoStr); return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(d).replace(/\\//g, '-'); };
 ` +
@@ -834,8 +839,14 @@ function getDashboardInteractionScript() {
 
   async function saveIpSource() {
       const id = document.getElementById('ipSourceId').value;
-      const parseParam = document.getElementById('parse_param').value.trim();
-      const payload = { url: document.getElementById('ip_source_url').value, github_path: document.getElementById('github_path').value, commit_message: document.getElementById('commit_message').value, fetch_strategy: successfulProbeStrategy, parse_mode: document.getElementById('parse_mode').value, parse_param: parseParam === '' ? null : parseParam };
+      const payload = buildIpSourceSavePayload({
+          url: document.getElementById('ip_source_url').value,
+          githubPath: document.getElementById('github_path').value,
+          commitMessage: document.getElementById('commit_message').value,
+          fetchStrategy: successfulProbeStrategy,
+          parseMode: document.getElementById('parse_mode').value,
+          parseParam: document.getElementById('parse_param').value,
+      });
       const apiUrl = id ? \`/api/ip_sources/\${id}\` : '/api/ip_sources';
       const method = id ? 'PUT' : 'POST';
       try { const result = await apiFetch(apiUrl, { method, body: JSON.stringify(payload) }); showNotification(result.message, 'success'); closeModal('ipSourceModal'); await refreshIpSources(); } catch (e) { showNotification(\`保存失败: \${e.message}\`, 'error'); }
@@ -1027,8 +1038,13 @@ function getDashboardBootstrapScript() {
           successfulProbeStrategy = null;
 
           try {
-              const parseParamInput = document.getElementById('parse_param').value.trim();
-              const result = await apiFetch('/api/ip_sources/probe', { method: 'POST', body: JSON.stringify({ url, parse_mode: document.getElementById('parse_mode').value, parse_param: parseParamInput === '' ? null : parseParamInput }) });
+              // 探测体与保存体同源（issue #57）：解析参数归一不再各写一遍
+              const probePayload = buildIpSourceProbePayload({
+                  url: url,
+                  parseMode: document.getElementById('parse_mode').value,
+                  parseParam: document.getElementById('parse_param').value,
+              });
+              const result = await apiFetch('/api/ip_sources/probe', { method: 'POST', body: JSON.stringify(probePayload) });
               progress.setAttribute('value', '100');
               const samples = [];
               if (result.sampleIps && result.sampleIps.length) samples.push(\`IPv4 样例: \${result.sampleIps.join(', ')}\`);

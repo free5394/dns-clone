@@ -68,3 +68,30 @@ export function buildDomainSavePayload(input) {
         notes: input.notes ?? "",
     };
 }
+
+/**
+ * 组装「添加/编辑 IP 源」的提交体（issue #57）。
+ * 与域名侧 buildDomainSavePayload 同形态：表单输入在这里归一成服务端契约字段。
+ * 解析参数空串/纯空白归一为 null，有值去首尾空白；url / github_path / commit_message
+ * 等字段原样透传。归一规则只允许存在这一处，保存与探测共用（CODING_STANDARDS.md §前端行为测试）。
+ */
+export function buildIpSourceSavePayload(input) {
+    const parseParam = String(input.parseParam ?? "").trim();
+    return {
+        url: input.url,
+        github_path: input.githubPath,
+        commit_message: input.commitMessage,
+        fetch_strategy: input.fetchStrategy ?? null,
+        parse_mode: input.parseMode,
+        parse_param: parseParam === "" ? null : parseParam,
+    };
+}
+
+/**
+ * 探测请求体（issue #57）：从保存体投影出探测端点接受的字段。
+ * 投影而不是重写，保证「探测用的解析配置 = 保存下去的解析配置」。
+ */
+export function buildIpSourceProbePayload(input) {
+    const payload = buildIpSourceSavePayload(input);
+    return { url: payload.url, parse_mode: payload.parse_mode, parse_param: payload.parse_param };
+}

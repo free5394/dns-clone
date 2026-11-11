@@ -8,6 +8,8 @@ import {
     canAddDomains,
     planSyncCompletionActions,
     buildDomainSavePayload,
+    buildIpSourceSavePayload,
+    buildIpSourceProbePayload,
 } from "../src/ui/dashboard-helpers.js";
 import { getDashboardPage } from "../src/ui/templates.js";
 import { DEFAULT_MAX_IPS_PER_TYPE, MAX_MAX_IPS_PER_TYPE, MIN_MAX_IPS_PER_TYPE } from "../src/util/max-ips-per-type.ts";
@@ -268,11 +270,13 @@ describe("IP 源解析配置弹窗 (issue #50)", () => {
 
     it("编辑回填、保存与探测都带上解析配置", () => {
         const html = getDashboardPage([], [], {});
-        // 静态契约（issue #50）：三处 DOM 接线只能在页面脚本里锁；服务端行为由 API 用例覆盖。
+        // 静态契约（issue #50 / #57）：DOM 接线只能在页面脚本里锁；保存与探测的归一行为
+        // 已下沉到 buildIpSourceSavePayload / buildIpSourceProbePayload，由下方行为用例直接驱动。
         expect(html).toContain("document.getElementById('parse_mode').value = source.parse_mode || 'auto';");
-        expect(html).toContain("parse_mode: document.getElementById('parse_mode').value");
-        expect(html).toContain("parse_param: parseParam === '' ? null : parseParam");
-        expect(html).toContain("parse_param: parseParamInput === '' ? null : parseParamInput");
+        expect(html).toContain("const buildIpSourceSavePayload = function buildIpSourceSavePayload(input) {");
+        expect(html).toContain("const buildIpSourceProbePayload = function buildIpSourceProbePayload(input) {");
+        expect(html).toContain("const payload = buildIpSourceSavePayload({");
+        expect(html).toContain("const probePayload = buildIpSourceProbePayload({");
     });
 });
 
@@ -419,5 +423,55 @@ describe("域名保存体组装 (issue #52)", () => {
         expect(payload.source_type).toBe("domain");
         expect(payload.is_deep_resolve).toBe(0);
         expect(buildDomainSavePayload({ ...base, sourceType: "domain", isDeepResolve: true }).is_deep_resolve).toBe(1);
+    });
+});
+
+// issue #57：IP 源保存与探测的提交体必须由同一份纯函数产出，
+// 避免「探测用的配置 ≠ 保存下去的配置」漂移。
+describe("IP 源提交体组装与探测同源 (issue #57)", () => {
+    const base = {
+        url: "https://ips.example.com/list.txt",
+        githubPath: "IP/Cloudflare.txt",
+        commitMessage: "Update Cloudflare IPs",
+        fetchStrategy: "direct",
+        parseMode: "json_path",
+        parseParam: " data.list ",
+    };
+
+    it("保存体：解析参数 trim 后提交，其余字段原样透传", () => {
+        const payload = buildIpSourceSavePayload(base);
+
+        expect(payload).toEqual({
+            url: "https://ips.example.com/list.txt",
+            github_path: "IP/Cloudflare.txt",
+            commit_message: "Update Cloudflare IPs",
+            fetch_strategy: "direct",
+            parse_mode: "json_path",
+            parse_param: "data.list",
+        });
+    });
+
+    it("空串与纯空白解析参数一律归一为 null，不落空串", () => {
+        for (const raw of ["", "   "]) {
+            expect(buildIpSourceSavePayload({ ...base, parseParam: raw }).parse_param).toBeNull();
+        }
+    });
+
+    it("未探测出策略时 fetch_strategy 显式提交 null", () => {
+        expect(buildIpSourceSavePayload({ ...base, fetchStrategy: null }).fetch_strategy).toBeNull();
+    });
+
+    it("探测体从保存体投影，两条路径的解析参数同源一致", () => {
+        for (const raw of ["", "   ", "  data.list  ", base.parseParam]) {
+            const save = buildIpSourceSavePayload({ ...base, parseParam: raw });
+            const probe = buildIpSourceProbePayload({ ...base, parseParam: raw });
+
+            // 同源断言：探测只取自己需要的三个字段，值必须与保存体逐项相同，而不是各写一遍归一断言
+            expect(probe).toEqual({
+                url: save.url,
+                parse_mode: save.parse_mode,
+                parse_param: save.parse_param,
+            });
+        }
     });
 });
