@@ -5,8 +5,8 @@
 - [🚀 项目是干嘛的？](#-项目是干嘛的)
 - [✨ 主要功能](#-主要功能)
 - [🧠 工作原理](#-工作原理)
-- [🛠️ 网页部署指南（纯小白教程）](#️-网页部署指南纯小白教程)
-- [🧑‍💻 开发者模式（CLI 本地调试 / 部署）](#-开发者模式cli-本地调试--部署)
+- [🛠️ 网页部署指南（纯小白教程）](#️-网页部署指南-纯小白教程)
+- [🧑‍💻 开发者模式（CLI 本地调试 / 部署）](#‍-开发者模式cli-本地调试--部署)
 - [📡 API 接口文档](#-api-接口文档)
 - [🗄️ 数据表结构](#️-数据表结构)
 - [🔒 安全机制](#-安全机制)
@@ -313,7 +313,7 @@ pnpm dev
 
 > 先用 `wrangler d1 create` 创建生产 D1 数据库，拿到真实 UUID。
 
-> **仓库配置与线上配置故意不同**：提交态的 `wrangler.toml` 是模板（`database_id` 为哨兵值），维护者的线上部署走本机 `wrangler.prod.toml` + `.env.prod`（`pnpm run deploy:prod`）。两条路径的分工见 [🧑‍💻 开发者模式](#-开发者模式cli-本地调试--部署) 的部署脚本说明。
+> **仓库配置与线上配置故意不同**：提交态的 `wrangler.toml` 是模板（`database_id` 为哨兵值），维护者的线上部署走本机 `wrangler.prod.toml` + `.env.prod`（`pnpm run deploy:prod`）。两条路径的分工见 [🧑‍💻 开发者模式](#‍-开发者模式cli-本地调试--部署) 的部署脚本说明。
 
 ```bash
 # 1. 创建生产 D1 数据库（记下输出的 database_id）
@@ -380,7 +380,7 @@ pnpm run deploy
 | `GET`  | `/api/settings` | 读取安全设置（已剔除 Token/密码哈希等敏感字段）                                 |
 | `POST` | `/api/settings` | 保存设置（白名单见下方；CF 与 GitHub 凭据均强制配对校验，非白名单字段一律忽略） |
 
-> `POST /api/settings` 的写入白名单（9 个 key）：`CF_API_TOKEN` / `CF_ZONE_ID` / `GITHUB_TOKEN` / `GITHUB_OWNER` / `GITHUB_REPO` / `HOSTMONIT_API_KEY` / `THREE_NETWORK_SOURCE` / `BATCH_SIZE` / `MAX_IPS_PER_TYPE`。传 `null` 表示显式清除；`MAX_IPS_PER_TYPE` 只接受 1–200 的整数，越界或非整数回落默认 20。
+> `POST /api/settings` 的写入白名单（9 个 key）：`CF_API_TOKEN` / `CF_ZONE_ID` / `GITHUB_TOKEN` / `GITHUB_OWNER` / `GITHUB_REPO` / `HOSTMONIT_API_KEY` / `THREE_NETWORK_SOURCE` / `BATCH_SIZE` / `MAX_IPS_PER_TYPE`。传 `null` 表示显式清除；空字符串对 Secret 键表示「保持不变」、对其它键表示清除。`MAX_IPS_PER_TYPE` 与 `BATCH_SIZE` 走同一套整数校验：写入侧越界或非整数会让整批写入被拒绝（返回 400），不会只丢这一个键；读取侧缺失或存了脏值时才回落默认（`MAX_IPS_PER_TYPE` 20、`BATCH_SIZE` 10）。
 
 ### 域名管理
 
@@ -569,7 +569,7 @@ Worker 会代理到你的 GitHub 仓库对应文件，并自带 5 分钟边缘�
 <details>
 <summary><strong>Q7：为什么我粘贴了 <code>src/index.ts</code> 进 Dashboard 报错？</strong></summary>
 
-`src/index.ts` 是模块化源码入口，依赖十几个 `.ts` 文件，Dashboard 编辑器无法解析。请按 [网页部署指南第 ① 步](#①-创建-worker) 下载 Releases 中的 `worker.bundle.js` 或本地 `pnpm build:single` 后粘贴 `dist/worker.bundle.js`。
+`src/index.ts` 是模块化源码入口，依赖十几个 `.ts` 文件，Dashboard 编辑器无法解析。请按 [网页部署指南第 ① 步](#-创建-worker) 下载 Releases 中的 `worker.bundle.js` 或本地 `pnpm build:single` 后粘贴 `dist/worker.bundle.js`。
 
 </details>
 
