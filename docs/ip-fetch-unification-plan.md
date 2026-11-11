@@ -356,32 +356,32 @@
 
 ## 10. 模块与文件改动清单
 
-| 文件                            | 类型 | 职责                                                                                                               |
-| ------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------ |
-| `src/util/ip.ts`                | 新增 | IPv4/IPv6 校验、归一、提取、排序、截断；IPv6 正则从 `domains.ts` 迁入                                              |
-| `src/sync/ip-parse.ts`          | 新增 | 四种解析模式、点路径取值、正则防护、统一解析入口                                                                   |
-| `src/db/migrations.ts`          | 修改 | `domains` 5 列、`ip_sources` 2 列、`MIGRATION_VERSION`                                                             |
-| `src/db/client.ts`              | 修改 | `DOMAIN_COLUMNS`、`IP_SOURCE_COLUMNS` 追加新列                                                                     |
-| `src/db/settings.ts`            | 修改 | `MAX_IPS_PER_TYPE` 白名单、整数校验、读取归一                                                                      |
-| `src/sync/ip-sources.ts`        | 修改 | 策略返回文本；统一解析；返回 IPv4 + IPv6；伴生文件写入/删除                                                        |
-| `src/sync/github.ts`            | 修改 | 新增 `deleteFileOnGitHub`（GET sha → DELETE，404 静默）                                                            |
-| `src/sync/domains.ts`           | 修改 | URL 输入分支、同批 URL 缓存、所有 DNS 来源统一截断、`A`/`AAAA` 备注写入与刷新                                      |
-| `src/routes/api.ts`             | 修改 | 域名/来源输入校验、SQL 列扩展、探测扩展、设置校验                                                                  |
-| `src/routes/github-proxy.ts`    | 修改 | 订阅代理白名单扩展至派生伴生路径（`x.txt` → `x-v6.txt`），读行为与主文件一致                                       |
-| `src/ui/templates.js`           | 修改 | 域名弹窗输入类型/URL/解析配置；IP 源弹窗解析配置；设置页上限；探测展示 v4/v6；实施前必读 `docs/ui-redesign.md` §11 |
-| `src/ui/dashboard-render.js`    | 修改 | 域名卡片展示 URL 来源与解析模式；IP 源卡片展示解析模式                                                             |
-| `README.md`                     | 修改 | 功能说明、API 文档、表结构、设置项                                                                                 |
-| `GLOSSARY.md`                   | 修改 | 新增"IP 输入类型 / 解析模式 / 伴生文件"等术语                                                                      |
-| `test/ip-util.test.ts`          | 新增 | 校验、归一、去重、排序、截断                                                                                       |
-| `test/ip-parse.test.ts`         | 新增 | 四种解析模式正反例、路径非法、正则防护、512KB 截断                                                                 |
-| `test/ip-sources-fetch.test.ts` | 扩展 | 策略返回文本、v4/v6 结果、回退、伴生文件                                                                           |
-| `test/sync.test.ts`             | 扩展 | URL→DNS、缓存、截断、备注、异常语义                                                                                |
-| `test/api.test.ts`              | 扩展 | 新字段校验矩阵、投影、探测响应                                                                                     |
-| `test/settings.test.ts`         | 扩展 | `MAX_IPS_PER_TYPE` 校验与回退                                                                                      |
-| `test/migrations.test.ts`       | 扩展 | 新列幂等迁移                                                                                                       |
-| `test/github.test.ts`           | 扩展 | `deleteFileOnGitHub` 404/成功                                                                                      |
-| `test/github-proxy.test.ts`     | 扩展 | 伴生路径可经代理读取；未登记路径 404；主文件与伴生文件缓存互不污染                                                 |
-| `test/dashboard-render.test.ts` | 扩展 | 新字段展示与转义                                                                                                   |
+| 文件                            | 类型 | 职责                                                                                                                         |
+| ------------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `src/util/ip.ts`                | 新增 | IPv4/IPv6 校验、归一、提取、排序、截断；IPv6 正则从 `domains.ts` 迁入                                                        |
+| `src/sync/ip-parse.ts`          | 新增 | 四种解析模式、点路径取值、正则防护、统一解析入口                                                                             |
+| `src/db/migrations.ts`          | 修改 | `domains` 5 列、`ip_sources` 2 列、`MIGRATION_VERSION`                                                                       |
+| `src/db/client.ts`              | 修改 | `DOMAIN_COLUMNS`、`IP_SOURCE_COLUMNS` 追加新列                                                                               |
+| `src/db/settings.ts`            | 修改 | `MAX_IPS_PER_TYPE` 白名单、整数校验、读取归一                                                                                |
+| `src/sync/ip-sources.ts`        | 修改 | 策略返回文本；统一解析；返回 IPv4 + IPv6；伴生文件写入/删除                                                                  |
+| `src/sync/github.ts`            | 修改 | 新增 `deleteFileOnGitHub`（GET sha → DELETE，404 静默）                                                                      |
+| `src/sync/domains.ts`           | 修改 | URL 输入分支、同批 URL 缓存、所有 DNS 来源统一截断、`A`/`AAAA` 备注写入与刷新                                                |
+| `src/routes/api.ts`             | 修改 | 域名/来源输入校验、SQL 列扩展、探测扩展、设置校验                                                                            |
+| `src/routes/github-proxy.ts`    | 修改 | 订阅代理白名单扩展至派生伴生路径（`x.txt` → `x-v6.txt`），读行为与主文件一致                                                 |
+| `src/ui/templates.js`           | 修改 | 域名弹窗输入类型/URL/解析配置；IP 源弹窗解析配置；设置页上限；探测展示 v4/v6；实施前必读 `docs/ui-templates-refactor.md` §10 |
+| `src/ui/dashboard-render.js`    | 修改 | 域名卡片展示 URL 来源与解析模式；IP 源卡片展示解析模式                                                                       |
+| `README.md`                     | 修改 | 功能说明、API 文档、表结构、设置项                                                                                           |
+| `GLOSSARY.md`                   | 修改 | 新增"IP 输入类型 / 解析模式 / 伴生文件"等术语                                                                                |
+| `test/ip-util.test.ts`          | 新增 | 校验、归一、去重、排序、截断                                                                                                 |
+| `test/ip-parse.test.ts`         | 新增 | 四种解析模式正反例、路径非法、正则防护、512KB 截断                                                                           |
+| `test/ip-sources-fetch.test.ts` | 扩展 | 策略返回文本、v4/v6 结果、回退、伴生文件                                                                                     |
+| `test/sync.test.ts`             | 扩展 | URL→DNS、缓存、截断、备注、异常语义                                                                                          |
+| `test/api.test.ts`              | 扩展 | 新字段校验矩阵、投影、探测响应                                                                                               |
+| `test/settings.test.ts`         | 扩展 | `MAX_IPS_PER_TYPE` 校验与回退                                                                                                |
+| `test/migrations.test.ts`       | 扩展 | 新列幂等迁移                                                                                                                 |
+| `test/github.test.ts`           | 扩展 | `deleteFileOnGitHub` 404/成功                                                                                                |
+| `test/github-proxy.test.ts`     | 扩展 | 伴生路径可经代理读取；未登记路径 404；主文件与伴生文件缓存互不污染                                                           |
+| `test/dashboard-render.test.ts` | 扩展 | 新字段展示与转义                                                                                                             |
 
 不新增依赖、不新增表、不新增 D1 绑定、不新增 Secret。
 

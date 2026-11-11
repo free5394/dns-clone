@@ -9,8 +9,8 @@ Cloudflare Worker：域名克隆（DNS 同步）+ IP 聚合（推送 GitHub）�
 - 运行脚本与工具版本：`package.json`；部署配置：`wrangler.toml`；表结构真相源：`src/db/migrations.ts`。
 - 用户可见字段、API 与部署步骤：`README.md`。
 - 编码、日志、错误响应与测试规则：`CODING_STANDARDS.md`。
-- 修改 `src/ui/templates.js` 或任何界面模板前，必读 `docs/ui-redesign.md` §11。
-- 架构深化候选：`docs/architecture-review.md`；跨模块领域术语先看 `GLOSSARY.md`。
+- 修改 `src/ui/templates.js` 或任何界面模板前，必读 `docs/ui-templates-refactor.md` §10「界面模板编写约束」。
+- 跨模块领域术语先看 `GLOSSARY.md`；架构深化候选原在 `docs/architecture-review.md`，该文件已随 `f53dac0` 删除，需要时用 `git show f53dac0^:docs/architecture-review.md` 找回。
 - Issue 流程：`docs/agents/issue-tracker.md`；triage 标签：`docs/agents/triage-labels.md`；领域文档约定：`docs/agents/domain.md`。
 - 多 agent 协作（泳道、改派、合并放行）：`docs/agents/agent-teams.md`。
 
