@@ -135,14 +135,16 @@ IP 源同步到 GitHub 时，**主文件恒为 IPv4 列表**（每行一个，�
 
 ### 定时任务调度
 
-Cron `* * * * *`（每分钟）触发 `scheduled` handler，通过 `settings.next_sync_task` 在两种批任务间**轮转**：
+Cron `0,30 * * * *`（每 30 分钟）触发 `scheduled` handler，通过 `settings.next_sync_task` 在两种批任务间**轮转**：
 
 ```text
-第 N 分钟：next_sync_task = 'domains'    → 同步 BATCH_SIZE=10 条域名（失败优先）
-            执行完毕后翻转：next_sync_task = 'ip_sources'
-第 N+1 分钟：next_sync_task = 'ip_sources' → 同步 BATCH_SIZE=10 条 IP 源（失败优先）
-            执行完毕后翻转：next_sync_task = 'domains'
+第 N 次触发：next_sync_task = 'domains'    → 同步 BATCH_SIZE=10 条域名（失败优先）
+             执行完毕后翻转：next_sync_task = 'ip_sources'
+第 N+1 次触发：next_sync_task = 'ip_sources' → 同步 BATCH_SIZE=10 条 IP 源（失败优先）
+             执行完毕后翻转：next_sync_task = 'domains'
 ```
+
+> 触发频率由部署配置决定，与轮转逻辑无关：仓库内 `wrangler.toml` 的 `[triggers] crons = ["0,30 * * * *"]` 即每 30 分钟一次。改频率只需改这一处，`scheduled` handler 照旧每轮只跑一个批任务。
 
 > **关键设计：** 无论本轮任务成功或失败，状态都会翻转，避免单点失败永久卡死。每批按 `last_sync_status='failed'` 优先、`last_synced_time` 升序选择目标。
 
@@ -242,14 +244,14 @@ Cron `* * * * *`（每分钟）触发 `scheduled` handler，通过 `settings.nex
 >
 > 1.  返回到你的 Worker，进入 **设置 (Settings)** > **触发器 (Triggers)**。
 > 2.  在 **Cron 触发器 (Cron Triggers)** 部分，点击 **添加 Cron 触发器 (Add Cron Trigger)**。
-> 3.  **Cron 表达式** 选择 **每分钟 (`* * * * *`)**，以确保同步的及时性。
+> 3.  **Cron 表达式** 选择 **每 30 分钟 (`0,30 * * * *`)**，可直接粘贴到自定义表达式输入框。
 > 4.  点击 **添加触发器 (Add trigger)** 保存。
 
 <p align="center">
   <img src="./img/2.png" width="800" alt="Cron 触发器设置示例">
 </p>
 
-> 💡 **每分钟一次会不会触发限流？** 不会。每分钟只跑一个批任务（域名 ↔ IP 源轮转），每批最多 `BATCH_SIZE=10` 条，且 `BATCH_SIZE` 可在后台 settings 表里调整。Cloudflare Workers 免费版每天 10 万次请求额度足够。
+> 💡 **每 30 分钟一次够不够及时、会不会触发限流？** 够。每次只跑一个批任务（域名 ↔ IP 源轮转），每批最多 `BATCH_SIZE=10` 条，且 `BATCH_SIZE` 可在后台 settings 表里调整；一天 48 次触发，远低于 Cloudflare Workers 免费版每天 10 万次请求额度。想更快可把表达式改小（例如 `*/5 * * * *` 每 5 分钟），代价是提前消耗额度。
 
 ---
 
@@ -524,9 +526,9 @@ Worker 代码通过 `env.WUYA` 访问 D1 数据库。绑定名不符会在启动
 </details>
 
 <details>
-<summary><strong>Q2：每分钟跑一次 Cron 会不会浪费免费额度？</strong></summary>
+<summary><strong>Q2：每 30 分钟跑一次 Cron 会不会浪费免费额度？</strong></summary>
 
-每天 1,440 分钟 = 1,440 次定时调用，加上每次同步内部的 D1 + Cloudflare API + GitHub API 调用，总计约几千次/天，远低于 Cloudflare Workers 免费版的 100,000 次/天额度。如果担心，可在 `settings` 表中调大 `BATCH_SIZE` 并把 Cron 改为 `*/5 * * * *`（每 5 分钟）。
+默认 `0,30 * * * *` 每天 48 次定时调用，加上每次同步内部的 D1 + Cloudflare API + GitHub API 调用，总计约几百次/天，远低于 Cloudflare Workers 免费版的 100,000 次/天额度。如果担心，可在 `settings` 表中调大 `BATCH_SIZE` 进一步减少每轮的目标数；把 Cron 改到 `* * * * *`（每分钟）则会提高同步及时性、同时更快消耗额度。
 
 </details>
 
@@ -636,9 +638,9 @@ DELETE FROM login_attempts WHERE ip = '你的IP';
 
 ### Cron 设了不工作
 
-1.  确认 Cron 表达式是 `* * * * *`（每分钟）。
+1.  确认 Cron 表达式是 `0,30 * * * *`（每 30 分钟），与 `wrangler.toml` 的 `[triggers] crons` 一致。
 2.  Cloudflare Dashboard → 你的 Worker → Triggers → Cron Triggers 中能看到该触发器。
-3.  查看实时日志，每分钟应出现 `定时任务开始：正在初始化...`。
+3.  查看实时日志，每次触发应出现 `定时任务开始：正在初始化...`。
 4.  若日志显示 `Cannot run scheduled ... settings are missing`，说明 CF 或 GitHub 凭据未配置。
 
 ### 订阅器代理返回 404

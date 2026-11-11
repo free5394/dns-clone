@@ -44,7 +44,7 @@ export function createDashboardRenderers({ escapeHtml, getZoneName, formatBeijin
             : `<span class="domain-cell" title="${escapeHtml(domain.target_domain)}">${escapeHtml(prefix)}</span>`;
         const isSystem = domain.is_system;
         const systemClass = isSystem ? "system-domain" : "";
-        // 输入来源（issue #52）：系统内置 > URL 来源（展示完整 URL + 解析模式）> 域名
+        // IP 输入类型（issue #52）：系统内置 > URL 来源（展示完整 URL + 解析模式）> 域名
         const isUrlSource = !isSystem && domain.source_type === "url";
         const rawSourceUrl = typeof domain.source_url === "string" ? domain.source_url : "";
         const sourceDisplay = isSystem ? "系统内置" : isUrlSource ? rawSourceUrl : domain.source_domain;

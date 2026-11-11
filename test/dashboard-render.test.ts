@@ -329,7 +329,7 @@ describe("URL 类型域名 (issue #52)", () => {
         expect(systemHtml).not.toContain("should-not-show.test");
     });
 
-    it("弹窗包含输入来源切换与 URL 解析配置控件", () => {
+    it("弹窗包含 IP 输入类型切换与 URL 解析配置控件", () => {
         const html = getDashboardPage([], [], {});
 
         expect(html).toContain('id="source_type"');

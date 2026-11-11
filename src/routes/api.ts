@@ -328,7 +328,7 @@ const DOMAIN_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 /** 系统内置源白名单（三网优选 IP） */
 const INTERNAL_SOURCE_PATTERN = /^internal:hostmonit:(yd|dx|lt)$/;
 
-/** 输入来源类型的归一结果：与 domains 表的五个来源列 + 强制深度解析覆盖值一一对应 */
+/** IP 输入类型的归一结果：与 domains 表的五个来源列 + 强制深度解析覆盖值一一对应 */
 interface NormalizedDomainSource {
     sourceDomain: string;
     sourceType: "domain" | "url";
@@ -343,7 +343,7 @@ interface NormalizedDomainSource {
 export type DomainSourceNormalization = { ok: true; value: NormalizedDomainSource } | { ok: false; error: string };
 
 /**
- * 按输入来源类型归一化源配置（方案 §9.1 / §9.5 校验矩阵）。
+ * 按 IP 输入类型归一化源配置（方案 §9.1 / §9.5 校验矩阵）。
  * 纯函数：不读库、不依赖请求上下文，便于单独验证校验矩阵；落库与 CF 凭据解析留在调用方。
  * - URL 类型：必填、≤2048、过 SSRF 校验、解析配置归一；由 URL 派生 hostname 作为 source_domain，
  *   再对该派生值做 hostname 形态校验（§9.5：派生值同样受限，避免把方括号 IPv6 字面量落库）；
@@ -443,7 +443,7 @@ async function handleDomainMutation(
         notes,
     } = body;
     const rawSource = String(source_domain ?? "").trim();
-    // 输入来源类型：只接受 domain / url（方案 §9.1）；更新时缺省沿用该行已有类型
+    // IP 输入类型：只接受 domain / url（方案 §9.1）；更新时缺省沿用该行已有类型
     const declaredType = String(source_type ?? "").trim();
     if (declaredType !== "" && declaredType !== "domain" && declaredType !== "url") {
         return jsonResponse({ error: "source_type 必须为 domain 或 url。" }, 400);
@@ -487,7 +487,7 @@ async function handleDomainMutation(
     const prefix = String(target_domain_prefix ?? "").trim() || "@";
     const effectiveTtl = ttl === undefined ? 60 : ttl;
 
-    // 按输入来源类型归一化源配置（方案 §9.1 / §9.5）；校验矩阵抽成纯函数由单测直接驱动
+    // 按 IP 输入类型归一化源配置（方案 §9.1 / §9.5）；校验矩阵抽成纯函数由单测直接驱动
     const normalized = normalizeDomainSourceInput({
         requestedType,
         sourceDomain: rawSource,
