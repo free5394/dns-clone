@@ -168,6 +168,11 @@ describe("auto 模式全文提取", () => {
         });
     });
 
+    it("全零展开写法按未指定地址排除，不输出 ::", () => {
+        expect(parseContent("0:0:0:0:0:0:0:0", "auto")).toEqual({ ipv4: [], ipv6: [] });
+        expect(parseContent("节点 0:0:0:0:0:0:0:1", "auto")).toEqual({ ipv4: [], ipv6: ["::1"] });
+    });
+
     it("空正文与无匹配返回空结果", () => {
         expect(parseContent("", "auto")).toEqual({ ipv4: [], ipv6: [] });
         expect(parseContent("没有任何地址", "auto")).toEqual({ ipv4: [], ipv6: [] });

@@ -110,6 +110,11 @@ describe("IPv6 提取", () => {
         expect(extractIpv6("标题 :: 分隔")).toEqual([]);
     });
 
+    it("全零展开写法按未指定地址排除", () => {
+        expect(extractIpv6("0:0:0:0:0:0:0:0")).toEqual([]);
+        expect(extractIpv6("地址 0:0:0:0:0:0:0:1")).toEqual(["0:0:0:0:0:0:0:1"]);
+    });
+
     it("IPv4-mapped 地址不重复计数", () => {
         const text = "1.2.3.4 与 ::ffff:1.2.3.4";
         expect(extractIpv4(text)).toEqual(["1.2.3.4"]);
