@@ -167,3 +167,36 @@ export function truncatePerType(
 ): { ipv4: string[]; ipv6: string[] } {
     return { ipv4: ips.ipv4.slice(0, max), ipv6: ips.ipv6.slice(0, max) };
 }
+
+/** 单 token 分类结果：type 决定进 IPv4 还是 IPv6 结果集，value 已归一 */
+export type ClassifiedIp = { type: "ipv4"; value: string } | { type: "ipv6"; value: string };
+
+/** 把 8 组数值中的末两组按 IPv4 点分写法还原 */
+function ipv4FromGroups(groups: number[]): string {
+    const high = groups[6];
+    const low = groups[7];
+    return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
+}
+
+/**
+ * 单个 token 分类：lines / json_path / custom_regex 的清洗单位。
+ * - 去首尾空白与一层方括号；
+ * - 合法 IPv4 → ipv4；
+ * - 合法 IPv6 → 归一后 ipv6，但按 extractIpv6 口径排除 `::` 与 IPv4-mapped；
+ * - mapped 且原 token 带点分写法时折算为 IPv4，与 extractIpv4 对该正文的提取结果一致；
+ *   mapped 的纯十六进制写法不虚构 dot 形式地址，直接判未匹配。
+ */
+export function classifyIp(text: string): ClassifiedIp | null {
+    const trimmed = stripBrackets(text.trim());
+    if (trimmed.length === 0) return null;
+    if (isValidIpv4(trimmed)) return { type: "ipv4", value: trimmed };
+
+    const groups = parseIpv6Groups(trimmed);
+    if (groups === null) return null;
+    const normalized = stripBrackets(trimmed.toLowerCase());
+    if (normalized === "::") return null;
+    if (isIpv4Mapped(normalized)) {
+        return trimmed.includes(".") ? { type: "ipv4", value: ipv4FromGroups(groups) } : null;
+    }
+    return { type: "ipv6", value: normalized };
+}

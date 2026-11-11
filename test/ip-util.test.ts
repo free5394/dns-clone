@@ -9,6 +9,7 @@ import {
     sortIpv4,
     sortIpv6,
     truncatePerType,
+    classifyIp,
 } from "../src/util/ip.ts";
 
 describe("IPv4 严格校验", () => {
@@ -142,5 +143,29 @@ describe("排序与截断", () => {
             ipv4: ["1.1.1.1"],
             ipv6: [],
         });
+    });
+});
+
+describe("单 token 分类", () => {
+    it("识别合法 IPv4 与 IPv6", () => {
+        expect(classifyIp("192.168.1.1")).toEqual({ type: "ipv4", value: "192.168.1.1" });
+        expect(classifyIp(" 2001:DB8::1 ")).toEqual({ type: "ipv6", value: "2001:db8::1" });
+        expect(classifyIp("[::1]")).toEqual({ type: "ipv6", value: "::1" });
+    });
+
+    it("拒绝宽松正则能匹配的伪地址", () => {
+        expect(classifyIp("1.2.3.256")).toBeNull();
+        expect(classifyIp("999.1.1.1")).toBeNull();
+        expect(classifyIp("1.2.3.4.5")).toBeNull();
+        expect(classifyIp("1.2.3.4:8080")).toBeNull();
+        expect(classifyIp("2001:db8::1%eth0")).toBeNull();
+        expect(classifyIp("::")).toBeNull();
+        expect(classifyIp("not-an-ip")).toBeNull();
+        expect(classifyIp("")).toBeNull();
+    });
+
+    it("IPv4-mapped 归 IPv4 侧；十六进制写法不虚构地址", () => {
+        expect(classifyIp("::ffff:192.0.2.1")).toEqual({ type: "ipv4", value: "192.0.2.1" });
+        expect(classifyIp("::ffff:c000:201")).toBeNull();
     });
 });
