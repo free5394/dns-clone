@@ -197,7 +197,8 @@ export async function syncSingleIpSource(
             // issue #22 P4：日志写实际生效策略；确实发生过回退时才点明从哪个策略退下来的。
             // issue #55：0 条时 strategy 为空串——既不能拼出「（抓取策略: ）」空占位，
             // 也不能因为空串 != 配置值而误报「已从 X 回退」（那轮根本没命中任何策略）。
-            const fellBack = strategy !== "" && configuredStrategy !== "" && configuredStrategy !== strategy;
+            const fellBack = configuredStrategy !== "" && configuredStrategy !== strategy;
+            // 空串由下面的三元直接短路，fellBack 只在真有策略命中时才可能为真
             const strategyNote =
                 strategy === ""
                     ? ""
@@ -207,9 +208,10 @@ export async function syncSingleIpSource(
             // 日志只写策略与两类数量，不落正文（§13.2）
             log(`成功获取 ${ipv4.length} 个IPv4、${ipv6.length} 个IPv6${strategyNote}。`);
             if (strategy === "") {
-                // 取得正文但解析 0 条：主文件按空内容处理（issue #55），单独说明一句，
-                // 免得管理员把「0 个」当成抓取坏了。
-                log("所有抓取策略均取得正文但未解析到 IP，主文件按空内容处理。");
+                // 0 条：主文件按空内容处理（issue #55），单独说明一句，免得管理员把「0 个」当成抓取坏了。
+                // 文案不写「所有策略都取得正文」——混合路径（部分策略抛错 + 部分空正文）同样走这里，
+                // 那种情况下该断言为假（issue #55 边界 2，见 test/sync.test.ts 混合情形用例）。
+                log("本轮未解析到任何 IP：主文件按空内容处理（源站无 IP，或解析规则与该页面不匹配）。");
             }
 
             // 主文件仍只装 IPv4；IPv6 走伴生文件（issue #51）。两条链路的变更检测彼此独立：
@@ -371,9 +373,10 @@ export interface StrategyFetchOptions {
     persistStrategy?: (strategy: string, target: StrategyTarget) => Promise<void>;
     /**
      * 全链都取得正文却解析不到 IP 时返回空结果，而不是抛「[无可用IP]」。
-     * 两类目标都开：域名 URL 输入靠它把「取得正文但 0 条」交给 syncDomainLogic 的 0 条分支判定（§6.3 / 验收 #8）；
-     * IP 源靠它把空正文变成「主文件写空内容并标 success」（issue #55）。不开时保留抛错语义，
-     * 供需要逐策略诊断的调用方（如直调 fetchIpsForTarget 的探测/诊断路径）使用。
+     * 两类生产目标都开：域名 URL 输入靠它把「取得正文但 0 条」交给 syncDomainLogic 的 0 条分支判定（§6.3 / 验收 #8）；
+     * IP 源靠它把空正文变成「主文件写空内容并标 success」（issue #55）。
+     * 不开时保留抛错语义——目前仅测试用得到（`fetchIpsForTarget` 默认不传即抛错，用来固化「0 条不能静默」的旧契约）；
+     * 生产侧的探测接口 `apiProbeIpSource` 自建策略循环，不走这条路径。
      */
     emptyWhenNoIps?: boolean;
 }

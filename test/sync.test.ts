@@ -738,12 +738,13 @@ describe("IP 源空结果语义 (issue #55)", () => {
         }
     }
 
-    async function insertSource(url: string) {
+    // presetError：预置上一轮的非空 last_sync_error，用来真正验证「本轮成功后错误被清空」（AC1）
+    async function insertSource(url: string, presetError?: string) {
         const githubPath = `ip-empty-${crypto.randomUUID()}.txt`;
         await env.WUYA.prepare(
-            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy, parse_mode) VALUES (?, ?, ?, ?, ?)"
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy, parse_mode, last_sync_status, last_sync_error) VALUES (?, ?, ?, ?, ?, ?, ?)"
         )
-            .bind(url, githubPath, "update", "direct_regex", "auto")
+            .bind(url, githubPath, "update", "direct_regex", "auto", presetError ? "failed" : null, presetError ?? null)
             .run();
         const row = (await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
             .bind(githubPath)
@@ -773,7 +774,11 @@ describe("IP 源空结果语义 (issue #55)", () => {
 
     it("三策略都返回 200 空正文：主文件写空内容并标 success", async () => {
         await seedGitHubSettings();
-        const { id, githubPath } = await insertSource("https://example.com/empty.txt");
+        // 上一轮失败过：本轮成功后 last_sync_error 必须被清空，不能留着陈旧错误
+        const { id, githubPath } = await insertSource(
+            "https://example.com/empty.txt",
+            "上一轮: 所有抓取策略均未能从该URL获取到IP"
+        );
         const puts: Array<{ path: string; content: string }> = [];
         vi.stubGlobal(
             "fetch",
@@ -820,7 +825,8 @@ describe("IP 源空结果语义 (issue #55)", () => {
         await captureLogs(() => syncSingleIpSource(id, env, false));
 
         // 远端主文件原为 9.9.9.9，本轮写成空内容（§13.1 / §17.1 风险 7 已确认允许清空）
-        expect(puts).toEqual([{ path: githubPath, content: "" }]);
+        expect(puts).toContainEqual({ path: githubPath, content: "" });
+        expect(puts).toHaveLength(1);
         const state = await syncState(id);
         expect(state.status).toBe("success");
         expect(state.error).toBeNull();
@@ -828,45 +834,9 @@ describe("IP 源空结果语义 (issue #55)", () => {
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
     });
 
-    it("只有 IPv6 时主文件为空、IPv6 伴生文件写入且标 success（issue #50 + #55 合流）", async () => {
-        await seedGitHubSettings();
-        const { id, githubPath } = await insertSource("https://example.com/v6-only.txt");
-        const companionPath = deriveCompanionPath(githubPath);
-        const puts: Array<{ path: string; content: string }> = [];
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async (input: unknown, init?: RequestInit) => {
-                const url = String(typeof input === "string" ? input : (input as Request).url);
-                const method = (init?.method ?? "GET").toUpperCase();
-                if (url === "https://example.com/v6-only.txt") {
-                    return new Response("2606:4700:4700::1111", { status: 200 });
-                }
-                if (url === "https://api.github.com/repos/test-owner/test-repo") {
-                    return new Response("{}", { status: 200 });
-                }
-                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
-                    const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
-                    if (method === "PUT") {
-                        const body = JSON.parse(String(init?.body ?? "{}")) as { content: string };
-                        puts.push({ path, content: Buffer.from(body.content, "base64").toString("utf8") });
-                        return new Response("{}", { status: 200 });
-                    }
-                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
-                }
-                throw new Error(`未预期的请求: ${url}`);
-            })
-        );
-
-        await captureLogs(() => syncSingleIpSource(id, env, false));
-
-        expect(puts).toEqual([
-            { path: githubPath, content: "" },
-            { path: companionPath, content: "2606:4700:4700::1111" },
-        ]);
-        expect((await syncState(id)).status).toBe("success");
-
-        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
-    });
+    // 验收 #55-②「纯 IPv6 → 主文件空 + 伴生写入 + success」由「IP 源主文件语义 (issue #50)」的
+    // 「仅解析到 IPv6 时主文件写空内容，IPv6 写入伴生文件」用例覆盖（test/sync.test.ts:477），
+    // 同一行为不在此重复一份——重复用例只会让一处断言漂移时两处都要改。
 
     it("全部策略抛错仍是 failed，错误文案保留类别前缀与逐策略摘要", async () => {
         await seedGitHubSettings();
@@ -993,9 +963,11 @@ describe("IP 源空结果语义 (issue #55)", () => {
         const countLine = logs.find((line) => line.includes("成功获取"));
         expect(countLine).toBeDefined();
         // 0 个 IPv4 / 0 个 IPv6 仍是可读的成功行，但不许拼出「（抓取策略: ）」这种空占位
-        expect(countLine).not.toMatch(/抓取策略:\s*）/);
+        expect(countLine).not.toContain("抓取策略");
         expect(countLine).not.toContain("已从");
         expect(countLine).toContain("0 个IPv4");
+        // 0 条时必须有一句人话说明主文件被按空内容处理，避免管理员把「0 个」当成抓取坏了
+        expect(logs.some((line) => line.includes("主文件按空内容处理"))).toBe(true);
 
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
     });
