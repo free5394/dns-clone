@@ -5,6 +5,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { env } from "cloudflare:test";
 import {
     DEFAULT_HOSTMONIT_API_KEY,
+    FETCH_STRATEGIES,
     fetchIpsFromSource,
     fetchIpsWithStrategy,
     fetchThreeNetworkIps,
@@ -305,5 +306,107 @@ describe("hostmonit 抓取 key 配置化 (issue #25)", () => {
         await fetchIpsWithStrategy(hostmonitSource(), env.WUYA);
 
         expect(JSON.parse(bodies[0])).toEqual({ key: DEFAULT_HOSTMONIT_API_KEY });
+    });
+});
+
+// issue #50：抓取策略只返回正文，IPv4 / IPv6 由统一解析层按配置提取
+describe("统一解析层接入 (issue #50)", () => {
+    const parseSource = (mode: string | null, param: string | null = null) => ({
+        ...makeSource(),
+        parse_mode: mode,
+        parse_param: param,
+    });
+
+    it("策略层返回原始正文，不自行提取 IP", async () => {
+        const body = "<html><body>1.1.1.1\n2606:4700:4700::1111</body></html>";
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response(body, { status: 200 }))
+        );
+
+        const text = await FETCH_STRATEGIES.direct_regex("https://example.com/ips.txt");
+
+        expect(text).toBe(body);
+    });
+
+    it("auto 模式同时解析出 IPv4 与 IPv6，各自排序去重", async () => {
+        const body = ["3.3.3.3", "2606:4700:4700::1111", "1.1.1.1", "2001:db8::1", "3.3.3.3"].join("\n");
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response(body, { status: 200 }))
+        );
+
+        const result = await fetchIpsWithStrategy(parseSource("auto"));
+
+        expect(result.ipv4).toEqual(["1.1.1.1", "3.3.3.3"]);
+        expect(result.ipv6).toEqual(["2001:db8::1", "2606:4700:4700::1111"]);
+        expect(result.strategy).toBe("direct_regex");
+    });
+
+    it("json_path 模式只取配置路径下的地址", async () => {
+        const body = JSON.stringify({
+            data: { ips: ["9.9.9.9", "2001:db8::1"] },
+            other: ["8.8.4.4"],
+        });
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response(body, { status: 200 }))
+        );
+
+        const result = await fetchIpsWithStrategy(parseSource("json_path", "data.ips"));
+
+        expect(result.ipv4).toEqual(["9.9.9.9"]);
+        expect(result.ipv6).toEqual(["2001:db8::1"]);
+    });
+
+    it("custom_regex 模式按捕获组提取", async () => {
+        const body = ["IP=5.5.5.5", "IP=6.6.6.6", "TXT=7.7.7.7"].join("\n");
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response(body, { status: 200 }))
+        );
+
+        const result = await fetchIpsWithStrategy(parseSource("custom_regex", "IP=(\\d+\\.\\d+\\.\\d+\\.\\d+)"));
+
+        expect(result.ipv4).toEqual(["5.5.5.5", "6.6.6.6"]);
+        expect(result.ipv6).toEqual([]);
+    });
+
+    it("lines 模式按行严格校验，忽略夹杂文本", async () => {
+        const body = ["9.9.9.9", "ip=1.2.3.4", "1.1.1.1"].join("\n");
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response(body, { status: 200 }))
+        );
+
+        const result = await fetchIpsWithStrategy(parseSource("lines"));
+
+        expect(result.ipv4).toEqual(["1.1.1.1", "9.9.9.9"]);
+        expect(result.ipv6).toEqual([]);
+    });
+
+    it("只有 IPv6 也算策略命中，不再回退到下一个策略", async () => {
+        const fetchMock = vi.fn(async () => new Response("2606:4700:4700::1111", { status: 200 }));
+        vi.stubGlobal("fetch", fetchMock);
+
+        const result = await fetchIpsWithStrategy(parseSource("auto"));
+
+        expect(result.ipv4).toEqual([]);
+        expect(result.ipv6).toEqual(["2606:4700:4700::1111"]);
+        expect(result.strategy).toBe("direct_regex");
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("存量数据 parse_mode 为 NULL 时按 auto 解析", async () => {
+        const body = ["1.1.1.1", "2606:4700:4700::1111"].join("\n");
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response(body, { status: 200 }))
+        );
+
+        const result = await fetchIpsWithStrategy(parseSource(null, null));
+
+        expect(result.ipv4).toEqual(["1.1.1.1"]);
+        expect(result.ipv6).toEqual(["2606:4700:4700::1111"]);
     });
 });

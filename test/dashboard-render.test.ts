@@ -117,6 +117,24 @@ describe("仪表盘渲染助手 (M-1)", () => {
         expect(renderIpSourceCard(ipSource({ last_synced_time: null }))).toContain("从未");
     });
 
+    // issue #50：卡片展示解析模式；未知值（含存量 NULL）按自动处理，原始值不进 HTML
+    it("IP 源卡片展示解析模式中文标签", () => {
+        const { renderIpSourceCard } = makeRenderers();
+
+        expect(renderIpSourceCard(ipSource())).toContain("解析: 自动");
+        expect(renderIpSourceCard(ipSource({ parse_mode: "json_path" }))).toContain("解析: JSON 路径");
+        expect(renderIpSourceCard(ipSource({ parse_mode: "custom_regex" }))).toContain("解析: 自定义正则");
+        expect(renderIpSourceCard(ipSource({ parse_mode: null }))).toContain("解析: 自动");
+    });
+
+    it("IP 源卡片的未知解析模式回落自动且不注入 HTML", () => {
+        const { renderIpSourceCard } = makeRenderers();
+        const html = renderIpSourceCard(ipSource({ parse_mode: '"><img src=x onerror="alert(1)">' }));
+
+        expect(html).toContain("解析: 自动");
+        expect(html).not.toContain("<img");
+    });
+
     it("renderLiveRecords 空、单条、多条三种形态", () => {
         const { renderLiveRecords } = makeRenderers();
 
@@ -227,5 +245,28 @@ describe("单类型记录上限设置项 (issue #49)", () => {
             "settingsToSave.MAX_IPS_PER_TYPE = document.getElementById('maxIpsPerType').value.trim();"
         );
         expect(html).toContain("document.getElementById('maxIpsPerType').value = currentSettings.MAX_IPS_PER_TYPE;");
+    });
+});
+
+// issue #50：IP 源弹窗必须能配置解析模式与参数，编辑回填与保存/探测共用同一份字段。
+describe("IP 源解析配置弹窗 (issue #50)", () => {
+    it("弹窗包含解析模式与参数控件", () => {
+        const html = getDashboardPage([], [], {});
+
+        expect(html).toContain('id="parse_mode"');
+        expect(html).toContain('id="parse_param"');
+        for (const mode of ["auto", "lines", "json_path", "custom_regex"]) {
+            expect(html).toContain(`<option value="${mode}">`);
+        }
+        expect(html).toContain('id="parse_param" maxlength="512"');
+    });
+
+    it("编辑回填、保存与探测都带上解析配置", () => {
+        const html = getDashboardPage([], [], {});
+        // 静态契约（issue #50）：三处 DOM 接线只能在页面脚本里锁；服务端行为由 API 用例覆盖。
+        expect(html).toContain("document.getElementById('parse_mode').value = source.parse_mode || 'auto';");
+        expect(html).toContain("parse_mode: document.getElementById('parse_mode').value");
+        expect(html).toContain("parse_param: parseParam === '' ? null : parseParam");
+        expect(html).toContain("parse_param: parseParamInput === '' ? null : parseParamInput");
     });
 });

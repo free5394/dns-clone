@@ -1188,6 +1188,194 @@ describe("端点直测补齐 (M-12)", () => {
     });
 });
 
+// issue #50：IP 源的解析模式端到端（保存 / 校验 / 回填 / 探测）
+describe("IP 源解析模式 (issue #50)", () => {
+    const basePayload = (overrides: Record<string, unknown> = {}) => ({
+        url: "https://example.com/m50/source.txt",
+        github_path: "m50/source.txt",
+        commit_message: "解析模式",
+        fetch_strategy: "direct_regex",
+        parse_mode: "auto",
+        parse_param: null,
+        ...overrides,
+    });
+
+    afterAll(async () => {
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm50/%'").run();
+    });
+
+    it("保存 json_path 解析配置并原样回读", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(basePayload({ parse_mode: "json_path", parse_param: "data.list.ipv4" })),
+        });
+        expect(res.status).toBe(200);
+
+        const row = await env.WUYA.prepare("SELECT parse_mode, parse_param FROM ip_sources WHERE github_path = ?")
+            .bind("m50/source.txt")
+            .first<{ parse_mode: string; parse_param: string }>();
+        expect(row?.parse_mode).toBe("json_path");
+        expect(row?.parse_param).toBe("data.list.ipv4");
+    });
+
+    it("拒绝白名单外的 parse_mode，且不落库", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(
+                basePayload({
+                    url: "https://example.com/m50/bad-mode.txt",
+                    github_path: "m50/bad-mode.txt",
+                    parse_mode: "regex",
+                })
+            ),
+        });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toContain("解析模式");
+
+        const row = await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind("m50/bad-mode.txt")
+            .first();
+        expect(row).toBeNull();
+    });
+
+    it("json_path 缺少点路径时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(
+                basePayload({
+                    url: "https://example.com/m50/missing-param.txt",
+                    github_path: "m50/missing-param.txt",
+                    parse_mode: "json_path",
+                    parse_param: "",
+                })
+            ),
+        });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toContain("JSON");
+    });
+
+    it("PUT 切回 auto 时把残留参数归一为 NULL", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy, parse_mode, parse_param) VALUES (?, ?, ?, ?, ?, ?)"
+        )
+            .bind(
+                "https://example.com/m50/switch.txt",
+                "m50/switch.txt",
+                "切换前",
+                "direct_regex",
+                "json_path",
+                "data.ips"
+            )
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind("m50/switch.txt")
+            .first()) as { id: number };
+
+        const res = await SELF.fetch(`https://example.com/api/ip_sources/${row.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(
+                basePayload({
+                    url: "https://example.com/m50/switch.txt",
+                    github_path: "m50/switch.txt",
+                    parse_mode: "auto",
+                    parse_param: "data.ips",
+                })
+            ),
+        });
+        expect(res.status).toBe(200);
+
+        const after = await env.WUYA.prepare("SELECT parse_mode, parse_param FROM ip_sources WHERE id = ?")
+            .bind(row.id)
+            .first<{ parse_mode: string; parse_param: string | null }>();
+        expect(after?.parse_mode).toBe("auto");
+        expect(after?.parse_param).toBeNull();
+    });
+
+    it("probe 返回 IPv4/IPv6 数量与两类样例", async () => {
+        const cookie = await loginAndGetCookie();
+        const origFetch = globalThis.fetch;
+        globalThis.fetch = (() =>
+            Promise.resolve(
+                new Response("8.8.8.8\n1.1.1.1\n2606:4700:4700::1111", {
+                    status: 200,
+                    headers: { "Content-Type": "text/plain" },
+                })
+            )) as typeof fetch;
+
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/ip_sources/probe", {
+                    method: "POST",
+                    headers: { Cookie: cookie, "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        url: "https://example.com/m50/probe.txt",
+                        parse_mode: "auto",
+                        parse_param: null,
+                    }),
+                }),
+                env
+            );
+            expect(res.status).toBe(200);
+            const body = (await res.json()) as {
+                success?: boolean;
+                strategy?: string;
+                ipv4Count?: number;
+                ipv6Count?: number;
+                ipCount?: number;
+                sampleIps?: string[];
+                sampleIpv6?: string[];
+            };
+            expect(body.success).toBe(true);
+            expect(body.strategy).toBe("direct_regex");
+            expect(body.ipv4Count).toBe(2);
+            expect(body.ipv6Count).toBe(1);
+            expect(body.ipCount).toBe(2);
+            expect(body.sampleIps).toEqual(["1.1.1.1", "8.8.8.8"]);
+            expect(body.sampleIpv6).toEqual(["2606:4700:4700::1111"]);
+        } finally {
+            globalThis.fetch = origFetch;
+        }
+    });
+
+    it("probe 解析配置非法时直接 400，且不发起抓取", async () => {
+        const cookie = await loginAndGetCookie();
+        const origFetch = globalThis.fetch;
+        let fetchCalls = 0;
+        globalThis.fetch = (() => {
+            fetchCalls++;
+            return Promise.resolve(new Response("1.1.1.1", { status: 200 }));
+        }) as typeof fetch;
+
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/ip_sources/probe", {
+                    method: "POST",
+                    headers: { Cookie: cookie, "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        url: "https://example.com/m50/bad-probe.txt",
+                        parse_mode: "json_path",
+                        parse_param: "",
+                    }),
+                }),
+                env
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error?: string }).error).toContain("JSON");
+            expect(fetchCalls).toBe(0);
+        } finally {
+            globalThis.fetch = origFetch;
+        }
+    });
+});
+
 // M-3 回归：新增与更新共用同一条写库流水线后，唯一键冲突必须仍然走 409，且不能改动既有数据
 describe("IP 源写库冲突 (M-3)", () => {
     const m3Payload = {

@@ -19,6 +19,7 @@ import { assertSafeHttpUrl } from "../util/url-safety.ts";
 import { normalizeBatchSize } from "../util/batch-size.ts";
 import { HOSTMONIT_API_KEY, normalizeHostmonitKey } from "../db/settings.ts";
 import { forEachIsolated } from "../util/batch-sync.ts";
+import { parseContent } from "./ip-parse.ts";
 
 interface IpSourceRow {
     id: number;
@@ -27,6 +28,10 @@ interface IpSourceRow {
     commit_message: string;
     /** 列可空（迁移里的 fetch_strategy 无 NOT NULL），读取处一律按空串归一 */
     fetch_strategy: string | null;
+    /** 解析模式，列可空；NULL / 空串按 auto 处理（issue #48 / #50） */
+    parse_mode: string | null;
+    /** 解析参数，仅 json_path / custom_regex 使用 */
+    parse_param: string | null;
     is_enabled: number;
 }
 
@@ -38,21 +43,18 @@ export interface FetchStrategyContext {
     hostmonitKey: string;
 }
 
-type StrategyFn = (url: string, context?: FetchStrategyContext) => Promise<string[]>;
-
-/** 提取文本中的合法 IPv4（Suggestion ③：段值 ≤255，防止 999.x.x.x 伪 IP 发布给订阅器） */
-function extractIpv4(text: string): string[] {
-    const candidates = text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
-    return [...new Set(candidates.filter((ip) => ip.split(".").every((seg) => Number(seg) <= 255)))];
-}
+/**
+ * 抓取策略只负责「拿到正文」，IP 提取统一交给解析层（issue #50）。
+ * 返回值是响应原文，截断与解析由 parseContent 承担。
+ */
+type StrategyFn = (url: string, context?: FetchStrategyContext) => Promise<string>;
 
 /** 抓取策略表 */
 export const FETCH_STRATEGIES: Record<string, StrategyFn> = {
     direct_regex: async (url) => {
         const res = await fetchWithTimeout(url, { headers: { "User-Agent": "Mozilla/5.0" } }, 15000);
         if (!res.ok) throw new HttpError(res.status, `HTTP ${res.status}: ${url}`);
-        const text = await res.text();
-        return extractIpv4(text);
+        return await res.text();
     },
     phantomjs_cloud: async (url) => {
         const res = await fetchWithTimeout(
@@ -65,22 +67,20 @@ export const FETCH_STRATEGIES: Record<string, StrategyFn> = {
             20000
         );
         if (!res.ok) throw new HttpError(res.status, `PhantomJsCloud API HTTP ${res.status}`);
-        const text = await res.text();
-        return extractIpv4(text);
+        return await res.text();
     },
     proxy_codetabs: async (url) => {
         const proxyUrl = "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(url);
         const res = await fetchWithTimeout(proxyUrl, {}, 15000);
         if (!res.ok) throw new HttpError(res.status, `CodeTabs Proxy HTTP ${res.status}`);
-        const text = await res.text();
-        return extractIpv4(text);
+        return await res.text();
     },
     // 免费渲染/转发通道：源站按 Cloudflare 出口 IP 拦截（直连 403）时仍能取到正文。
     // 实测 ipdb.api.030101.xyz 直连对 Worker 403、经 jina 返回 116 个 IP。
     jina_reader: async (url) => {
         const res = await fetchWithTimeout("https://r.jina.ai/" + url, {}, 20000);
         if (!res.ok) throw new HttpError(res.status, `Jina Reader HTTP ${res.status}`);
-        return extractIpv4(await res.text());
+        return await res.text();
     },
     // hostmonit 是前端 SPA，页面本身无 IP；数据来自公开 JSON 接口（key 取自其前端 bundle），直连即可。
     // key 允许在设置页覆盖（对方轮换后无需改代码），未配置时回落到内置默认值。
@@ -95,7 +95,7 @@ export const FETCH_STRATEGIES: Record<string, StrategyFn> = {
             15000
         );
         if (!res.ok) throw new HttpError(res.status, `HostMonit API HTTP ${res.status}`);
-        return extractIpv4(await res.text());
+        return await res.text();
     },
 };
 
@@ -168,15 +168,20 @@ export async function syncSingleIpSource(
         log(`======== 开始同步IP源: ${source.url} ========`);
 
         try {
-            const { ips, strategy, configuredStrategy } = await fetchIpsWithStrategy(source, db);
+            const { ipv4, ipv6, strategy, configuredStrategy } = await fetchIpsWithStrategy(source, db);
             // issue #22 P4：日志写实际生效策略；确实发生过回退时才点明从哪个策略退下来的
             const fellBack = configuredStrategy !== "" && configuredStrategy !== strategy;
             const strategyNote = fellBack
                 ? `（抓取策略: ${strategy}，已从 ${configuredStrategy} 回退）`
                 : `（抓取策略: ${strategy}）`;
-            log(`成功获取 ${ips.length} 个IP${strategyNote}。`);
+            // 日志只写策略与两类数量，不落正文（§13.2）
+            log(`成功获取 ${ipv4.length} 个IPv4、${ipv6.length} 个IPv6${strategyNote}。`);
+            if (ipv4.length === 0 && ipv6.length > 0) {
+                // 主文件继续只装 IPv4：纯 IPv6 源写空内容，伴生文件由后续票（#51）负责
+                log(`仅解析到 IPv6：主文件按空内容处理，IPv6 伴生文件由后续能力写入。`);
+            }
 
-            const newContent = ips.join("\n");
+            const newContent = ipv4.join("\n");
             const oldContent = await getCurrentGitHubContent({ ...gh, path: source.github_path, log });
 
             if (oldContent !== null && newContent.trim() === oldContent.trim()) {
@@ -284,9 +289,10 @@ export function describeFetchError(e: unknown): string {
     return msg.length > 200 ? `${msg.slice(0, 200)}…` : msg;
 }
 
-/** 抓取结果：除了 IP，还要带回本次真正生效的策略（issue #22 P4）。 */
+/** 抓取结果：解析出的 IPv4 / IPv6，以及本次真正生效的策略（issue #22 P4 / #50）。 */
 export interface IpFetchResult {
-    ips: string[];
+    ipv4: string[];
+    ipv6: string[];
     /** 本次实际生效的抓取策略名（回退命中时为回退后的策略） */
     strategy: string;
     /** 调用前配置/缓存里的策略名，用于判断本次是否发生了回退 */
@@ -325,8 +331,10 @@ export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database)
         const fn = FETCH_STRATEGIES[name];
         if (!fn) continue;
         try {
-            const ips = await fn(source.url, context);
-            if (ips && ips.length > 0) {
+            // 策略只返回正文；「成功」= 取得正文且统一解析后至少 1 个 IP（IPv4/IPv6 合计，§6.2）
+            const text = await fn(source.url, context);
+            const { ipv4, ipv6 } = parseContent(text, source.parse_mode, source.parse_param);
+            if (ipv4.length > 0 || ipv6.length > 0) {
                 if (name !== configuredStrategy) {
                     // 回退策略命中：更新传入对象的 fetch_strategy（调用方可感知），若提供了 db 则持久化
                     (source as { fetch_strategy: string }).fetch_strategy = name;
@@ -337,15 +345,7 @@ export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database)
                             .run();
                     }
                 }
-                const sortIps = (a: string, b: string) => {
-                    const aParts = a.split(".").map(Number);
-                    const bParts = b.split(".").map(Number);
-                    for (let i = 0; i < 4; i++) {
-                        if (aParts[i] !== bParts[i]) return aParts[i] - bParts[i];
-                    }
-                    return 0;
-                };
-                return { ips: ips.sort(sortIps), strategy: name, configuredStrategy };
+                return { ipv4, ipv6, strategy: name, configuredStrategy };
             }
             // 空结果也记账：源站返回 200 但没有 IP 时若静默跳过，诊断文案只剩抛错的策略，
             // 会把人误导成"换个代理就好"（实测 id=8 页面 tbody 为空，文案却只显示 proxy_codetabs 超时）
@@ -368,8 +368,8 @@ export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database)
 
 /** @internal 兼容测试/旧调用方；生产同步走 fetchIpsWithStrategy（需要实际生效的策略信息）。 */
 export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): Promise<string[]> {
-    const { ips } = await fetchIpsWithStrategy(source, db);
-    return ips;
+    const { ipv4 } = await fetchIpsWithStrategy(source, db);
+    return ipv4;
 }
 
 /** 三网 IP 分类（yd 移动 / dx 电信 / lt 联通），供三网抓取与表格解析共用。 */

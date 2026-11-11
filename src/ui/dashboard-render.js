@@ -50,10 +50,16 @@ export function createDashboardRenderers({ escapeHtml, getZoneName, formatBeijin
     function renderIpSourceCard(source) {
         // github_path 是 admin 可控值：URL 属性用 encodeURIComponent 阻断 scheme/属性逃逸，展示文本用 escapeHtml
         const fileUrl = `${origin}/${encodeURIComponent(source.github_path)}`;
+        // 解析模式只做白名单映射：未知值 / 存量 NULL 一律显示 auto，原始值不进入 HTML（issue #50）
+        const parseModeLabels = { auto: "自动", lines: "按行", json_path: "JSON 路径", custom_regex: "自定义正则" };
+        const rawParseMode = typeof source.parse_mode === "string" ? source.parse_mode.trim() : "";
+        const parseModeLabel = Object.prototype.hasOwnProperty.call(parseModeLabels, rawParseMode)
+            ? parseModeLabels[rawParseMode]
+            : "自动";
         return `
       <div class="domain-card row-grid" id="ip-source-card-${source.id}">
            <div class="card-col"><span class="col-label">GitHub 文件路径</span><a href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener" class="domain-cell" onclick="event.stopPropagation();">${escapeHtml(source.github_path)}</a><small class="domain-cell" title="${escapeHtml(source.url)}">源: ${escapeHtml(source.url)}</small></div>
-           <div class="card-col"><span class="col-label">抓取策略</span><span>${escapeHtml(source.fetch_strategy || "尚未探测")}</span></div>
+           <div class="card-col"><span class="col-label">抓取策略</span><span>${escapeHtml(source.fetch_strategy || "尚未探测")}</span><small class="domain-cell">解析: ${escapeHtml(parseModeLabel)}</small></div>
           <div class="card-col"><span class="col-label">上次同步</span><div>${renderStatus(source)}</div><small>${formatBeijingTime(source.last_synced_time)}</small></div>
           <div class="card-actions"><button class="outline" onclick="window.syncSingleIpSource(${source.id})">同步</button><button class="secondary outline" onclick="window.openModal('ipSourceModal', ${source.id})">编辑</button><button class="contrast outline" onclick="window.deleteIpSource(${source.id})">删除</button></div>
       </div>`;

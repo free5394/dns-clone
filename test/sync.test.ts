@@ -361,6 +361,121 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
     });
 });
 
+// issue #50：主文件只写 IPv4；仅解析到 IPv6 时写空主文件，伴生文件留给后续能力
+describe("IP 源主文件语义 (issue #50)", () => {
+    async function seedGitHubSettings() {
+        for (const [key, value] of [
+            ["GITHUB_TOKEN", "test-token"],
+            ["GITHUB_OWNER", "test-owner"],
+            ["GITHUB_REPO", "test-repo"],
+        ]) {
+            await env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            )
+                .bind(key, value)
+                .run();
+        }
+    }
+
+    async function insertSource(url: string) {
+        const githubPath = `ip-main-${crypto.randomUUID()}.txt`;
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy, parse_mode) VALUES (?, ?, ?, ?, ?)"
+        )
+            .bind(url, githubPath, "update", "direct_regex", "auto")
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind(githubPath)
+            .first()) as {
+            id: number;
+        };
+        return { id: row.id, githubPath };
+    }
+
+    async function captureLogs(run: () => Promise<unknown>): Promise<string[]> {
+        const logs: string[] = [];
+        const spy = vi.spyOn(console, "log").mockImplementation((msg?: unknown) => {
+            logs.push(String(msg));
+        });
+        try {
+            await run();
+        } finally {
+            spy.mockRestore();
+        }
+        return logs;
+    }
+
+    it("存量 IPv4 内容一致时逐字节不变，不发 PUT", async () => {
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/same.txt");
+        const putBodies: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                if (url === "https://example.com/same.txt") {
+                    return new Response("2.2.2.2\n1.1.1.1", { status: 200 });
+                }
+                if (
+                    url ===
+                    `https://api.github.com/repos/test-owner/test-repo/contents/${encodeURIComponent(githubPath)}`
+                ) {
+                    if ((init?.method ?? "GET").toUpperCase() === "PUT") {
+                        putBodies.push(String(init?.body ?? ""));
+                        return new Response("{}", { status: 200 });
+                    }
+                    // 线上文件就是排序后的同一内容
+                    return new Response("1.1.1.1\n2.2.2.2", { status: 200 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        expect(putBodies).toHaveLength(0);
+        expect(logs.some((line) => line.includes("无变化") || line.includes("内容一致"))).toBe(true);
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("仅解析到 IPv6 时主文件写空内容，并提示伴生文件后置", async () => {
+        await seedGitHubSettings();
+        const { id } = await insertSource("https://example.com/v6.txt");
+        const putBodies: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                if (url === "https://example.com/v6.txt") {
+                    return new Response("2606:4700:4700::1111", { status: 200 });
+                }
+                if (url === "https://api.github.com/repos/test-owner/test-repo") {
+                    return new Response("{}", { status: 200 });
+                }
+                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                    if ((init?.method ?? "GET").toUpperCase() === "PUT") {
+                        putBodies.push(String(init?.body ?? ""));
+                        return new Response("{}", { status: 200 });
+                    }
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        expect(putBodies).toHaveLength(1);
+        const putBody = JSON.parse(putBodies[0]) as { content: string };
+        // 空主文件的 base64 就是空串
+        expect(putBody.content).toBe("");
+        expect(logs.some((line) => line.includes("IPv6 伴生文件"))).toBe(true);
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+});
+
 describe("syncSystemDomains (FIX-02: 错误日志替代静默)", () => {
     it("syncDomainLogic throw: D1 writes failed status, log identifies failing domain", async () => {
         // 插入一个启用系统域名，source_domain 设为 internal:hostmonit:CM

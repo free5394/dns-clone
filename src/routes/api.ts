@@ -18,6 +18,7 @@ import { hashPassword, isAuthenticated, verifyPassword } from "../util/auth.ts";
 import { getZoneName } from "../util/cf.ts";
 import { FETCH_STRATEGIES, resolveHostmonitKey } from "../sync/ip-sources.ts";
 import { normalizeGithubPath } from "../sync/github.ts";
+import { parseContent, validateParseConfig, type ParseMode } from "../sync/ip-parse.ts";
 import { syncAllDomains, syncSystemDomains, syncSingleDomain } from "../sync/domains.ts";
 import { syncSingleIpSource, syncAllIpSources } from "../sync/ip-sources.ts";
 import { assertSafeHttpUrl } from "../util/url-safety.ts";
@@ -489,6 +490,8 @@ interface IpSourceInput {
     github_path: string;
     commit_message: string;
     fetch_strategy: string;
+    parse_mode: ParseMode;
+    parse_param: string | null;
 }
 
 type IpSourceValidation = { ok: true; input: IpSourceInput } | { ok: false; error: string };
@@ -538,7 +541,21 @@ function validateIpSourceInput(body: IpSourceInputBody): IpSourceValidation {
     if (typeof fetch_strategy !== "string" || !strategyNames.includes(fetch_strategy))
         return { ok: false, error: `抓取策略非法：仅支持 ${strategyNames.join("、")}。` };
 
-    return { ok: true, input: { url, github_path: pathValidation.value, commit_message, fetch_strategy } };
+    // 解析配置与保存/探测共用同一套校验（§9.5）：NULL / 空串按 auto，非法值直接 400
+    const parseValidation = validateParseConfig(body.parse_mode, body.parse_param);
+    if (!parseValidation.ok) return { ok: false, error: parseValidation.error };
+
+    return {
+        ok: true,
+        input: {
+            url,
+            github_path: pathValidation.value,
+            commit_message,
+            fetch_strategy,
+            parse_mode: parseValidation.mode,
+            parse_param: parseValidation.param,
+        },
+    };
 }
 
 /**
@@ -560,11 +577,11 @@ async function writeIpSource(
     if (body === null) return BAD_JSON();
     const validation = validateIpSourceInput(body);
     if (!validation.ok) return jsonResponse({ error: validation.error }, 400);
-    const { url, github_path, commit_message, fetch_strategy } = validation.input;
+    const { url, github_path, commit_message, fetch_strategy, parse_mode, parse_param } = validation.input;
     try {
         const result = await db
             .prepare(options.sql)
-            .bind(url, github_path, commit_message, fetch_strategy, ...options.bindings)
+            .bind(url, github_path, commit_message, fetch_strategy, parse_mode, parse_param, ...options.bindings)
             .run();
         // UPDATE 命中 0 行说明 id 不存在：返回 404，避免把失败包装成「更新成功」
         if (options.notFoundWhenNoRows && (result.meta?.changes ?? 0) === 0) {
@@ -579,7 +596,7 @@ async function writeIpSource(
 
 function apiAddIpSource(request: Request, db: D1Database): Promise<Response> {
     return writeIpSource(request, db, {
-        sql: "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)",
+        sql: "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy, parse_mode, parse_param) VALUES (?, ?, ?, ?, ?, ?)",
         bindings: [],
         successMessage: "IP源添加成功。",
     });
@@ -587,7 +604,7 @@ function apiAddIpSource(request: Request, db: D1Database): Promise<Response> {
 
 function apiUpdateIpSource(request: Request, db: D1Database, id: number): Promise<Response> {
     return writeIpSource(request, db, {
-        sql: "UPDATE ip_sources SET url=?, github_path=?, commit_message=?, fetch_strategy=? WHERE id=?",
+        sql: "UPDATE ip_sources SET url=?, github_path=?, commit_message=?, fetch_strategy=?, parse_mode=?, parse_param=? WHERE id=?",
         bindings: [id],
         successMessage: "IP源更新成功。",
         notFoundWhenNoRows: true,
@@ -623,10 +640,13 @@ async function withProbeTimeout<T>(promise: Promise<T>, ms: number): Promise<T> 
 }
 
 async function apiProbeIpSource(request: Request, db: D1Database): Promise<Response> {
-    const body = await readJsonBody<{ url?: string }>(request);
+    const body = await readJsonBody<{ url?: unknown; parse_mode?: unknown; parse_param?: unknown }>(request);
     if (body === null) return BAD_JSON();
     const { url } = body;
-    if (!url) return jsonResponse({ error: "缺少用于探测的 URL 参数。" }, 400);
+    // 解析配置非法时直接 400，不进入抓取（§9.3）
+    const parseValidation = validateParseConfig(body.parse_mode, body.parse_param);
+    if (!parseValidation.ok) return jsonResponse({ error: parseValidation.error }, 400);
+    if (typeof url !== "string" || url.length === 0) return jsonResponse({ error: "缺少用于探测的 URL 参数。" }, 400);
     try {
         assertSafeHttpUrl(url);
     } catch (e) {
@@ -647,13 +667,19 @@ async function apiProbeIpSource(request: Request, db: D1Database): Promise<Respo
         }
         attempts += 1;
         try {
-            const ips = await withProbeTimeout(strategyFn(url, { hostmonitKey }), remaining);
-            if (ips && ips.length > 0) {
+            // 与同步链路同一条解析路径：策略只取正文，解析配置在入口已校验
+            const text = await withProbeTimeout(strategyFn(url, { hostmonitKey }), remaining);
+            const { ipv4, ipv6 } = parseContent(text, parseValidation.mode, parseValidation.param);
+            if (ipv4.length > 0 || ipv6.length > 0) {
                 return jsonResponse({
                     success: true,
                     strategy: strategyName,
-                    ipCount: ips.length,
-                    sampleIps: ips.slice(0, 5),
+                    ipv4Count: ipv4.length,
+                    ipv6Count: ipv6.length,
+                    // 兼容旧前端/旧调用方：ipCount 仍表示 IPv4 数量
+                    ipCount: ipv4.length,
+                    sampleIps: ipv4.slice(0, 5),
+                    sampleIpv6: ipv6.slice(0, 5),
                 });
             }
         } catch (e) {

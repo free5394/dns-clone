@@ -573,7 +573,7 @@ export function getDashboardPage(domains, ipSources, settings) {
         </div>
     </div>
     <dialog id="domainModal"><article><header><a href="#close" aria-label="Close" class="close" onclick="window.closeModal('domainModal')"></a><h3 id="modalTitle"></h3></header><form id="domainForm"><input type="hidden" id="domainId"><label for="source_domain">克隆域名</label><input type="text" id="source_domain" placeholder="example-source.com" required><label for="target_domain_prefix">我的域名前缀</label><div class="grid"><input type="text" id="target_domain_prefix" placeholder="subdomain or @" required><span id="zoneNameSuffix" style="line-height:var(--pico-form-element-height);font-weight:700">.your-zone.com</span></div><div class="grid"><div><label for="is_deep_resolve">深度 <span class="tooltip">(?)<span class="tooltip-text">开启后，如果克隆域名是CNAME，系统将递归查找最终的IP地址进行解析。关闭则直接克隆CNAME记录本身。</span></span></label><input type="checkbox" id="is_deep_resolve" role="switch" checked></div><div><label for="ttl">TTL (秒)</label><input type="number" id="ttl" min="60" max="86400" value="60" required></div></div><label for="notes">备注 (可选)</label><textarea id="notes" rows="2" placeholder="例如：主力CDN"></textarea><footer><button type="button" class="secondary" onclick="window.closeModal('domainModal')">取消</button><button type="submit" id="saveBtn">保存</button></footer></form></article></dialog>
-    <dialog id="ipSourceModal"><article><header><a href="#close" aria-label="Close" class="close" onclick="window.closeModal('ipSourceModal')"></a><h3 id="ipSourceModalTitle"></h3></header><form id="ipSourceForm"><input type="hidden" id="ipSourceId"><div class="grid"><label for="ip_source_url">IP源地址</label><button type="button" class="outline" id="probeBtn" style="width:auto;padding:0 1rem;">探测方案</button></div><input type="text" id="ip_source_url" placeholder="https://example.com/ip_list.txt" required><progress id="probeProgress" style="display:none;"></progress><p id="probeResult" style="font-size:0.9em;"></p><label for="github_path">GitHub 文件路径</label><input type="text" id="github_path" placeholder="IP/Cloudflare.txt" required><label for="commit_message">Commit 信息</label><input type="text" id="commit_message" placeholder="Update Cloudflare IPs" required><footer><button type="button" class="secondary" onclick="window.closeModal('ipSourceModal')">取消</button><button type="submit" id="saveIpSourceBtn">保存</button></footer></form></article></dialog>
+    <dialog id="ipSourceModal"><article><header><a href="#close" aria-label="Close" class="close" onclick="window.closeModal('ipSourceModal')"></a><h3 id="ipSourceModalTitle"></h3></header><form id="ipSourceForm"><input type="hidden" id="ipSourceId"><div class="grid"><label for="ip_source_url">IP源地址</label><button type="button" class="outline" id="probeBtn" style="width:auto;padding:0 1rem;">探测方案</button></div><input type="text" id="ip_source_url" placeholder="https://example.com/ip_list.txt" required><progress id="probeProgress" style="display:none;"></progress><p id="probeResult" style="font-size:0.9em;"></p><div class="grid"><div><label for="parse_mode">解析模式</label><select id="parse_mode"><option value="auto">自动（全文提取）</option><option value="lines">按行提取</option><option value="json_path">JSON 路径</option><option value="custom_regex">自定义正则</option></select></div><div><label for="parse_param">解析参数</label><input type="text" id="parse_param" maxlength="512" placeholder="json_path: data.list.ips；custom_regex: 正则"></div></div><small>自动 / 按行不需要参数；JSON 路径最长 512 字符，自定义正则最长 200 字符。</small><label for="github_path">GitHub 文件路径</label><input type="text" id="github_path" placeholder="IP/Cloudflare.txt" required><label for="commit_message">Commit 信息</label><input type="text" id="commit_message" placeholder="Update Cloudflare IPs" required><footer><button type="button" class="secondary" onclick="window.closeModal('ipSourceModal')">取消</button><button type="submit" id="saveIpSourceBtn">保存</button></footer></form></article></dialog>
     <script>${getDashboardScript(domains, ipSources, settings)}</script>`;
 }
 
@@ -735,6 +735,9 @@ function getDashboardInteractionScript() {
               document.getElementById('ip_source_url').value = source.url;
               document.getElementById('github_path').value = source.github_path;
               document.getElementById('commit_message').value = source.commit_message;
+              // 存量数据 parse_mode 可能为 NULL：按 auto 回填，避免编辑时把解析配置清成空
+              document.getElementById('parse_mode').value = source.parse_mode || 'auto';
+              document.getElementById('parse_param').value = source.parse_param || '';
               if (source.fetch_strategy) {
                   successfulProbeStrategy = source.fetch_strategy;
                   document.getElementById('probeResult').textContent = \`已缓存策略: \${successfulProbeStrategy}\`;
@@ -788,7 +791,8 @@ function getDashboardInteractionScript() {
 
   async function saveIpSource() {
       const id = document.getElementById('ipSourceId').value;
-      const payload = { url: document.getElementById('ip_source_url').value, github_path: document.getElementById('github_path').value, commit_message: document.getElementById('commit_message').value, fetch_strategy: successfulProbeStrategy };
+      const parseParam = document.getElementById('parse_param').value.trim();
+      const payload = { url: document.getElementById('ip_source_url').value, github_path: document.getElementById('github_path').value, commit_message: document.getElementById('commit_message').value, fetch_strategy: successfulProbeStrategy, parse_mode: document.getElementById('parse_mode').value, parse_param: parseParam === '' ? null : parseParam };
       const apiUrl = id ? \`/api/ip_sources/\${id}\` : '/api/ip_sources';
       const method = id ? 'PUT' : 'POST';
       try { const result = await apiFetch(apiUrl, { method, body: JSON.stringify(payload) }); showNotification(result.message, 'success'); closeModal('ipSourceModal'); await refreshIpSources(); } catch (e) { showNotification(\`保存失败: \${e.message}\`, 'error'); }
@@ -980,9 +984,13 @@ function getDashboardBootstrapScript() {
           successfulProbeStrategy = null;
 
           try {
-              const result = await apiFetch('/api/ip_sources/probe', { method: 'POST', body: JSON.stringify({ url }) });
+              const parseParamInput = document.getElementById('parse_param').value.trim();
+              const result = await apiFetch('/api/ip_sources/probe', { method: 'POST', body: JSON.stringify({ url, parse_mode: document.getElementById('parse_mode').value, parse_param: parseParamInput === '' ? null : parseParamInput }) });
               progress.setAttribute('value', '100');
-              resultElem.textContent = \`探测成功！策略: \${result.strategy} | 发现 \${result.ipCount} 个IP\`;
+              const samples = [];
+              if (result.sampleIps && result.sampleIps.length) samples.push(\`IPv4 样例: \${result.sampleIps.join(', ')}\`);
+              if (result.sampleIpv6 && result.sampleIpv6.length) samples.push(\`IPv6 样例: \${result.sampleIpv6.join(', ')}\`);
+              resultElem.textContent = \`探测成功！策略: \${result.strategy} | 发现 \${result.ipv4Count} 个IPv4、\${result.ipv6Count} 个IPv6\` + (samples.length ? \` | \${samples.join(' | ')}\` : '');
               successfulProbeStrategy = result.strategy;
               saveBtn.disabled = false;
           } catch (error) {
