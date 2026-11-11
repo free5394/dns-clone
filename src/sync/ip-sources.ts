@@ -197,8 +197,9 @@ export async function syncSingleIpSource(
             // issue #22 P4：日志写实际生效策略；确实发生过回退时才点明从哪个策略退下来的。
             // issue #55：0 条时 strategy 为空串——既不能拼出「（抓取策略: ）」空占位，
             // 也不能因为空串 != 配置值而误报「已从 X 回退」（那轮根本没命中任何策略）。
+            // 注意：这里不判 strategy !== ""——0 条时 fellBack 会算成 true，只是下面的三元先短路、
+            // 该值没被用到。别据此删掉三元的 strategy === "" 分支，否则 0 条会印出「已从 X 回退」。
             const fellBack = configuredStrategy !== "" && configuredStrategy !== strategy;
-            // 空串由下面的三元直接短路，fellBack 只在真有策略命中时才可能为真
             const strategyNote =
                 strategy === ""
                     ? ""
@@ -436,6 +437,9 @@ export async function fetchIpsForTarget(
     const detail = attempts.length > 0 ? `（${attempts.join("; ")}）` : "";
     // §13.1「成功但 0 条」与「抓取抛错」是两条不同分支：只要有一条策略成功取到正文却没有 IP，
     // 就属于前者——哪怕其它策略抛过错，也不能被 lastError 短路成抓取失败（否则 DNS 侧会误标 failed）。
+    // lastError === undefined 那一项不是在兜 fetchedWithoutIps：它覆盖「没有任何策略被 STRATEGY_APPLIES 放行、
+    // 循环一次都没跑」的情形（当前只有 hostmonit_api 会被过滤，direct_regex 恒适用，所以这条路径暂无生产可达，
+    // 但它是唯一能把「没有可跑的方案」与「方案都没匹配到 IP」区分开的地方）。
     if (options.emptyWhenNoIps && (fetchedWithoutIps || lastError === undefined)) {
         return { ipv4: [], ipv6: [], strategy: "", configuredStrategy };
     }

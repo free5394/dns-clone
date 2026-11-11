@@ -722,7 +722,7 @@ describe("IP 源主文件语义 (issue #50)", () => {
 });
 
 // issue #55：GitHub 侧「成功但 0 条」按空内容处理并标 success —— 与「全部策略抛错」是两种语义。
-// 这一组把方案 §15.1 要求的空结果行为钉死：能清空远端主文件，但绝不能把抓取失败也当成 0 条。
+// 这一组把方案 §13.1 的异常语义钉死：能清空远端主文件，但绝不能把抓取失败也当成 0 条；§15.1 的测试清单亦已同步。
 describe("IP 源空结果语义 (issue #55)", () => {
     async function seedGitHubSettings() {
         for (const [key, value] of [
@@ -834,9 +834,69 @@ describe("IP 源空结果语义 (issue #55)", () => {
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
     });
 
+    it("连续两轮 0 条：首轮清空远端标 success，次轮内容已一致转 no_change", async () => {
+        // 状态由「本轮有没有写入」决定（§13.1），不是「是不是 0 条」：
+        // 第一轮远端还有旧内容 → 写入空内容 → success；第二轮远端已是空内容 → 不写 → no_change。
+        // 这条用例钉住该边界，避免以后有人为了「0 条就该 success」去改强制分支。
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/still-empty.txt");
+        let remoteMain = "1.2.3.4";
+        const puts: Array<{ path: string; content: string }> = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                const method = (init?.method ?? "GET").toUpperCase();
+                if (url.startsWith("https://example.com/") || url.includes("codetabs") || url.includes("r.jina.ai")) {
+                    return new Response("still no ips", { status: 200 });
+                }
+                if (url.startsWith("https://PhantomJsCloud.com")) {
+                    return new Response("still no ips", { status: 200 });
+                }
+                if (url === "https://api.github.com/repos/test-owner/test-repo") {
+                    return new Response("{}", { status: 200 });
+                }
+                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                    const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+                    if (method === "PUT") {
+                        const body = JSON.parse(String(init?.body ?? "{}")) as { content: string };
+                        remoteMain = Buffer.from(body.content, "base64").toString("utf8");
+                        puts.push({ path, content: remoteMain });
+                        return new Response("{}", { status: 200 });
+                    }
+                    const accept = String((init?.headers as Record<string, string> | undefined)?.["Accept"] ?? "");
+                    if (accept.includes("raw")) {
+                        return path === githubPath
+                            ? new Response(remoteMain, { status: 200 })
+                            : new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                    }
+                    return path === githubPath
+                        ? new Response(JSON.stringify({ sha: "main-sha" }), {
+                              status: 200,
+                              headers: { "Content-Type": "application/json" },
+                          })
+                        : new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        await captureLogs(() => syncSingleIpSource(id, env, false));
+        expect(puts).toContainEqual({ path: githubPath, content: "" });
+        expect(puts).toHaveLength(1);
+        expect((await syncState(id)).status).toBe("success");
+
+        await captureLogs(() => syncSingleIpSource(id, env, false));
+        // 第二轮不产生任何写入，状态按通用口径降为 no_change
+        expect(puts).toHaveLength(1);
+        expect((await syncState(id)).status).toBe("no_change");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
     // 验收 #55-②「纯 IPv6 → 主文件空 + 伴生写入 + success」由「IP 源主文件语义 (issue #50)」的
-    // 「仅解析到 IPv6 时主文件写空内容，IPv6 写入伴生文件」用例覆盖（test/sync.test.ts:477），
-    // 同一行为不在此重复一份——重复用例只会让一处断言漂移时两处都要改。
+    // 「仅解析到 IPv6 时主文件写空内容，IPv6 写入伴生文件」用例覆盖，同一行为不在此重复一份——
+    // 重复用例只会让一处断言漂移时两处都要改。按用例标题搜 "#50"，不要按行号定位。
 
     it("全部策略抛错仍是 failed，错误文案保留类别前缀与逐策略摘要", async () => {
         await seedGitHubSettings();
@@ -924,7 +984,8 @@ describe("IP 源空结果语义 (issue #55)", () => {
 
         await captureLogs(() => syncSingleIpSource(id, env, false));
 
-        expect(puts).toEqual([{ path: githubPath, content: "" }]);
+        expect(puts).toContainEqual({ path: githubPath, content: "" });
+        expect(puts).toHaveLength(1);
         expect((await syncState(id)).status).toBe("success");
 
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
@@ -966,8 +1027,9 @@ describe("IP 源空结果语义 (issue #55)", () => {
         expect(countLine).not.toContain("抓取策略");
         expect(countLine).not.toContain("已从");
         expect(countLine).toContain("0 个IPv4");
-        // 0 条时必须有一句人话说明主文件被按空内容处理，避免管理员把「0 个」当成抓取坏了
-        expect(logs.some((line) => line.includes("主文件按空内容处理"))).toBe(true);
+        // 0 条时必须有一句人话说明主文件被按空内容处理，避免管理员把「0 个」当成抓取坏了。
+        // 断言用 0 条专属文案：仅 IPv6 的日志同样含「主文件按空内容处理」，用那个子串会互相误命中。
+        expect(logs.some((line) => line.includes("本轮未解析到任何 IP"))).toBe(true);
 
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
     });
