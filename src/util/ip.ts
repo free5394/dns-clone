@@ -77,11 +77,6 @@ function parseIpv6Groups(text: string): number[] | null {
     return parsed.some((group) => group === null) ? null : (parsed as number[]);
 }
 
-/** 是否合法 IPv6：锚定全串结构校验，允许一层方括号包裹，拒绝 `%zone` 与端口后缀 */
-export function isValidIpv6(text: string): boolean {
-    return parseIpv6Groups(text) !== null;
-}
-
 /**
  * IPv4 规范化：校验后把每段的前导零去掉，返回点分十进制；非法返回 null。
  * `01.2.3.4` 与 `1.2.3.4` 在这里得到同一字符串，供去重使用（与 canonicalizeIpv6 同口径）。
@@ -94,6 +89,11 @@ export function canonicalizeIpv4(text: string): string | null {
         .split(".")
         .map((segment) => String(Number(segment)))
         .join(".");
+}
+
+/** 是否合法 IPv6：锚定全串结构校验，允许一层方括号包裹，拒绝 `%zone` 与端口后缀 */
+export function isValidIpv6(text: string): boolean {
+    return parseIpv6Groups(text) !== null;
 }
 
 /** IPv6 归一：去方括号、转小写；非法形态（含 `%zone`）返回 null */

@@ -81,11 +81,11 @@
 
 - [migrations.ts](../src/db/migrations.ts#L37-L72)：5 张表；`domains` 有 `ttl`（默认 60）、`last_synced_records`、行级同步状态；`ip_sources` 有 `url NOT NULL UNIQUE`、`github_path NOT NULL UNIQUE`。
 - [migrations.ts](../src/db/migrations.ts#L9-L35)：`MIGRATION_VERSION` 版本门控 + 24h 时间门控；新增列必须同步加版本号。
-- [client.ts](../src/db/client.ts#L165-L173)：`DOMAIN_COLUMNS` 与 `IP_SOURCE_COLUMNS` 是行投影单一来源。
+- [client.ts](../src/db/client.ts#L165-L177)：`DOMAIN_COLUMNS` 与 `IP_SOURCE_COLUMNS` 是行投影单一来源。
 - [settings.ts](../src/db/settings.ts#L36-L49)：写入白名单；`BATCH_SIZE` 已有整数范围校验范例。
 - [api.ts](../src/routes/api.ts#L315-L398)：域名新增/更新校验；`source_domain` 仅允许 hostname 或 `internal:hostmonit:(yd|dx|lt)`；目标前缀为单 label 或 `@`；TTL 规则见 [api.ts](../src/routes/api.ts#L357-L365)。
 - [api.ts](../src/routes/api.ts#L513-L538)：IP 源校验：URL 走 SSRF + 2048 上限，路径归一 + 512 上限，提交信息 1–200，策略白名单。
-- [api.ts](../src/routes/api.ts#L621-L670)：探测接口按策略串行尝试，总预算 25s，返回 `strategy / ipv4Count / ipv6Count / sampleIps / sampleIpv6`。
+- [api.ts](../src/routes/api.ts#L881-L937)：探测接口按策略串行尝试，总预算 25s，返回 `strategy / ipv4Count / ipv6Count / sampleIps / sampleIpv6`。
 - [url-safety.ts](../src/util/url-safety.ts#L74-L113)：SSRF 防护覆盖十进制、十六进制、IPv4-mapped、私有段、元数据域名。
 
 ### 3.5 UI 与测试
@@ -118,7 +118,7 @@
   → 定时/手动同步
     → 域名：DoH 解析（跟随 CNAME）→ A / AAAA / CNAME
     → URL ：策略链抓正文 → parseContent(parse_mode, parse_param) → IPv4 / IPv6
-    → 产出 IP 的分支各自过共享内核：校验 → 去重 → 规范化 → 排序
+    → 产出 IP 的分支各自过共享内核：校验 → 规范化 → 去重 → 排序
       （三网与深度解析同口径；CNAME 分支、以及深度解析降级为 CNAME 时都不产出 IP，不参与）
     → 出口统一按 MAX_IPS_PER_TYPE 截断（排序先于截断，故「前 N」即序最小的 N 条）
     → 与 Cloudflare 现有记录比对
@@ -453,7 +453,7 @@ POST /api/ip_sources/:id/sync
 
 - URL：保存与抓取双重 SSRF；正文截断 512KB。
 - IP：逐项严格校验；IPv4 四段 0–255；IPv6 锚定全串结构校验 + 规范化。
-- 去重：IPv4 / IPv6 各自 `Set`。
+- 去重：先按规范化值收敛（IPv4 去前导零、IPv6 按 RFC 5952），再各自 `Set` 去重——`01.2.3.4` 与 `1.2.3.4` 只留一条。实现见 §7.1 的 `dedupeSortedIps`。
 
 ### 12.2 绑定
 
@@ -596,7 +596,7 @@ POST /api/ip_sources/:id/sync
 ### 15.3 验收标准
 
 - `pnpm verify` 全绿。
-- 存量 8 个 IP 源：未出现 IPv6 时，主文件内容逐字节不变。
+- 存量 8 个 IP 源：未出现 IPv6 时，主文件内容逐字节不变；**例外**是 IPv4 前导零写法（`01.2.3.4`）会被规范化成 `1.2.3.4`，属与下一行同口径的有意收紧。
 - 存量域名：浅层克隆逻辑不变；三网与深度解析改为走共享内核，属**有意收紧**——`%zone`、`::`、全零展开、IPv4-mapped 与越界 IPv4 会被过滤，结果按 §7.3 去重排序；另新增截断与备注。
 - 收紧后的失败路径变化已知并接受：若某域名上游全是被过滤值，内核返回空集合；此时 `last_synced_records` 非空会走 `syncDomainLogic` 的「上次曾有记录」分支标 failed，空则按 `no_change` 处理。旧行为是把非法值推给 Cloudflare API 报错，两者都失败，区别只在错误来源更早。
 - 新增 URL 输入可完成「抓取 → 解析 → 绑定 → DNS 记录」闭环。
