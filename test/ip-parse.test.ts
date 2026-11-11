@@ -60,6 +60,14 @@ describe("解析配置校验", () => {
         expect(validateParseConfig("json_path", "a".repeat(MAX_JSON_PATH_LENGTH + 1)).ok).toBe(false);
     });
 
+    it("json_path 保存时去掉首尾空白", () => {
+        expect(validateParseConfig("json_path", "  data.ips  ")).toEqual({
+            ok: true,
+            mode: "json_path",
+            param: "data.ips",
+        });
+    });
+
     it("custom_regex 必须给出可构造且通过静态防护的正则", () => {
         expect(validateParseConfig("custom_regex", "(\\d{1,3}\\.){3}\\d{1,3}")).toEqual({
             ok: true,
@@ -105,6 +113,9 @@ describe("正则静态防护", () => {
         expect(isSafeRegexPattern("(a|a)*")).toBe(false);
         expect(isSafeRegexPattern("(a|ab)+")).toBe(false);
         expect(isSafeRegexPattern("(\\d|1)+")).toBe(false);
+        expect(isSafeRegexPattern("(a|.)*")).toBe(false);
+        expect(isSafeRegexPattern("(.|b)+")).toBe(false);
+        expect(isSafeRegexPattern("(a|.){2,}")).toBe(false);
         expect(isSafeRegexPattern("(a|b)*")).toBe(true);
     });
 
@@ -182,12 +193,22 @@ describe("lines 模式逐 token 校验", () => {
         expect(parseContent("1.2.3.4:8080", "lines")).toEqual({ ipv4: [], ipv6: [] });
     });
 
+    it("可从 HTML 正文按空白切分，并拒绝伪地址", () => {
+        const html = "<ul><li> 1.2.3.4 </li><li> 2001:db8::1 </li><li> 1.2.3.256 </li></ul>";
+        expect(parseContent(html, "lines")).toEqual({ ipv4: ["1.2.3.4"], ipv6: ["2001:db8::1"] });
+    });
+
     it("IPv4 数值升序，IPv6 规范化字典序", () => {
         const text = "2001:db8::10, 2001:db8::2, 10.0.0.10, 10.0.0.9";
         expect(parseContent(text, "lines")).toEqual({
             ipv4: ["10.0.0.9", "10.0.0.10"],
             ipv6: ["2001:db8::10", "2001:db8::2"],
         });
+    });
+
+    it("等价 IPv6 写法规范化后只保留一条", () => {
+        const text = "2001:DB8::1 2001:db8:0:0:0:0:0:1";
+        expect(parseContent(text, "lines")).toEqual({ ipv4: [], ipv6: ["2001:db8::1"] });
     });
 
     it("空正文返回空结果", () => {
@@ -243,6 +264,13 @@ describe("json_path 模式", () => {
         });
     });
 
+    it("路径带首尾空白时按去空白后的路径取值", () => {
+        expect(parseContent('{"data":{"ips":["1.2.3.4"]}}', "json_path", " data.ips ")).toEqual({
+            ipv4: ["1.2.3.4"],
+            ipv6: [],
+        });
+    });
+
     it("超过 512KB 的尾部内容被截断后再解析", () => {
         const body = `{"a":"${"x".repeat(600 * 1024)}","ip":"1.2.3.4"}`;
         expect(parseContent(body, "json_path", "ip")).toEqual({ ipv4: [], ipv6: [] });
@@ -277,6 +305,18 @@ describe("custom_regex 模式", () => {
     it("捕获值同样经过严格校验", () => {
         expect(parseContent("ip=1.2.3.256", "custom_regex", "ip=(\\d{1,3}(?:\\.\\d{1,3}){3})")).toEqual({
             ipv4: [],
+            ipv6: [],
+        });
+        expect(parseContent("<li>ip=1.2.3.256</li>", "custom_regex", "ip=(\\d{1,3}(?:\\.\\d{1,3}){3})")).toEqual({
+            ipv4: [],
+            ipv6: [],
+        });
+    });
+
+    it("可从 HTML 正文中按模式取值", () => {
+        const html = "<ul><li>ip=1.2.3.4</li><li>ip=5.6.7.8</li></ul>";
+        expect(parseContent(html, "custom_regex", "ip=(\\d{1,3}(?:\\.\\d{1,3}){3})")).toEqual({
+            ipv4: ["1.2.3.4", "5.6.7.8"],
             ipv6: [],
         });
     });

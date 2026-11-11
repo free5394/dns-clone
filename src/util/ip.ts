@@ -87,11 +87,59 @@ export function normalizeIpv6(text: string): string | null {
     return parseIpv6Groups(text) === null ? null : stripBrackets(text).toLowerCase();
 }
 
-/** 是否 IPv4-mapped 地址（`::ffff:a.b.c.d`），这类地址归 IPv4 侧计数，避免重复 */
+/**
+ * 把 8 组数值格式化为 RFC 5952 规范写法（小写、去前导零、最长零段压缩为 `::`）。
+ * 只做格式化，不重复校验；调用方必须已确认 groups 合法。
+ */
+function formatIpv6(groups: number[]): string {
+    const hex = groups.map((group) => group.toString(16));
+
+    let compressStart = -1;
+    let compressLength = 0;
+    for (let i = 0; i < groups.length;) {
+        if (groups[i] !== 0) {
+            i++;
+            continue;
+        }
+        let end = i;
+        while (end < groups.length && groups[end] === 0) end++;
+        // RFC 5952：只压缩长度 ≥2 的零段，并列时取最左
+        if (end - i >= 2 && end - i > compressLength) {
+            compressStart = i;
+            compressLength = end - i;
+        }
+        i = end;
+    }
+
+    if (compressStart < 0) return hex.join(":");
+    const head = hex.slice(0, compressStart).join(":");
+    const tail = hex.slice(compressStart + compressLength).join(":");
+    return `${head}::${tail}`;
+}
+
+/**
+ * IPv6 规范化：转小写、去方括号、按 RFC 5952 压缩零段，非法形态返回 null。
+ * 等价地址（`2001:db8::1` 与 `2001:db8:0:0:0:0:0:1`）在这里得到同一字符串，供去重使用。
+ */
+export function canonicalizeIpv6(text: string): string | null {
+    const groups = parseIpv6Groups(text);
+    return groups === null ? null : formatIpv6(groups);
+}
+
+/** 8 组数值是否 IPv4-mapped（`::ffff:a.b.c.d`），这类地址归 IPv4 侧计数，避免重复 */
+function isIpv4MappedGroups(groups: number[]): boolean {
+    return groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff;
+}
+
+/** 是否 IPv4-mapped 地址；非法形态返回 false */
 function isIpv4Mapped(normalized: string): boolean {
     const groups = parseIpv6Groups(normalized);
-    if (groups === null) return false;
-    return groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff;
+    return groups !== null && isIpv4MappedGroups(groups);
+}
+
+/** 可计入 IPv6 结果的地址：排除未指定地址 `::` 与归 IPv4 侧的 mapped 地址 */
+function isPublishableIpv6(normalized: string): boolean {
+    return normalized !== "::" && !isIpv4Mapped(normalized);
 }
 
 /** 提取正文中的合法 IPv4：严格过滤后按出现顺序去重 */
@@ -132,7 +180,7 @@ export function extractIpv6(text: string): string[] {
         }
 
         // 纯 `::` 是未指定地址，正文里的「::」多是分隔符，不当作可发布地址
-        if (value === null || value === "::" || isIpv4Mapped(value)) continue;
+        if (value === null || !isPublishableIpv6(value)) continue;
         found.add(value);
     }
     return [...found];
@@ -179,10 +227,10 @@ function ipv4FromGroups(groups: number[]): string {
 }
 
 /**
- * 单个 token 分类：lines / json_path / custom_regex 的清洗单位。
+ * 单个 token 分类：逐行拆分、JSON 字段值、正则捕获值等单值场景的清洗单位。
  * - 去首尾空白与一层方括号；
  * - 合法 IPv4 → ipv4；
- * - 合法 IPv6 → 归一后 ipv6，但按 extractIpv6 口径排除 `::` 与 IPv4-mapped；
+ * - 合法 IPv6 → 规范化后进 ipv6，但按 extractIpv6 口径排除 `::` 与 IPv4-mapped；
  * - mapped 且原 token 带点分写法时折算为 IPv4，与 extractIpv4 对该正文的提取结果一致；
  *   mapped 的纯十六进制写法不虚构 dot 形式地址，直接判未匹配。
  */
@@ -193,10 +241,9 @@ export function classifyIp(text: string): ClassifiedIp | null {
 
     const groups = parseIpv6Groups(trimmed);
     if (groups === null) return null;
-    const normalized = stripBrackets(trimmed.toLowerCase());
-    if (normalized === "::") return null;
-    if (isIpv4Mapped(normalized)) {
+    if (groups.every((group) => group === 0)) return null;
+    if (isIpv4MappedGroups(groups)) {
         return trimmed.includes(".") ? { type: "ipv4", value: ipv4FromGroups(groups) } : null;
     }
-    return { type: "ipv6", value: normalized };
+    return { type: "ipv6", value: formatIpv6(groups) };
 }

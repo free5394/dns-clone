@@ -10,6 +10,7 @@ import {
     sortIpv6,
     truncatePerType,
     classifyIp,
+    canonicalizeIpv6,
 } from "../src/util/ip.ts";
 
 describe("IPv4 严格校验", () => {
@@ -146,11 +147,33 @@ describe("排序与截断", () => {
     });
 });
 
+describe("IPv6 规范化", () => {
+    it("压缩最长零段并统一小写", () => {
+        expect(canonicalizeIpv6("2001:DB8:0:0:0:0:0:1")).toBe("2001:db8::1");
+        expect(canonicalizeIpv6("2001:0db8:0000:0000:0000:ff00:0042:8329")).toBe("2001:db8::ff00:42:8329");
+    });
+
+    it("单段零不压缩，首尾与全零边界正确", () => {
+        expect(canonicalizeIpv6("::")).toBe("::");
+        expect(canonicalizeIpv6("::1")).toBe("::1");
+        expect(canonicalizeIpv6("2001:db8:0:1:0:0:0:1")).toBe("2001:db8:0:1::1");
+    });
+
+    it("非法形态返回 null", () => {
+        expect(canonicalizeIpv6("1.2.3.4")).toBeNull();
+        expect(canonicalizeIpv6("2001:db8::1%eth0")).toBeNull();
+    });
+});
+
 describe("单 token 分类", () => {
     it("识别合法 IPv4 与 IPv6", () => {
         expect(classifyIp("192.168.1.1")).toEqual({ type: "ipv4", value: "192.168.1.1" });
         expect(classifyIp(" 2001:DB8::1 ")).toEqual({ type: "ipv6", value: "2001:db8::1" });
         expect(classifyIp("[::1]")).toEqual({ type: "ipv6", value: "::1" });
+        expect(classifyIp("2001:0DB8:0000:0000:0000:0000:0000:0001")).toEqual({
+            type: "ipv6",
+            value: "2001:db8::1",
+        });
     });
 
     it("拒绝宽松正则能匹配的伪地址", () => {

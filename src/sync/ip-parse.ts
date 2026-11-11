@@ -1,4 +1,5 @@
 // ip-parse.ts — 统一内容解析层（issue #48）
+// 依据 docs/ip-fetch-unification-plan.md §7.2 / §7.4 / §15.1。
 // 输入任意响应正文 + 解析配置，输出严格校验后的 { ipv4, ipv6 }：
 //   auto        全文提取（HTML / JSON / 纯文本）
 //   lines       按行与逗号 / 空白分 token，逐 token 严格校验
@@ -7,7 +8,7 @@
 // 解析层自身不抛错：正文为空、非 JSON、路径不存在、正则不可构造一律按「未匹配」返回空结果；
 // 配置错误由 validateParseConfig 在保存 / 探测入口拦截（同一套规则，避免两处漂移）。
 
-import { classifyIp, extractIpv4, extractIpv6, sortIpv4, sortIpv6 } from "../util/ip.ts";
+import { canonicalizeIpv6, classifyIp, extractIpv4, extractIpv6, sortIpv4, sortIpv6 } from "../util/ip.ts";
 
 /** 解析模式白名单；NULL / 空串 / 未知值在读取侧按 auto 处理 */
 export const PARSE_MODES = ["auto", "lines", "json_path", "custom_regex"] as const;
@@ -18,16 +19,21 @@ export const DEFAULT_PARSE_MODE: ParseMode = "auto";
 export const MAX_JSON_PATH_LENGTH = 512;
 /** custom_regex 正则长度上限（§7.4） */
 export const MAX_REGEX_LENGTH = 200;
-/** 运行期正文截断上限：正则 / JSON 解析的兜底（§7.4） */
-export const MAX_PARSE_CONTENT_BYTES = 512 * 1024;
+/** 运行期正文截断上限：正则 / JSON 解析的兜底（§7.4，模块内部常量） */
+const MAX_PARSE_CONTENT_BYTES = 512 * 1024;
 
 const MODE_ERROR = `解析模式非法：仅支持 ${PARSE_MODES.join("、")}。`;
+
+/** 类型守卫：字符串是否在白名单内 */
+function isParseMode(value: string): value is ParseMode {
+    return (PARSE_MODES as readonly string[]).includes(value);
+}
 
 /** 把任意原始值归一为解析模式：NULL / 空串 / 未知值一律回退 auto */
 export function normalizeParseMode(raw: unknown): ParseMode {
     if (typeof raw !== "string") return DEFAULT_PARSE_MODE;
     const trimmed = raw.trim();
-    return PARSE_MODES.includes(trimmed as ParseMode) ? (trimmed as ParseMode) : DEFAULT_PARSE_MODE;
+    return isParseMode(trimmed) ? trimmed : DEFAULT_PARSE_MODE;
 }
 
 /** 校验结果：成功时回传归一后的模式与参数，失败时回传中文文案 */
@@ -44,7 +50,7 @@ export function validateParseConfig(mode: unknown, param: unknown): ParseConfigV
     if (mode !== undefined && mode !== null) {
         if (typeof mode !== "string") return { ok: false, error: MODE_ERROR };
         const trimmed = mode.trim();
-        if (trimmed !== "" && !PARSE_MODES.includes(trimmed as ParseMode)) return { ok: false, error: MODE_ERROR };
+        if (trimmed !== "" && !isParseMode(trimmed)) return { ok: false, error: MODE_ERROR };
     }
 
     const normalizedMode = normalizeParseMode(mode);
@@ -53,13 +59,15 @@ export function validateParseConfig(mode: unknown, param: unknown): ParseConfigV
         if (typeof param !== "string" || param.trim().length === 0) {
             return { ok: false, error: "json_path 模式必须填写 JSON 点路径。" };
         }
-        if (param.length > MAX_JSON_PATH_LENGTH) {
+        // 保存值统一去掉首尾空白，避免「能保存、永远取不到」的路径
+        const path = param.trim();
+        if (path.length > MAX_JSON_PATH_LENGTH) {
             return { ok: false, error: `JSON 点路径长度不能超过 ${MAX_JSON_PATH_LENGTH} 个字符。` };
         }
-        if (!isWellFormedJsonPath(param)) {
+        if (!isWellFormedJsonPath(path)) {
             return { ok: false, error: "JSON 点路径不能以点开头或结尾，也不能包含连续的点造成空段。" };
         }
-        return { ok: true, mode: normalizedMode, param };
+        return { ok: true, mode: normalizedMode, param: path };
     }
 
     if (normalizedMode === "custom_regex") {
@@ -97,7 +105,7 @@ function isWellFormedJsonPath(path: string): boolean {
 /**
  * 正则静态防护（§7.4）：在保存 / 探测入口拒绝常见的指数回溯形态。
  * 判定两类：① 被无上界量词包裹的分组内部含无上界量词（`(a+)+`、`(\d+){2,}`）；
- * ② 被无上界量词包裹的交替分支首字符类别重叠（`(a|a)*`、`(a|ab)+`）。
+ * ② 被无上界量词包裹的交替分支首字符类别重叠（`(a|a)*`、`(a|ab)+`、`(a|.)*`）。
  * 有上界量词（`{3}`、`{2,5}`）不构成嵌套风险，避免误杀 `(\d{1,3}\.){3}\d{1,3}`。
  * 括号不平衡直接视为不安全（不可构造的正则由 validateParseConfig 先拦）。
  */
@@ -144,14 +152,14 @@ interface QuantifierInfo {
 class RegexSafetyParser {
     private index = 0;
     private risky = false;
-    private balanced = true;
+    private validSyntax = true;
 
     constructor(private readonly pattern: string) {}
 
     parseAll(): boolean {
         this.parseAlternation();
-        if (this.index < this.pattern.length) this.balanced = false;
-        return this.balanced && !this.risky;
+        if (this.index < this.pattern.length) this.validSyntax = false;
+        return this.validSyntax && !this.risky;
     }
 
     private get done(): boolean {
@@ -219,7 +227,8 @@ class RegexSafetyParser {
             return { firstClasses: new Set(), nullable: true, containsUnbounded: false };
         }
         return {
-            firstClasses: new Set([`lit:${ch}`]),
+            // `.` 匹配任意字符；若记成字面量会漏判 `(a|.)*` 这类分支重叠的灾难回溯
+            firstClasses: new Set([ch === "." ? "any" : `lit:${ch}`]),
             nullable: quantifier?.nullable ?? false,
             containsUnbounded: quantifier?.unbounded ?? false,
         };
@@ -244,21 +253,21 @@ class RegexSafetyParser {
                 } else {
                     while (!this.done && this.peek() !== ">") this.index++;
                     if (this.peek() !== ">") {
-                        this.balanced = false;
+                        this.validSyntax = false;
                         return { firstClasses: new Set(), nullable: true, containsUnbounded: false };
                     }
                     this.index++; // ">"
                 }
             } else {
                 // 未知分组前缀（如 (?i)）：JS 无法构造，按不安全处理
-                this.balanced = false;
+                this.validSyntax = false;
                 return { firstClasses: new Set(), nullable: true, containsUnbounded: false };
             }
         }
 
         const body = this.parseAlternation();
         if (this.peek() === ")") this.index++;
-        else this.balanced = false;
+        else this.validSyntax = false;
 
         const quantifier = this.parseQuantifier();
         if (quantifier?.unbounded) {
@@ -291,7 +300,7 @@ class RegexSafetyParser {
             this.index++;
         }
         if (this.peek() === "]") this.index++;
-        else this.balanced = false;
+        else this.validSyntax = false;
 
         const quantifier = this.parseQuantifier();
         return {
@@ -304,7 +313,7 @@ class RegexSafetyParser {
     private parseEscape(): AtomInfo {
         this.index++; // "\\"
         if (this.done) {
-            this.balanced = false;
+            this.validSyntax = false;
             return { firstClasses: new Set(), nullable: true, containsUnbounded: false };
         }
 
@@ -380,32 +389,34 @@ export function parseContent(text: string, mode: unknown, param?: unknown): Pars
     const content = truncateContent(typeof text === "string" ? text : "");
     if (content.length === 0) return { ipv4: [], ipv6: [] };
 
-    const ipv4: string[] = [];
-    const ipv6: string[] = [];
+    const ips: ParsedIps = { ipv4: [], ipv6: [] };
 
     switch (config.mode) {
         case "auto":
-            ipv4.push(...extractIpv4(content));
-            ipv6.push(...extractIpv6(content));
+            ips.ipv4.push(...extractIpv4(content));
+            ips.ipv6.push(...extractIpv6(content));
             break;
         case "lines":
-            for (const token of content.split(/[\s,]+/)) addClassifiedToken(token, ipv4, ipv6);
+            for (const token of content.split(/[\s,]+/)) addClassifiedToken(token, ips);
             break;
         case "json_path":
-            collectJsonPathValues(content, config.param ?? "", ipv4, ipv6);
+            collectJsonPathValues(content, config.param ?? "", ips);
             break;
         case "custom_regex":
-            collectCustomRegexValues(content, config.param ?? "", ipv4, ipv6);
+            collectCustomRegexValues(content, config.param ?? "", ips);
             break;
     }
 
-    return {
-        ipv4: sortIpv4([...new Set(ipv4)]),
-        ipv6: sortIpv6([...new Set(ipv6)]),
-    };
+    // IPv6 先规范化为 RFC 5952 写法再去重：等价地址（压缩写法 / 全零段写法）只保留一条
+    const ipv6 = [...new Set(ips.ipv6.map((value) => canonicalizeIpv6(value) ?? value))];
+    return { ipv4: sortIpv4([...new Set(ips.ipv4)]), ipv6: sortIpv6(ipv6) };
 }
 
-/** 运行期正文按 UTF-8 字节截断，避免超长正文把正则 / JSON 解析拖进长尾（§7.4） */
+/**
+ * 运行期正文按 UTF-8 字节截断，避免超长正文把正则 / JSON 解析拖进长尾（§7.4 的兜底要求）。
+ * 四种模式统一生效：截断是确定性安全边界，不因模式切换而失效；json_path 下被截断的 JSON
+ * 按「未匹配」处理，与其它解析失败路径一致。
+ */
 function truncateContent(text: string): string {
     const bytes = new TextEncoder().encode(text);
     if (bytes.byteLength <= MAX_PARSE_CONTENT_BYTES) return text;
@@ -413,14 +424,13 @@ function truncateContent(text: string): string {
 }
 
 /** 单 token 严格校验后按类型入桶；伪地址直接丢弃 */
-function addClassifiedToken(token: string, ipv4: string[], ipv6: string[]): void {
+function addClassifiedToken(token: string, ips: ParsedIps): void {
     const classified = classifyIp(token);
     if (classified === null) return;
-    if (classified.type === "ipv4") ipv4.push(classified.value);
-    else ipv6.push(classified.value);
+    ips[classified.type].push(classified.value);
 }
 
-function collectJsonPathValues(content: string, path: string, ipv4: string[], ipv6: string[]): void {
+function collectJsonPathValues(content: string, path: string, ips: ParsedIps): void {
     let root: unknown;
     try {
         root = JSON.parse(content);
@@ -430,10 +440,10 @@ function collectJsonPathValues(content: string, path: string, ipv4: string[], ip
 
     const value = readJsonPath(root, path);
     if (typeof value === "string") {
-        addClassifiedToken(value, ipv4, ipv6);
+        addClassifiedToken(value, ips);
     } else if (Array.isArray(value)) {
         for (const item of value) {
-            if (typeof item === "string") addClassifiedToken(item, ipv4, ipv6);
+            if (typeof item === "string") addClassifiedToken(item, ips);
         }
     }
 }
@@ -456,7 +466,7 @@ function readJsonPath(root: unknown, path: string): unknown {
     return current;
 }
 
-function collectCustomRegexValues(content: string, pattern: string, ipv4: string[], ipv6: string[]): void {
+function collectCustomRegexValues(content: string, pattern: string, ips: ParsedIps): void {
     // 配置已校验，这里只做运行期兜底：构造失败或未过静态防护都按未匹配处理
     if (!isSafeRegexPattern(pattern)) return;
     let regex: RegExp;
@@ -470,7 +480,7 @@ function collectCustomRegexValues(content: string, pattern: string, ipv4: string
         // 命名组 ip 优先，其次捕获组 1；都没有捕获值视为未匹配（不做 match[0] 兜底）
         const captured = match.groups?.ip ?? match[1];
         if (typeof captured === "string" && captured.length > 0) {
-            addClassifiedToken(captured, ipv4, ipv6);
+            addClassifiedToken(captured, ips);
         }
     }
 }
