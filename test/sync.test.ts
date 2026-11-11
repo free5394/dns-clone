@@ -11,6 +11,8 @@ import {
     resolveRecordsForDomain,
     processInChunks,
     updateCloudflareDns,
+    formatChangeComment,
+    limitIpRecords,
 } from "../src/sync/domains.ts";
 
 afterEach(() => {
@@ -1064,6 +1066,8 @@ describe("updateCloudflareDns 编码与全量分页", () => {
                 );
             }
             if (init?.method === "DELETE") return new Response(JSON.stringify({ success: true }), { status: 200 });
+            // issue #53：本次有删除，保留下来的 A 记录要 PATCH 刷新变更备注
+            if (init?.method === "PATCH") return new Response(JSON.stringify({ success: true }), { status: 200 });
             throw new Error("意外的请求：" + String(input));
         });
         vi.stubGlobal("fetch", fetchMock);
@@ -1090,6 +1094,13 @@ describe("updateCloudflareDns 编码与全量分页", () => {
             ([input, init]) => new URL(String(input)).pathname.endsWith("/stale-page-2") && init?.method === "DELETE"
         );
         expect(deleteCalls).toHaveLength(1);
+
+        // 本次既有删除也有新增，保留记录的备注必须刷新（issue #53 / 方案 §12.4）
+        const patchCalls = fetchMock.mock.calls.filter(
+            ([input, init]) => new URL(String(input)).pathname.endsWith("/kept-record") && init?.method === "PATCH"
+        );
+        expect(patchCalls).toHaveLength(1);
+        expect(JSON.parse(String(patchCalls[0][1]?.body))).toEqual({ comment: formatChangeComment() });
     });
 });
 
@@ -1462,5 +1473,286 @@ describe("URL 类型目标端到端 (issue #52)", () => {
         expect(JSON.parse(second.last_synced_records)).toEqual(JSON.parse(first.last_synced_records));
         const writes = calls.filter((c) => c.url.includes("api.cloudflare.com") && c.method !== "GET");
         expect(writes).toEqual([]);
+    });
+});
+
+describe("DNS 全来源截断与变更时间备注 (issue #53)", () => {
+    /** 造一个 updateCloudflareDns 需要的 domain 字段集 */
+    function dnsDomain(overrides: { target: string; ttl?: number }) {
+        return {
+            id: 1,
+            source_domain: "src.example.com",
+            target_domain: overrides.target,
+            zone_id: "test-zone-id",
+            is_deep_resolve: 0,
+            ttl: overrides.ttl ?? 60,
+            last_synced_records: null,
+            is_enabled: 1,
+            is_system: 0,
+        } as Parameters<typeof updateCloudflareDns>[2];
+    }
+
+    /** 记录发往 CF 的调用；GET 返回 existing，其余按 responder 决定 */
+    function stubCf(
+        existing: unknown[],
+        responder?: (method: string, url: string, body?: string) => Response | undefined
+    ) {
+        const calls: { url: string; method: string; body?: string }[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string, init?: RequestInit) => {
+                const method = init?.method ?? "GET";
+                calls.push({ url, method, body: typeof init?.body === "string" ? init.body : undefined });
+                if (method === "GET") {
+                    return new Response(JSON.stringify({ success: true, result: existing }), { status: 200 });
+                }
+                return (
+                    responder?.(method, url, typeof init?.body === "string" ? init.body : undefined) ??
+                    new Response(JSON.stringify({ success: true, result: {} }), { status: 200 })
+                );
+            })
+        );
+        return calls;
+    }
+
+    it("备注格式为北京时间、精确到分钟", () => {
+        // UTC 03:04 → 北京时间 11:04，同一天
+        expect(formatChangeComment(new Date("2026-01-02T03:04:05Z"))).toBe("DNS Clone 变更于 2026-01-02 11:04");
+        // UTC 前一日 16:30 → 北京时间次日 00:30，跨日进位必须正确
+        expect(formatChangeComment(new Date("2026-01-01T16:30:00Z"))).toBe("DNS Clone 变更于 2026-01-02 00:30");
+    });
+
+    it("按类型各自截断，CNAME 不参与截断且顺序不变", () => {
+        const records = [
+            { type: "A", content: "1.1.1.1" },
+            { type: "AAAA", content: "2001:db8::1" },
+            { type: "A", content: "2.2.2.2" },
+            { type: "A", content: "3.3.3.3" },
+            { type: "AAAA", content: "2001:db8::2" },
+        ];
+        expect(limitIpRecords(records, 2)).toEqual([
+            { type: "A", content: "1.1.1.1" },
+            { type: "AAAA", content: "2001:db8::1" },
+            { type: "A", content: "2.2.2.2" },
+            { type: "AAAA", content: "2001:db8::2" },
+        ]);
+        // CNAME 原样穿过，不受上限影响
+        const cnameRecords = [{ type: "CNAME", content: "cname-target.example.com" }];
+        expect(limitIpRecords(cnameRecords, 1)).toEqual(cnameRecords);
+        // 上限钳到至少 1，避免 0 或负数把记录集合清空
+        expect(limitIpRecords(records, 0)).toHaveLength(2);
+    });
+
+    it("新增 A/AAAA 记录随创建请求写入备注，CNAME 不写", async () => {
+        const calls = stubCf([]);
+        await updateCloudflareDns(
+            "token",
+            "zone-id",
+            dnsDomain({ target: "comment-post.example.com" }),
+            [
+                { type: "A", content: "1.1.1.1" },
+                { type: "AAAA", content: "2001:db8::1" },
+            ],
+            () => {}
+        );
+
+        const posts = calls.filter((c) => c.method === "POST");
+        expect(posts).toHaveLength(2);
+        const expected = formatChangeComment();
+        expect(JSON.parse(posts[0].body as string)).toMatchObject({ type: "A", comment: expected });
+        expect(JSON.parse(posts[1].body as string)).toMatchObject({ type: "AAAA", comment: expected });
+
+        // CNAME 目标：创建请求不带 comment 字段
+        const cnameCalls = stubCf([]);
+        await updateCloudflareDns(
+            "token",
+            "zone-id",
+            dnsDomain({ target: "comment-cname.example.com" }),
+            [{ type: "CNAME", content: "cname-target.example.com" }],
+            () => {}
+        );
+        const cnamePosts = cnameCalls.filter((c) => c.method === "POST");
+        expect(cnamePosts).toHaveLength(1);
+        expect(JSON.parse(cnamePosts[0].body as string)).not.toHaveProperty("comment");
+    });
+
+    it("本次有增删时刷新保留的 A/AAAA 记录备注（PATCH 早于 DELETE 与 POST）", async () => {
+        const calls = stubCf([
+            { id: "keep-a", type: "A", content: "1.1.1.1", proxied: false, ttl: 60, comment: "旧备注" },
+            { id: "drop-a", type: "A", content: "9.9.9.9", proxied: false, ttl: 60 },
+        ]);
+        const result = await updateCloudflareDns(
+            "token",
+            "zone-id",
+            dnsDomain({ target: "refresh.example.com" }),
+            [
+                { type: "A", content: "1.1.1.1" },
+                { type: "A", content: "2.2.2.2" },
+            ],
+            () => {}
+        );
+        expect(result).toBe("success");
+
+        const expected = formatChangeComment();
+        const patch = calls.filter((c) => c.method === "PATCH");
+        expect(patch).toHaveLength(1);
+        expect(patch[0].url).toContain("keep-a");
+        expect(JSON.parse(patch[0].body as string)).toEqual({ comment: expected });
+
+        // 顺序：备注先于集合变更，保证 PATCH 失败时记录集合不变（方案 §13.1）
+        const order = calls.filter((c) => c.method !== "GET").map((c) => c.method);
+        expect(order).toEqual(["PATCH", "DELETE", "POST"]);
+    });
+
+    it("记录集合未变时不产生任何 PATCH，既有备注保持不变", async () => {
+        const calls = stubCf([
+            {
+                id: "keep-a",
+                type: "A",
+                content: "1.1.1.1",
+                proxied: false,
+                ttl: 60,
+                comment: "DNS Clone 变更于 2020-01-01 00:00",
+            },
+        ]);
+        const result = await updateCloudflareDns(
+            "token",
+            "zone-id",
+            dnsDomain({ target: "nochange.example.com" }),
+            [{ type: "A", content: "1.1.1.1" }],
+            () => {}
+        );
+        expect(result).toBe("no_change");
+        expect(calls.filter((c) => c.method !== "GET")).toEqual([]);
+    });
+
+    it("同一分钟内已有同一备注时不重复 PATCH", async () => {
+        const current = formatChangeComment();
+        const calls = stubCf([
+            { id: "keep-a", type: "A", content: "1.1.1.1", proxied: false, ttl: 60, comment: current },
+            { id: "drop-a", type: "A", content: "9.9.9.9", proxied: false, ttl: 60 },
+        ]);
+        await updateCloudflareDns(
+            "token",
+            "zone-id",
+            dnsDomain({ target: "same-minute.example.com" }),
+            [
+                { type: "A", content: "1.1.1.1" },
+                { type: "A", content: "2.2.2.2" },
+            ],
+            () => {}
+        );
+        expect(calls.filter((c) => c.method === "PATCH")).toEqual([]);
+    });
+
+    it("备注 PATCH 失败时本次同步失败，且记录集合保持不变", async () => {
+        const calls = stubCf(
+            [
+                { id: "keep-a", type: "A", content: "1.1.1.1", proxied: false, ttl: 60, comment: "旧备注" },
+                { id: "drop-a", type: "A", content: "9.9.9.9", proxied: false, ttl: 60 },
+            ],
+            (method) =>
+                method === "PATCH" ? new Response(JSON.stringify({ success: false }), { status: 500 }) : undefined
+        );
+
+        await expect(
+            updateCloudflareDns(
+                "token",
+                "zone-id",
+                dnsDomain({ target: "patch-fail.example.com" }),
+                [
+                    { type: "A", content: "1.1.1.1" },
+                    { type: "A", content: "2.2.2.2" },
+                ],
+                () => {}
+            )
+        ).rejects.toThrow();
+
+        // 关键：备注没写成之前不许动集合，DELETE/POST 一个都不能发出
+        const mutations = calls.filter((c) => c.method === "DELETE" || c.method === "POST");
+        expect(mutations).toEqual([]);
+    });
+
+    it("端到端：MAX_IPS_PER_TYPE 生效于 URL 来源的 A/AAAA", async () => {
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('MAX_IPS_PER_TYPE', '2') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run();
+        await env.WUYA.batch([
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('CF_API_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).bind("test-cf-token"),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).bind("test-zone-id"),
+        ]);
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, target_domain, zone_id, is_deep_resolve, ttl, is_system, is_enabled) VALUES (?, 'url', ?, 'auto', ?, ?, 0, 60, 0, 1)"
+        )
+            .bind("example.com", "https://example.com/ips.txt", "limit-e2e.example.com", "test-zone-id")
+            .run();
+        const domain = (await env.WUYA.prepare("SELECT * FROM domains WHERE target_domain = ?")
+            .bind("limit-e2e.example.com")
+            .first()) as Parameters<typeof syncDomainLogic>[0];
+
+        // 源按数值升序解析：超出 2 条的 3.3.3.3 / 4.4.4.4 必须被截断
+        const calls = stubCf([]);
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string, init?: RequestInit) => {
+                if (url.includes("api.cloudflare.com")) {
+                    calls.push({ url, method: init?.method ?? "GET" });
+                    return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
+                }
+                return new Response("4.4.4.4\n1.1.1.1\n3.3.3.3\n2.2.2.2", { status: 200 });
+            })
+        );
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status, last_synced_records FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_synced_records: string };
+        expect(row.last_sync_status).toBe("success");
+        expect(JSON.parse(row.last_synced_records)).toEqual([
+            { type: "A", content: "1.1.1.1" },
+            { type: "A", content: "2.2.2.2" },
+        ]);
+        expect(calls.filter((c) => c.method === "POST")).toHaveLength(2);
+
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").run();
+        await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(domain.id).run();
+    });
+
+    it("批内上限复用：上下文已有值时不再回落到库里的设置", async () => {
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('MAX_IPS_PER_TYPE', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run();
+        const domain = {
+            id: 777,
+            source_domain: "internal:hostmonit:yd",
+            target_domain: "reuse-context.example.com",
+            zone_id: "test-zone",
+            is_deep_resolve: 0,
+            ttl: 60,
+            last_synced_records: "[]",
+            is_enabled: 1,
+            is_system: 1,
+        } as Parameters<typeof resolveRecordsForDomain>[0];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => {
+                throw new Error("上下文已命中，不应发起 fetch");
+            })
+        );
+
+        // 上下文上限 3 > 库里 1：结果保留 3 条，证明没有重复读库（§11.2）
+        const syncContext = {
+            threeNetworkIps: { yd: ["1.1.1.1", "2.2.2.2", "3.3.3.3"], dx: [], lt: [], source: "CloudFlareYes" },
+            maxIpsPerType: 3,
+        };
+        const records = await resolveRecordsForDomain(domain, env.WUYA, () => {}, syncContext);
+        expect(records).toHaveLength(3);
+
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").run();
     });
 });
