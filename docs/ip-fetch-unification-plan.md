@@ -409,7 +409,8 @@ POST /api/domains/:id/sync
          → 分页拉取现有记录
          → 差异比对（type/content/proxied/ttl）
          → 无增删：不产生任何写操作，返回 no_change
-         → 有增删：POST 新增（带 comment）→ DELETE 多余 → PATCH 匹配记录 comment
+         → 有增删：PATCH 匹配记录 comment → DELETE 多余 → POST 新增（带 comment）
+         // 备注 PATCH 排在集合变更之前，见 §13.1「备注 PATCH 失败 → 记录集合不变」
       → UPDATE domains（status / last_synced_records）
 ```
 

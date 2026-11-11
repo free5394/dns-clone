@@ -19,6 +19,24 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
+/**
+ * 独立计算的期望备注：走 Intl 时区库（与既有 beijingTimeLog 同一机制），
+ * 而不是复用被测实现的手工 UTC+8 平移——否则时区整体跑偏时两边一起错，测不出问题。
+ */
+function expectedChangeComment(now: Date = new Date()): string {
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+    }).formatToParts(now);
+    const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+    return `DNS Clone 变更于 ${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`;
+}
+
 describe("fetchIpsFromSource multi-source fallback", () => {
     it("uses the primary strategy successfully", async () => {
         vi.stubGlobal(
@@ -1100,7 +1118,7 @@ describe("updateCloudflareDns 编码与全量分页", () => {
             ([input, init]) => new URL(String(input)).pathname.endsWith("/kept-record") && init?.method === "PATCH"
         );
         expect(patchCalls).toHaveLength(1);
-        expect(JSON.parse(String(patchCalls[0][1]?.body))).toEqual({ comment: formatChangeComment() });
+        expect(JSON.parse(String(patchCalls[0][1]?.body))).toEqual({ comment: expectedChangeComment() });
     });
 });
 
@@ -1558,7 +1576,7 @@ describe("DNS 全来源截断与变更时间备注 (issue #53)", () => {
 
         const posts = calls.filter((c) => c.method === "POST");
         expect(posts).toHaveLength(2);
-        const expected = formatChangeComment();
+        const expected = expectedChangeComment();
         expect(JSON.parse(posts[0].body as string)).toMatchObject({ type: "A", comment: expected });
         expect(JSON.parse(posts[1].body as string)).toMatchObject({ type: "AAAA", comment: expected });
 
@@ -1593,7 +1611,7 @@ describe("DNS 全来源截断与变更时间备注 (issue #53)", () => {
         );
         expect(result).toBe("success");
 
-        const expected = formatChangeComment();
+        const expected = expectedChangeComment();
         const patch = calls.filter((c) => c.method === "PATCH");
         expect(patch).toHaveLength(1);
         expect(patch[0].url).toContain("keep-a");
@@ -1627,7 +1645,7 @@ describe("DNS 全来源截断与变更时间备注 (issue #53)", () => {
     });
 
     it("同一分钟内已有同一备注时不重复 PATCH", async () => {
-        const current = formatChangeComment();
+        const current = expectedChangeComment();
         const calls = stubCf([
             { id: "keep-a", type: "A", content: "1.1.1.1", proxied: false, ttl: 60, comment: current },
             { id: "drop-a", type: "A", content: "9.9.9.9", proxied: false, ttl: 60 },
@@ -1752,6 +1770,38 @@ describe("DNS 全来源截断与变更时间备注 (issue #53)", () => {
         };
         const records = await resolveRecordsForDomain(domain, env.WUYA, () => {}, syncContext);
         expect(records).toHaveLength(3);
+
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").run();
+    });
+
+    it("上下文未带上限时按库里的设置读取，不静默回退默认值", async () => {
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('MAX_IPS_PER_TYPE', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run();
+        const domain = {
+            id: 778,
+            source_domain: "internal:hostmonit:yd",
+            target_domain: "db-limit.example.com",
+            zone_id: "test-zone",
+            is_deep_resolve: 0,
+            ttl: 60,
+            last_synced_records: "[]",
+            is_enabled: 1,
+            is_system: 1,
+        } as Parameters<typeof resolveRecordsForDomain>[0];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => {
+                throw new Error("三网缓存已命中，不应发起 fetch");
+            })
+        );
+
+        // 库上限 1 远小于默认 20：若出口静默用默认值，这里会拿到 3 条
+        const syncContext = {
+            threeNetworkIps: { yd: ["1.1.1.1", "2.2.2.2", "3.3.3.3"], dx: [], lt: [], source: "CloudFlareYes" },
+        };
+        const records = await resolveRecordsForDomain(domain, env.WUYA, () => {}, syncContext);
+        expect(records).toEqual([{ type: "A", content: "1.1.1.1" }]);
 
         await env.WUYA.prepare("DELETE FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").run();
     });

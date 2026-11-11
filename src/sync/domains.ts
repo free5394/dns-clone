@@ -16,7 +16,7 @@ import type { WaitUntil } from "../util/http.ts";
 import { fetchWithTimeout, fetchWithRetry } from "../util/fetch.ts";
 import { normalizeBatchSize } from "../util/batch-size.ts";
 import { forEachIsolated } from "../util/batch-sync.ts";
-import { DEFAULT_MAX_IPS_PER_TYPE, normalizeMaxIpsPerType } from "../util/max-ips-per-type.ts";
+import { normalizeMaxIpsPerType } from "../util/max-ips-per-type.ts";
 import { MAX_IPS_PER_TYPE_KEY } from "../db/settings.ts";
 
 interface DomainRow {
@@ -69,6 +69,14 @@ interface SyncContext {
 
 /** 变更备注前缀（方案 §12.4）：comment 表示记录集最近一次变更时间，不是最近一次同步时间 */
 const CHANGE_COMMENT_PREFIX = "DNS Clone 变更于 ";
+
+/**
+ * 是否携带变更备注的记录类型（方案 §12.4：仅 A / AAAA 写入，CNAME 不写）。
+ * 创建请求与保留记录刷新共用这一处判据，避免将来扩展类型时两处口径分叉。
+ */
+function carriesChangeComment(type: string): boolean {
+    return type === "A" || type === "AAAA";
+}
 
 /**
  * 生成变更备注：北京时间 YYYY-MM-DD HH:mm，精确到分钟（方案 §12.4）。
@@ -214,7 +222,6 @@ export async function syncSingleDomain(
             return;
         }
         const syncContext: SyncContext = {};
-        await ensureMaxIpsPerType(db, syncContext);
         await syncDomainLogic(domain, token, zoneId, db, log, syncContext);
     };
 
@@ -335,8 +342,9 @@ export async function resolveRecordsForDomain(
     syncContext: SyncContext
 ): Promise<DnsRecord[]> {
     const records = await resolveRawRecordsForDomain(domain, db, log, syncContext);
-    // syncContext 未带上限时（单测直接调用等）回退默认值，与设置读取侧兜底口径一致
-    const maxPerType = syncContext.maxIpsPerType ?? DEFAULT_MAX_IPS_PER_TYPE;
+    // 兜底：批入口已读过时这里命中已填值，不重复读库；若将来新增入口漏调，
+    // 也只是退化为逐域名读一次设置，不会静默回退默认值而绕过用户配置（方案 §11.2）。
+    const maxPerType = await ensureMaxIpsPerType(db, syncContext);
     const limited = limitIpRecords(records, maxPerType);
     if (limited.length !== records.length) {
         log(`按单类型上限 ${maxPerType} 截断记录: ${records.length} → ${limited.length} 条`);
@@ -484,9 +492,7 @@ export async function syncDomainLogic(
 ): Promise<void> {
     log(`======== 开始同步: ${domain.target_domain} ========`);
     try {
-        // 批入口已读过一次，这里命中已填值不再查库；直接单域名调用时（测试、内部复用）
-        // 也不会静默回退默认值而绕过用户配置（issue #53 / 方案 §11.2）
-        await ensureMaxIpsPerType(db, syncContext);
+        // 单类型上限由 resolveRecordsForDomain 出口兜底读取，这里不再单独读库
         let recordsToUpdate: DnsRecord[] | undefined;
         recordsToUpdate = await resolveRecordsForDomain(domain, db, log, syncContext);
 
@@ -716,7 +722,7 @@ export async function updateCloudflareDns(
     // 1) 只有 A/AAAA 写备注，匹配上的 CNAME 一律跳过；
     // 2) 保留记录的 comment 已是本次同分钟时间戳时跳过——同一分钟内多次变更不对同一记录重复 PATCH。
     const recordsToPatchComment = recordsToRefresh.filter(
-        (record) => (record.type === "A" || record.type === "AAAA") && record.comment !== changeComment
+        (record) => carriesChangeComment(record.type) && record.comment !== changeComment
     );
 
     const patchCommentFn = (record: ExistingRecord) => {
@@ -752,7 +758,7 @@ export async function updateCloudflareDns(
                     ttl,
                     proxied: false,
                     // 备注仅 A/AAAA 携带；CNAME 分支不参与备注（方案 §12.4）
-                    ...(record.type === "CNAME" ? {} : { comment: changeComment }),
+                    ...(carriesChangeComment(record.type) ? { comment: changeComment } : {}),
                 }),
             },
             1,
