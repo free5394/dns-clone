@@ -915,8 +915,6 @@ async function apiProbeIpSource(request: Request, db: D1Database): Promise<Respo
                     strategy: strategyName,
                     ipv4Count: ipv4.length,
                     ipv6Count: ipv6.length,
-                    // 兼容旧前端/旧调用方：ipCount 仍表示 IPv4 数量
-                    ipCount: ipv4.length,
                     sampleIps: ipv4.slice(0, 5),
                     sampleIpv6: ipv6.slice(0, 5),
                 });
