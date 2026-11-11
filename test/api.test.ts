@@ -1376,6 +1376,113 @@ describe("IP 源解析模式 (issue #50)", () => {
     });
 });
 
+// issue #56：custom_regex 与 json_path 对齐 trim 判空，保存与探测共用同一套规则
+describe("custom_regex 空白归一 (issue #56)", () => {
+    const regexPayload = (overrides: Record<string, unknown> = {}) => ({
+        url: "https://example.com/m56/source.txt",
+        github_path: "m56/source.txt",
+        commit_message: "空白归一",
+        fetch_strategy: "direct_regex",
+        parse_mode: "custom_regex",
+        parse_param: "[0-9]+",
+        ...overrides,
+    });
+
+    afterAll(async () => {
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm56/%'").run();
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain LIKE 'm56-%'").run();
+    });
+
+    it("保存入口拒绝全空白 custom_regex，且不落库", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(regexPayload({ parse_param: "   " })),
+        });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toBe("custom_regex 模式必须填写正则表达式。");
+        const row = await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind("m56/source.txt")
+            .first();
+        expect(row).toBeNull();
+    });
+
+    it("探测入口拒绝全空白 custom_regex，且不发起抓取", async () => {
+        const cookie = await loginAndGetCookie();
+        const origFetch = globalThis.fetch;
+        let fetchCalls = 0;
+        globalThis.fetch = (() => {
+            fetchCalls++;
+            return Promise.resolve(new Response("[0-9]", { status: 200 }));
+        }) as typeof fetch;
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/ip_sources/probe", {
+                    method: "POST",
+                    headers: { Cookie: cookie, "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        url: "https://example.com/m56/probe.txt",
+                        parse_mode: "custom_regex",
+                        parse_param: "\t  ",
+                    }),
+                }),
+                env
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error?: string }).error).toBe("custom_regex 模式必须填写正则表达式。");
+            expect(fetchCalls).toBe(0);
+        } finally {
+            globalThis.fetch = origFetch;
+        }
+    });
+
+    it("保存带首尾空白的合法正则：落库为 trim 后的值", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(
+                regexPayload({
+                    url: "https://example.com/m56/trim.txt",
+                    github_path: "m56/trim.txt",
+                    parse_param: "  [0-9]+  ",
+                })
+            ),
+        });
+        expect(res.status).toBe(200);
+        const row = await env.WUYA.prepare("SELECT parse_mode, parse_param FROM ip_sources WHERE github_path = ?")
+            .bind("m56/trim.txt")
+            .first<{ parse_mode: string; parse_param: string }>();
+        expect(row?.parse_mode).toBe("custom_regex");
+        expect(row?.parse_param).toBe("[0-9]+");
+    });
+
+    it("域名 URL 保存入口同样拒绝全空白 custom_regex", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const res = await SELF.fetch("https://example.com/api/domains", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_type: "url",
+                source_url: "https://ips.example.com/m56/list.txt",
+                parse_mode: "custom_regex",
+                parse_param: " \n ",
+                target_domain_prefix: "m56-base",
+                ttl: 60,
+            }),
+        });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toBe("custom_regex 模式必须填写正则表达式。");
+        const row = await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("m56-base.example.com")
+            .first();
+        expect(row).toBeNull();
+    });
+});
+
 // M-3 回归：新增与更新共用同一条写库流水线后，唯一键冲突必须仍然走 409，且不能改动既有数据
 describe("IP 源写库冲突 (M-3)", () => {
     const m3Payload = {

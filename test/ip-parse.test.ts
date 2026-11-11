@@ -81,6 +81,40 @@ describe("解析配置校验", () => {
         expect(validateParseConfig("custom_regex", "a".repeat(MAX_REGEX_LENGTH + 1)).ok).toBe(false);
     });
 
+    it("custom_regex 保存时去掉首尾空白", () => {
+        expect(validateParseConfig("custom_regex", "  (?:[0-9]{1,3}[.]){3}[0-9]{1,3}  ")).toEqual({
+            ok: true,
+            mode: "custom_regex",
+            param: "(?:[0-9]{1,3}[.]){3}[0-9]{1,3}",
+        });
+    });
+
+    it("custom_regex 全空白与空串同一句提示", () => {
+        expect(validateParseConfig("custom_regex", "   ")).toEqual(validateParseConfig("custom_regex", ""));
+        expect(validateParseConfig("custom_regex", "   ")).toEqual({
+            ok: false,
+            error: "custom_regex 模式必须填写正则表达式。",
+        });
+    });
+
+    it("custom_regex 长度上限按 trim 后长度判定", () => {
+        const maxPattern = "a".repeat(MAX_REGEX_LENGTH);
+        // 首尾空白不占预算：原始 204 字符、trim 后恰好 200 仍应通过并保存 trim 值
+        expect(validateParseConfig("custom_regex", `  ${maxPattern}  `)).toEqual({
+            ok: true,
+            mode: "custom_regex",
+            param: maxPattern,
+        });
+        // trim 后超过 200 必须拒绝，且是长度错误而非空串错误
+        const tooLong = validateParseConfig("custom_regex", ` ${"a".repeat(MAX_REGEX_LENGTH + 1)} `);
+        expect(tooLong.ok).toBe(false);
+        expect((tooLong as { error: string }).error).toContain(String(MAX_REGEX_LENGTH));
+    });
+
+    it("custom_regex 去空白后仍走高风险形态拦截", () => {
+        expect(validateParseConfig("custom_regex", "  (a+)+  ").ok).toBe(false);
+    });
+
     it("高风险正则被拒绝", () => {
         expect(validateParseConfig("custom_regex", "(a+)+").ok).toBe(false);
         expect(validateParseConfig("custom_regex", "(a|a)*").ok).toBe(false);

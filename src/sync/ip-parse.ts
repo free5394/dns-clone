@@ -43,7 +43,7 @@ export type ParseConfigValidation = { ok: true; mode: ParseMode; param: string |
  * 保存与探测共用的解析配置校验。
  * - 模式必须在白名单内；NULL / 空串按 auto。
  * - json_path 必填点路径、≤512 字符、点号分段不允许空段。
- * - custom_regex 必填、≤200 字符、必须能构造且通过嵌套量词等高风险形态的静态拦截。
+ * - custom_regex 必填（先 trim 判空）、≤200 字符（按 trim 后长度）、必须能构造且通过嵌套量词等高风险形态的静态拦截。
  * - auto / lines 不使用参数，残留参数归一为 null（数据模型要求其余模式 parse_param 为 NULL）。
  */
 export function validateParseConfig(mode: unknown, param: unknown): ParseConfigValidation {
@@ -71,26 +71,26 @@ export function validateParseConfig(mode: unknown, param: unknown): ParseConfigV
     }
 
     if (normalizedMode === "custom_regex") {
-        if (typeof param !== "string") {
+        // 与 json_path 对齐：判空、判长、构造与安全检测统一使用去首尾空白后的值，
+        // 避免全空白或带首尾空白的正则「能保存、永远取不到」
+        if (typeof param !== "string" || param.trim().length === 0) {
             return { ok: false, error: "custom_regex 模式必须填写正则表达式。" };
         }
-        if (param.length === 0) {
-            return { ok: false, error: "custom_regex 模式必须填写正则表达式。" };
-        }
-        if (param.length > MAX_REGEX_LENGTH) {
+        const pattern = param.trim();
+        if (pattern.length > MAX_REGEX_LENGTH) {
             return { ok: false, error: `正则表达式长度不能超过 ${MAX_REGEX_LENGTH} 个字符。` };
         }
         try {
             // 不带 new 调用 RegExp：等价于 new RegExp，仅用于探测可构造性
-            RegExp(param);
+            RegExp(pattern);
         } catch {
             // 不拼接底层引擎文案（英文），保持用户可见错误为中文
             return { ok: false, error: "正则表达式无法构造，请检查语法后重试。" };
         }
-        if (!isSafeRegexPattern(param)) {
+        if (!isSafeRegexPattern(pattern)) {
             return { ok: false, error: "正则表达式存在嵌套量词等高风险形态，请简化后重试。" };
         }
-        return { ok: true, mode: normalizedMode, param };
+        return { ok: true, mode: normalizedMode, param: pattern };
     }
 
     return { ok: true, mode: normalizedMode, param: null };
