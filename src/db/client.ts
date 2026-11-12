@@ -12,7 +12,7 @@ export async function queryAll<T = unknown>(db: D1Database, sql: string, ...bind
     return results as T[];
 }
 
-/** 读取单个 setting */
+/** 读取单个 setting。D1 的 `first(colName)` 只取单列且返回 unknown，故此处保留断言；不适用行类型派生 */
 export async function getSetting(db: D1Database, key: string): Promise<string | null> {
     return (await db.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first("value")) as string | null;
 }
@@ -65,6 +65,8 @@ export async function acquireManualSyncLock(db: D1Database): Promise<string | nu
         .run();
     if ((inserted.meta.changes ?? 0) === 1) return token;
 
+    // 锁路径刻意不改为调用 getSetting：issue #65 只做类型收口，不动互斥路径的语句与调用链；
+    // 行形状仍从 SettingsRow 派生，保持单一来源。
     const row = await db
         .prepare("SELECT value FROM settings WHERE key = ?")
         .bind(MANUAL_SYNC_LOCK_KEY)
@@ -212,8 +214,9 @@ export const IP_SOURCE_COLUMNS =
     "parse_mode, parse_param";
 
 /**
- * 表行类型的单一来源（issue #65）：settings / sessions 的读取处一律从这里派生自己的投影
+ * 表行类型的单一来源（issue #65）：src/ 生产代码里 settings / sessions 的读取一律从这里派生投影
  * （同文件直接引用，跨层用 `import type`），不在调用点内联手写行形状。
+ * test/ 里直接读 D1 原始行、断言库内真值的用例刻意不走这层（要验的是库里的值，不是生产投影）。
  * 列约束以 `src/db/migrations.ts` 的 `expectedSchemas` DDL 为准，改表时同步核对这些类型——
  * 与上面的列清单同处 db 层，避免行形状在多处漂移。
  */
