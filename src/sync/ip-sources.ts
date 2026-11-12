@@ -21,7 +21,8 @@ import { HOSTMONIT_API_KEY, normalizeHostmonitKey } from "../db/settings.ts";
 import { forEachIsolated } from "../util/batch-sync.ts";
 import { parseContent } from "./ip-parse.ts";
 
-interface IpSourceRow {
+/** ip_sources 表的一行。导出供测试侧夹具直接引用，避免用 Parameters 反推类型（issue #61）。 */
+export interface IpSourceRow {
     id: number;
     url: string;
     github_path: string;

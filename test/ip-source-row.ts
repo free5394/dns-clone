@@ -2,10 +2,10 @@
 // 为什么需要：IpSourceRow 有 8 个字段（含 3 个可空 / 可选列），用例里手写字面量时
 // 每加一列就要改十几处——issue #60 的 22 处 TS2739 + 6 处 TS2741 都是这么攒出来的。
 // 默认值集中在这里，用例只覆盖自己关心的字段。
-import type { fetchIpsFromSource } from "../src/sync/ip-sources.ts";
+import type { IpSourceRow } from "../src/sync/ip-sources.ts";
 
-/** 与 src/sync/ip-sources.ts 内部的 IpSourceRow 同构：从实现签名反推，避免测试侧重复定义后与源码走样。 */
-export type IpSourceRow = Parameters<typeof fetchIpsFromSource>[0];
+/** 转出 src 的行类型：用例继续从本文件取，定义只有 src 一处（issue #61）。 */
+export type { IpSourceRow };
 
 /** 一条「可正常抓取」的源：direct_regex、auto 解析、启用。 */
 const DEFAULTS: IpSourceRow = {
