@@ -444,7 +444,6 @@ describe("IP 源提交体组装与探测同源 (issue #57)", () => {
         url: "https://ips.example.com/list.txt",
         githubPath: "IP/Cloudflare.txt",
         commitMessage: "Update Cloudflare IPs",
-        fetchStrategy: "direct",
         parseMode: "json_path",
         parseParam: " data.list ",
     };
@@ -456,7 +455,6 @@ describe("IP 源提交体组装与探测同源 (issue #57)", () => {
             url: "https://ips.example.com/list.txt",
             github_path: "IP/Cloudflare.txt",
             commit_message: "Update Cloudflare IPs",
-            fetch_strategy: "direct",
             parse_mode: "json_path",
             parse_param: "data.list",
         });
@@ -468,8 +466,13 @@ describe("IP 源提交体组装与探测同源 (issue #57)", () => {
         }
     });
 
-    it("未探测出策略时 fetch_strategy 显式提交 null", () => {
-        expect(buildIpSourceSavePayload({ ...base, fetchStrategy: null }).fetch_strategy).toBeNull();
+    // issue #69：fetch_strategy 是 URL 的抓取方式缓存，唯一写入方是同步链实测结果，
+    // 客户端只读不写 —— 保存体里带不带、带什么都不该出现在提交结果里。
+    it("保存体不含 fetch_strategy，即便输入里带着探测结果", () => {
+        const payload = buildIpSourceSavePayload({ ...base, fetchStrategy: "direct" });
+
+        expect("fetch_strategy" in payload).toBe(false);
+        expect(buildIpSourceSavePayload({ ...base, fetchStrategy: null })).not.toHaveProperty("fetch_strategy");
     });
 
     it("探测体从保存体投影，两条路径的解析参数同源一致", () => {

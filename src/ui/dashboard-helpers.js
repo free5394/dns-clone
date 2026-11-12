@@ -74,6 +74,8 @@ export function buildDomainSavePayload(input) {
  * 与域名侧 buildDomainSavePayload 同形态：表单输入在这里归一成服务端契约字段。
  * 解析参数空串/纯空白归一为 null，有值去首尾空白；url / github_path / commit_message
  * 等字段原样透传。归一规则只允许存在这一处，保存与探测共用（CODING_STANDARDS.md §前端行为测试）。
+ * fetch_strategy 不在提交体内（issue #69）：该列是 URL 的抓取方式缓存，唯一写入方是同步链实测结果，
+ * 客户端只读不写，与域名侧契约一致。
  */
 export function buildIpSourceSavePayload(input) {
     const parseParam = String(input.parseParam ?? "").trim();
@@ -81,7 +83,6 @@ export function buildIpSourceSavePayload(input) {
         url: input.url,
         github_path: input.githubPath,
         commit_message: input.commitMessage,
-        fetch_strategy: input.fetchStrategy ?? null,
         parse_mode: input.parseMode,
         parse_param: parseParam === "" ? null : parseParam,
     };

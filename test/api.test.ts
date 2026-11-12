@@ -759,13 +759,13 @@ describe("GET /api/settings (Task 2.5 敏感字段过滤)", () => {
     });
 });
 
-// M-7 回归：IP 源输入必须在信任边界做结构校验（策略白名单、路径形态、消息长度）
+// M-7 回归：IP 源输入必须在信任边界做结构校验（路径形态、消息长度）。
+// issue #69 起 fetch_strategy 不再属于输入契约，请求体带什么都不参与校验。
 describe("POST/PUT /api/ip_sources 输入校验 (M-7)", () => {
     const valid = {
         url: "https://example.com/m7/valid.txt",
         github_path: "m7/valid.txt",
         commit_message: "同步 IP 列表",
-        fetch_strategy: "direct_regex",
     };
 
     afterAll(async () => {
@@ -783,25 +783,35 @@ describe("POST/PUT /api/ip_sources 输入校验 (M-7)", () => {
         expect(((await res.json()) as { success?: boolean }).success).toBe(true);
     });
 
-    it("拒绝未登记的 fetch_strategy，且不落库", async () => {
+    // issue #69：请求体里的 fetch_strategy 一律不采信也不报错 —— 部署期新旧前端交错时，
+    // 老前端多带一个字段不能把保存动作拦下来。四种形态落库结果必须完全一致（均为 NULL）。
+    it("请求体带 fetch_strategy（合法名/未登记名/null/缺省）都静默忽略，落库均为 NULL", async () => {
         const cookie = await loginAndGetCookie();
-        const res = await SELF.fetch("https://example.com/api/ip_sources", {
-            method: "POST",
-            headers: { Cookie: cookie, "Content-Type": "application/json" },
-            body: JSON.stringify({
-                ...valid,
-                url: "https://example.com/m7/bad-strategy.txt",
-                github_path: "m7/bad-strategy.txt",
-                fetch_strategy: "no_such_strategy",
-            }),
-        });
-        expect(res.status).toBe(400);
-        expect(((await res.json()) as { error?: string }).error).toContain("策略");
+        const cases: { name: string; body: Record<string, unknown> }[] = [
+            { name: "legal", body: { fetch_strategy: "direct_regex" } },
+            { name: "unknown", body: { fetch_strategy: "no_such_strategy" } },
+            { name: "null", body: { fetch_strategy: null } },
+            { name: "absent", body: {} },
+        ];
+        for (const item of cases) {
+            const githubPath = `m7/strategy-${item.name}.txt`;
+            const res = await SELF.fetch("https://example.com/api/ip_sources", {
+                method: "POST",
+                headers: { Cookie: cookie, "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    ...valid,
+                    url: `https://example.com/${githubPath}`,
+                    github_path: githubPath,
+                    ...item.body,
+                }),
+            });
+            expect(res.status).toBe(200);
 
-        const row = await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
-            .bind("m7/bad-strategy.txt")
-            .first();
-        expect(row).toBeNull();
+            const row = await env.WUYA.prepare("SELECT fetch_strategy FROM ip_sources WHERE github_path = ?")
+                .bind(githubPath)
+                .first<{ fetch_strategy: string | null }>();
+            expect(row?.fetch_strategy).toBeNull();
+        }
     });
 
     it("拒绝首尾带空白的 github_path", async () => {
@@ -867,12 +877,14 @@ describe("POST/PUT /api/ip_sources 输入校验 (M-7)", () => {
         expect(((await res.json()) as { error?: string }).error).toContain("提交");
     });
 
-    it("PUT 更新同样拒绝非法 fetch_strategy，且不改变原记录", async () => {
+    // issue #69：PUT 同样不采信请求体里的策略。URL 未变更 → 保留库内原值（客户端无需回传）；
+    // 未登记名既不拦也不生效，落库值仍是库内原值。
+    it("PUT 未变更 URL 时保留库内原 fetch_strategy，未登记名不报错也不覆盖", async () => {
         const cookie = await loginAndGetCookie();
         await env.WUYA.prepare(
             "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
         )
-            .bind("https://example.com/m7/put.txt", "m7/put.txt", "更新前", "direct_regex")
+            .bind("https://example.com/m7/put.txt", "m7/put.txt", "更新前", "phantomjs_cloud")
             .run();
         const row = (await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
             .bind("m7/put.txt")
@@ -885,16 +897,17 @@ describe("POST/PUT /api/ip_sources 输入校验 (M-7)", () => {
                 ...valid,
                 url: "https://example.com/m7/put.txt",
                 github_path: "m7/put.txt",
+                commit_message: "更新后",
                 fetch_strategy: "no_such_strategy",
             }),
         });
-        expect(res.status).toBe(400);
+        expect(res.status).toBe(200);
 
         const after = (await env.WUYA.prepare("SELECT fetch_strategy, commit_message FROM ip_sources WHERE id = ?")
             .bind(row.id)
-            .first()) as { fetch_strategy: string; commit_message: string };
-        expect(after.fetch_strategy).toBe("direct_regex");
-        expect(after.commit_message).toBe("更新前");
+            .first()) as { fetch_strategy: string | null; commit_message: string };
+        expect(after.fetch_strategy).toBe("phantomjs_cloud");
+        expect(after.commit_message).toBe("更新后");
     });
 });
 
@@ -2005,7 +2018,6 @@ describe("IP 源写库成功路径 (中-7)", () => {
             url: "https://example.com/m12p/source.txt",
             github_path: "m12p/source.txt",
             commit_message: "首次同步",
-            fetch_strategy: "direct_regex",
             ...overrides,
         };
     }
@@ -2031,13 +2043,18 @@ describe("IP 源写库成功路径 (中-7)", () => {
         expect(row).not.toBeNull();
         expect(row?.url).toBe("https://example.com/m12p/source.txt");
         expect(row?.commit_message).toBe("首次同步");
-        expect(row?.fetch_strategy).toBe("direct_regex");
+        // issue #69：新增一律落 NULL，策略只能由同步回退路径写入
+        expect(row?.fetch_strategy).toBeNull();
     });
 
     it("PUT 成功会真的改掉字段，且 id 不变", async () => {
         const cookie = await loginAndGetCookie();
         const created = await readRow("m12p/source.txt");
         expect(created).not.toBeNull();
+        // 模拟上一轮同步命中后的缓存态：URL 一改，这份缓存就该失效
+        await env.WUYA.prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE id = ?")
+            .bind("phantomjs_cloud", created?.id)
+            .run();
 
         const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(created?.id), {
             method: "PUT",
@@ -2046,6 +2063,7 @@ describe("IP 源写库成功路径 (中-7)", () => {
                 payload({
                     url: "https://example.com/m12p/updated.txt",
                     commit_message: "更新后的提交信息",
+                    // issue #69：请求体里带策略不采信，清空 URL 缓存的判定完全由服务端做
                     fetch_strategy: "phantomjs_cloud",
                 })
             ),
@@ -2064,8 +2082,9 @@ describe("IP 源写库成功路径 (中-7)", () => {
         expect(row?.fetch_strategy).toBeNull();
     });
 
-    // issue #68：URL 未变更时缓存策略必须原样保留，否则每改一次 commit_message 都要重新探测。
-    it("PUT 只改其它字段时保留原 fetch_strategy（issue #68）", async () => {
+    // issue #68 + #69：URL 未变更时保留库内原值，且客户端根本不需要回传——
+    // 保存体里没有该字段，服务端照样保住策略，否则每改一次 commit_message 都要重新探测。
+    it("PUT 未变更 URL 且请求体不含策略时保留库内原 fetch_strategy（issue #69）", async () => {
         const cookie = await loginAndGetCookie();
         const created = await SELF.fetch("https://example.com/api/ip_sources", {
             method: "POST",
@@ -2073,6 +2092,10 @@ describe("IP 源写库成功路径 (中-7)", () => {
             body: JSON.stringify(payload({ github_path: "m12p/keep.txt", url: "https://example.com/m12p/keep.txt" })),
         });
         expect(created.status).toBe(200);
+        // 策略只能由同步回退路径写入，这里直接写库模拟一轮同步命中后的缓存态
+        await env.WUYA.prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE github_path = ?")
+            .bind("direct", "m12p/keep.txt")
+            .run();
 
         const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(await idOf("m12p/keep.txt")), {
             method: "PUT",
@@ -2081,16 +2104,15 @@ describe("IP 源写库成功路径 (中-7)", () => {
                 url: "https://example.com/m12p/keep.txt",
                 github_path: "m12p/keep.txt",
                 commit_message: "只改提交信息",
-                fetch_strategy: "direct_regex",
             }),
         });
         expect(res.status).toBe(200);
-        expect((await readRow("m12p/keep.txt"))?.fetch_strategy).toBe("direct_regex");
+        expect((await readRow("m12p/keep.txt"))?.fetch_strategy).toBe("direct");
     });
 
-    // issue #68：缓存策略本身不适用于该 URL（历史脏数据或 API 直写）时，保存动作不报错，
-    // 但策略不再落库——否则同步链每次都要在链首空跑一次别的站点的策略。
-    it("PUT 提交不适用于该 URL 的策略时不落库，不报错（issue #68）", async () => {
+    // issue #68：库内缓存策略本身不适用于该 URL（历史脏数据直写）时，保存动作不报错，
+    // 但策略不再保留——否则同步链每次都要在链首空跑一次别的站点的策略。
+    it("PUT 未变更 URL 但库内策略不适用于该 URL 时清空，不报错（issue #68）", async () => {
         const cookie = await loginAndGetCookie();
         const created = await SELF.fetch("https://example.com/api/ip_sources", {
             method: "POST",
@@ -2100,6 +2122,10 @@ describe("IP 源写库成功路径 (中-7)", () => {
             ),
         });
         expect(created.status).toBe(200);
+        // 模拟历史脏数据：example.com 上挂着 hostmonit 专用策略
+        await env.WUYA.prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE github_path = ?")
+            .bind("hostmonit_api", "m12p/mismatch.txt")
+            .run();
 
         const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(await idOf("m12p/mismatch.txt")), {
             method: "PUT",
@@ -2458,6 +2484,26 @@ describe("列表投影包含新列 (issue #49)", () => {
                 expect(Object.keys(target as object), `投影缺列 ${column}`).toContain(column);
                 expect((target as Record<string, unknown>)[column], `${column} 旧数据应为 null`).toBeNull();
             }
+        } finally {
+            await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(row.meta.last_row_id).run();
+        }
+    });
+
+    // issue #69：写入面收窄到同步链之后，读取面必须原样保留 —— 列表与编辑页靠这一列展示缓存策略。
+    it("GET /api/ip_sources 仍投影 fetch_strategy 的库内实值（issue #69）", async () => {
+        const cookie = await loginAndGetCookie();
+        const row = await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/projection/cached.txt", "projection/cached.txt", "投影测试", "jina_reader")
+            .run();
+        try {
+            const res = await SELF.fetch("https://example.com/api/ip_sources", { headers: { Cookie: cookie } });
+            expect(res.status).toBe(200);
+            const rows = (await res.json()) as Array<Record<string, unknown>>;
+            const target = rows.find((item) => item.github_path === "projection/cached.txt") as
+                Record<string, unknown> | undefined;
+            expect(target?.fetch_strategy).toBe("jina_reader");
         } finally {
             await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(row.meta.last_row_id).run();
         }

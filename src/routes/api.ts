@@ -660,12 +660,15 @@ async function apiGetIpSources(db: D1Database): Promise<Response> {
     return jsonResponse(results);
 }
 
-/** IP 源输入（新增与更新共用），所有字段通过结构校验后才允许落库 */
+/**
+ * IP 源输入（新增与更新共用），所有字段通过结构校验后才允许落库。
+ * fetch_strategy 不在此列（issue #69）：该列是 URL 的抓取方式缓存，唯一可信写入方是同步链的实测结果，
+ * 客户端只读不写 —— 与 domains 侧「API 不接收该字段，仅回退写入与 GET 投影展示」同一契约。
+ */
 interface IpSourceInput {
     url: string;
     github_path: string;
     commit_message: string;
-    fetch_strategy: string;
     parse_mode: ParseMode;
     parse_param: string | null;
 }
@@ -707,7 +710,7 @@ function validateGithubPath(path: string): { ok: true; value: string } | { ok: f
 
 /** 信任边界校验：URL 先走 SSRF 防护再限长；路径、提交信息与策略逐一约束 */
 function validateIpSourceInput(body: IpSourceInputBody): IpSourceValidation {
-    const { url, github_path, commit_message, fetch_strategy } = body;
+    const { url, github_path, commit_message } = body;
 
     if (typeof url !== "string" || url.length === 0) return { ok: false, error: "URL 不能为空。" };
     try {
@@ -726,10 +729,6 @@ function validateIpSourceInput(body: IpSourceInputBody): IpSourceValidation {
     if (trimmedMessage.length < 1 || trimmedMessage.length > 200)
         return { ok: false, error: "提交信息长度必须在 1–200 个字符之间。" };
 
-    const strategyNames = Object.keys(FETCH_STRATEGIES);
-    if (typeof fetch_strategy !== "string" || !strategyNames.includes(fetch_strategy))
-        return { ok: false, error: `抓取策略非法：仅支持 ${strategyNames.join("、")}。` };
-
     // 解析配置与保存/探测共用同一套校验（§9.5）：NULL / 空串按 auto，非法值直接 400
     const parseValidation = validateParseConfig(body.parse_mode, body.parse_param);
     if (!parseValidation.ok) return { ok: false, error: parseValidation.error };
@@ -740,7 +739,6 @@ function validateIpSourceInput(body: IpSourceInputBody): IpSourceValidation {
             url,
             github_path: pathValidation.value,
             commit_message,
-            fetch_strategy,
             parse_mode: parseValidation.mode,
             parse_param: parseValidation.param,
         },
@@ -751,6 +749,8 @@ type CompanionCheck =
     | {
           status: "ok";
           /** 目标行在被覆盖前的 URL；新增时为 null（issue #68 判定 URL 是否变更） */ previousUrl: string | null;
+          /** 目标行在被覆盖前的抓取策略缓存；新增时为 null（issue #69 保留语义） */
+          previousFetchStrategy: string | null;
       }
     | { status: "conflict"; conflictPath: string }
     | { status: "missing" };
@@ -769,17 +769,19 @@ async function checkCompanionConflict(
 ): Promise<CompanionCheck> {
     // 投影形状从 IpSourceRow 派生（issue #64）；列清单以 SELECT 为准，改 SQL 时同步核对该类型
     const rows = await db
-        .prepare("SELECT id, github_path, url FROM ip_sources")
-        .all<Pick<IpSourceRow, "id" | "github_path" | "url">>();
+        .prepare("SELECT id, github_path, url, fetch_strategy FROM ip_sources")
+        .all<Pick<IpSourceRow, "id" | "github_path" | "url" | "fetch_strategy">>();
     const companion = deriveCompanionPath(githubPath);
     let targetSeen = false;
     let targetUrl: string | null = null;
+    let targetFetchStrategy: string | null = null;
     let conflictPath: string | null = null;
     for (const row of rows.results ?? []) {
         if (excludeId !== undefined && row.id === excludeId) {
             targetSeen = true;
-            // 顺带取回旧 URL：写库时据它判断抓取策略缓存是否还有效，不再多打一次 D1 往返
+            // 顺带取回旧 URL 与旧策略缓存：写库时据它决定保留还是清空，不再多打一次 D1 往返
             targetUrl = row.url;
+            targetFetchStrategy = row.fetch_strategy;
             continue;
         }
         // 新主文件撞了别人的伴生文件，或新伴生文件撞了别人的主文件
@@ -793,7 +795,7 @@ async function checkCompanionConflict(
     // 「目标不存在」优先于「路径冲突」：更新一个已被删掉的 id 时，报 404 才是使用者能据以行动的信息
     if (excludeId !== undefined && !targetSeen) return { status: "missing" };
     if (conflictPath !== null) return { status: "conflict", conflictPath };
-    return { status: "ok", previousUrl: targetUrl };
+    return { status: "ok", previousUrl: targetUrl, previousFetchStrategy: targetFetchStrategy };
 }
 
 /**
@@ -817,7 +819,7 @@ async function writeIpSource(
     if (body === null) return BAD_JSON();
     const validation = validateIpSourceInput(body);
     if (!validation.ok) return jsonResponse({ error: validation.error }, 400);
-    const { url, github_path, commit_message, fetch_strategy, parse_mode, parse_param } = validation.input;
+    const { url, github_path, commit_message, parse_mode, parse_param } = validation.input;
     const check = await checkCompanionConflict(db, github_path, options.excludeId);
     if (check.status === "missing") return jsonResponse({ error: "目标不存在。" }, 404);
     if (check.status === "conflict") {
@@ -826,14 +828,17 @@ async function writeIpSource(
             409
         );
     }
-    // fetch_strategy 是 URL 的抓取方式缓存而非用户偏好（issue #68）：URL 变了缓存即失效，
-    // 与 domains 侧 normalizeDomainSourceInput 的「URL 变更丢弃 fetch_strategy」保持同一语义。
-    // 新增路径 previousUrl 为 null，不做判定；未变更时原样保留提交值。
-    // 不适用于该 URL 的策略同样视为无效缓存直接丢弃（issue #68）：判据与同步链、探测共用一处，
-    // 这里只清缓存不报 400 —— 名字合法但配错 URL 属于历史遗留数据，保存动作不该因此被拦。
+    // fetch_strategy 是 URL 的抓取方式缓存而非用户偏好（issue #69）：唯一可信写入方是同步链的实测结果，
+    // 客户端只读不写 —— 与 domains 侧「API 不接收该字段，仅回退写入与 GET 投影展示」同一契约。
+    // 新增路径 previousUrl 与 previousFetchStrategy 均为 null，一律落 NULL；
+    // 更新路径 URL 未变更时保留库内原值，URL 变更即失效置 NULL。
+    // 保留时再过一道适用性判据（issue #68）：历史脏数据里配错站点的策略顺手清掉，
+    // 免得它一直挂在列表上误导使用者 —— 判据与同步链、探测共用 isStrategyApplicable。
+    // 请求体里带什么（合法名 / 未登记名 / null / 缺省）都不参与判定，也不因此报 400 ——
+    // 部署期新旧前端交错时不能因为多带一个字段就把保存拦下来。
     const urlChanged = check.previousUrl !== null && check.previousUrl !== url;
-    const cacheValid = !urlChanged && isStrategyApplicable(fetch_strategy, url);
-    const nextFetchStrategy: string | null = cacheValid ? fetch_strategy : null;
+    const keepCached = !urlChanged && isStrategyApplicable(check.previousFetchStrategy ?? "", url);
+    const nextFetchStrategy: string | null = keepCached ? check.previousFetchStrategy : null;
     try {
         const result = await db
             .prepare(options.sql)

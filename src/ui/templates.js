@@ -843,7 +843,6 @@ function getDashboardInteractionScript() {
           url: document.getElementById('ip_source_url').value,
           githubPath: document.getElementById('github_path').value,
           commitMessage: document.getElementById('commit_message').value,
-          fetchStrategy: successfulProbeStrategy,
           parseMode: document.getElementById('parse_mode').value,
           parseParam: document.getElementById('parse_param').value,
       });

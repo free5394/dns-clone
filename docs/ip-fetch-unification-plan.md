@@ -240,12 +240,18 @@
 
 ### 8.2 `ip_sources` 新增列（全部可空）
 
-| 列            | 类型 | 语义                                     |
-| ------------- | ---- | ---------------------------------------- |
-| `parse_mode`  | TEXT | NULL 视为 `auto`                         |
-| `parse_param` | TEXT | `json_path` 点路径或 `custom_regex` 正则 |
+| 列               | 类型 | 语义                                                            |
+| ---------------- | ---- | --------------------------------------------------------------- |
+| `parse_mode`     | TEXT | NULL 视为 `auto`                                                |
+| `parse_param`    | TEXT | `json_path` 点路径或 `custom_regex` 正则                        |
+| `fetch_strategy` | TEXT | 抓取策略缓存，策略回退命中后持久化；NULL 表示未指定或缓存已失效 |
 
 `url` / `github_path` 的 NOT NULL、UNIQUE 约束保持不变。
+
+- `fetch_strategy` 是 URL 的抓取方式缓存，不是用户偏好：唯一可信写入方是同步链的实测结果。
+  API 不接收该字段，仅回退写入与 GET 投影展示（与 §8.1 `domains` 侧同一口径）。
+- URL 未变更时保存沿用库内缓存；URL 变更即置 NULL，缓存随旧 URL 失效。判定在服务端完成，
+  客户端无需回传该字段。
 
 ### 8.3 迁移
 
