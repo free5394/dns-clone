@@ -68,7 +68,7 @@ export async function acquireManualSyncLock(db: D1Database): Promise<string | nu
     const row = await db
         .prepare("SELECT value FROM settings WHERE key = ?")
         .bind(MANUAL_SYNC_LOCK_KEY)
-        .first<{ value: string }>();
+        .first<Pick<SettingsRow, "value">>();
     if (!row) return null; // 竞态：对方刚释放，交给调用方下一轮再抢
 
     const current = Number(row.value);
