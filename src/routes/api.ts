@@ -621,9 +621,11 @@ async function fetchZoneRecords(token: string, zoneId: string, name: string): Pr
 async function apiGetDomainRecords(id: string, db: D1Database): Promise<Response> {
     const { token, zoneId } = await getCfApiSettings(db);
     if (!token || !zoneId) return jsonResponse({ error: "Cloudflare API 未配置。" }, 400);
-    const domain = (await db.prepare("SELECT target_domain FROM domains WHERE id = ?").bind(id).first()) as {
-        target_domain: string;
-    } | null;
+    // 投影形状从 DomainRow 派生（issue #63）；列清单以 SELECT 为准，改 SQL 时同步核对该类型
+    const domain = (await db.prepare("SELECT target_domain FROM domains WHERE id = ?").bind(id).first()) as Pick<
+        DomainRow,
+        "target_domain"
+    > | null;
     if (!domain) return jsonResponse({ error: "目标不存在。" }, 404);
     const result = await fetchZoneRecords(token, zoneId, domain.target_domain);
     if (!result.ok) return jsonResponse({ error: result.error }, 500);
@@ -639,7 +641,7 @@ async function apiGetDomainsRecords(db: D1Database): Promise<Response> {
     const { token, zoneId } = await getCfApiSettings(db);
     if (!token || !zoneId) return jsonResponse({ error: "Cloudflare API 未配置。" }, 400);
     const { results } = await db.prepare("SELECT id, target_domain FROM domains ORDER BY id").all();
-    const rows = results as Array<{ id: number; target_domain: string }>;
+    const rows = results as Array<Pick<DomainRow, "id" | "target_domain">>;
     const payload: Record<string, { records: unknown[] } | { error: string }> = {};
     for (let i = 0; i < rows.length; i += RECORDS_FETCH_CONCURRENCY) {
         const slice = rows.slice(i, i + RECORDS_FETCH_CONCURRENCY);
