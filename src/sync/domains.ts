@@ -7,6 +7,7 @@ import {
     queryAll,
     releaseManualSyncLock,
     createManualSyncLockRenewer,
+    type DomainRow,
 } from "../db/client.ts";
 import { fetchIpsForTarget, fetchThreeNetworkIps } from "./ip-sources.ts";
 import { normalizeParseMode } from "./ip-parse.ts";
@@ -20,29 +21,10 @@ import { normalizeMaxIpsPerType } from "../util/max-ips-per-type.ts";
 import { dedupeSortedIps } from "../util/ip.ts";
 import { MAX_IPS_PER_TYPE_KEY } from "../db/settings.ts";
 
-/**
- * domains 表的行类型（`SELECT * FROM domains` 读出）。
- * 可空列声明为可选，是为了兼容只查部分列的调用方；整行读出时这些键仍然存在。
- * issue #62：测试侧不再用按位置取参数类型的方式反推，改为从这里 `import type`，
- * 保证领域定义只有这一处——签名一改，测试跟随类型报错而不是静默指向别的参数。
- */
-export interface DomainRow {
-    id: number;
-    source_domain: string;
-    target_domain: string;
-    zone_id: string;
-    is_deep_resolve: number;
-    ttl: number;
-    last_synced_records?: string | null;
-    is_enabled: number;
-    is_system: number;
-    // issue #52 / 方案 §8.1：来源类型与 URL 解析配置。列可空，存量数据读出 null 按域名目标处理
-    source_type?: string | null;
-    source_url?: string | null;
-    parse_mode?: string | null;
-    parse_param?: string | null;
-    fetch_strategy?: string | null;
-}
+// issue #66：DomainRow 的定义已下沉到 db 层（与 domains 表定义、DOMAIN_COLUMNS 同处），
+// 这里只做转出口，`api.ts` / `test/domain-row.ts` 的既有 import 源保持不变；
+// 要改字段请去 src/db/client.ts，别在 sync 层重新定义。
+export type { DomainRow };
 
 interface DnsRecord {
     type: string;
