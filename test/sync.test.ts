@@ -20,8 +20,9 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
-/** 与 seedGitHubSettings 写入的凭据保持一致：mock 只用这一份仓库身份拼 GitHub API URL。 */
 const GITHUB_API_ROOT = "https://api.github.com";
+
+/** 与 seedGitHubSettings 写入的凭据保持一致：mock 只用这一份仓库身份拼 GitHub API URL。 */
 const TEST_GITHUB_OWNER = "test-owner";
 const TEST_GITHUB_REPO = "test-repo";
 const TEST_GITHUB_REPO_API = `${GITHUB_API_ROOT}/repos/${TEST_GITHUB_OWNER}/${TEST_GITHUB_REPO}`;
