@@ -21,9 +21,10 @@ afterEach(() => {
 });
 
 /** 与 seedGitHubSettings 写入的凭据保持一致：mock 只用这一份仓库身份拼 GitHub API URL。 */
+const GITHUB_API_ROOT = "https://api.github.com";
 const TEST_GITHUB_OWNER = "test-owner";
 const TEST_GITHUB_REPO = "test-repo";
-const TEST_GITHUB_REPO_API = `https://api.github.com/repos/${TEST_GITHUB_OWNER}/${TEST_GITHUB_REPO}`;
+const TEST_GITHUB_REPO_API = `${GITHUB_API_ROOT}/repos/${TEST_GITHUB_OWNER}/${TEST_GITHUB_REPO}`;
 
 /** 一次 GitHub 写入的记录：path 为目标文件路径，content 为解码后的正文。 */
 type RecordedPut = { path: string; content: string };
@@ -62,18 +63,19 @@ async function seedGitHubSettings() {
 }
 
 /**
- * GitHub contents API 的三分支 mock（issue #22 / #55 用例组的「单主文件」场景共用）：
- * PUT 记录写入体并把远端内容更新为写入值；GET 按 Accept 区分「变更检测要 raw 正文」与「写前取 sha 要 JSON」。
- * 不传 initialFile 表示远端文件一开始不存在（404 → 新建），GET 一律 404。
- * 非 GitHub 请求（抓取源站）交给 onOtherRequest，返回 null 表示未命中，由本函数抛错——漏 mock 必须炸掉，不能静默放行。
+ * GitHub 写回链路的 mock（issue #22 / #55 用例组的「单主文件」场景共用），覆盖：
+ * repo 端点 200；contents 的 PUT 记录写入体并更新远端内容；contents 的 GET 按 Accept 区分
+ * 「变更检测要 raw 正文」与「写前取 sha 要 JSON」；三者之外的请求交给 onOtherRequest。
+ * initialFile 传 null 表示远端文件一开始不存在（404 → 新建），GET 一律 404；传对象则以此为初值。
+ * onOtherRequest 返回 null 表示未命中，由本函数抛错——漏 mock 必须炸掉，不能静默放行。
  * 伴生文件的多文件初态与 PUT 失败注入不在此 helper 内，留给 issue #50 用例自行 mock。
  */
 function stubGitHubContentsMock(options: {
-    initialFile?: { path: string; content: string };
+    initialFile: { path: string; content: string } | null;
     puts: RecordedPut[];
     onOtherRequest: (url: string, init?: RequestInit) => Response | null;
 }) {
-    // 缺省 initialFile 即远端文件不存在：GET 走 404，首次 PUT 时才建出来。
+    // initialFile 为 null 即远端文件不存在：GET 走 404，首次 PUT 时才建出来。
     const remoteContents = new Map<string, string>();
     if (options.initialFile) {
         remoteContents.set(options.initialFile.path, options.initialFile.content);
@@ -110,7 +112,7 @@ function stubGitHubContentsMock(options: {
                           headers: { "Content-Type": "application/json" },
                       });
             }
-            // 非 GitHub 请求（抓取源站）才交给用例自定义；未命中照样炸掉。
+            // 上面三个分支没拦住的请求（抓取源站、其它 GitHub 端点）交给用例自定义；未命中照样炸掉。
             const otherResponse = options.onOtherRequest(url, init);
             if (otherResponse) return otherResponse;
             throw new Error(`未预期的请求: ${url}`);
@@ -379,6 +381,7 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
         await seedGitHubSettings();
         const id = await insertSource("direct_regex", "https://example.com/ips.txt");
         stubGitHubContentsMock({
+            initialFile: null,
             puts: [],
             onOtherRequest: (url) => (url === "https://example.com/ips.txt" ? new Response("1.1.1.1\n2.2.2.2") : null),
         });
@@ -396,6 +399,7 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
         await seedGitHubSettings();
         const id = await insertSource("phantomjs_cloud", "https://example.com/fallback.txt");
         stubGitHubContentsMock({
+            initialFile: null,
             puts: [],
             onOtherRequest: (url) => {
                 if (url.startsWith("https://PhantomJsCloud.com")) return new Response("no ips here");
@@ -425,6 +429,7 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
         // 列可空（迁移里 fetch_strategy 无 NOT NULL）：插入 NULL 模拟历史数据
         const id = await insertSource(null, "https://example.com/null-strategy.txt");
         stubGitHubContentsMock({
+            initialFile: null,
             puts: [],
             onOtherRequest: (url) => (url === "https://example.com/null-strategy.txt" ? new Response("9.9.9.9") : null),
         });
@@ -885,7 +890,7 @@ describe("IP 源空结果语义 (issue #55)", () => {
             vi.fn(async (input: unknown, init?: RequestInit) => {
                 const url = String(typeof input === "string" ? input : (input as Request).url);
                 const method = (init?.method ?? "GET").toUpperCase();
-                if (url.startsWith("https://api.github.com/")) {
+                if (url.startsWith(`${GITHUB_API_ROOT}/`)) {
                     methods.push(method);
                     return new Response("{}", { status: 200 });
                 }
@@ -949,6 +954,7 @@ describe("IP 源空结果语义 (issue #55)", () => {
         await seedGitHubSettings();
         const { id } = await insertSource("https://example.com/empty-log.txt");
         stubGitHubContentsMock({
+            initialFile: null,
             puts: [],
             onOtherRequest: (url) => {
                 if (url === "https://example.com/empty-log.txt") return new Response("no ips", { status: 200 });
