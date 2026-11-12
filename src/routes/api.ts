@@ -19,7 +19,7 @@ import { getZoneName } from "../util/cf.ts";
 import { FETCH_STRATEGIES, resolveHostmonitKey } from "../sync/ip-sources.ts";
 import { deriveCompanionPath, normalizeGithubPath } from "../sync/github.ts";
 import { parseContent, validateParseConfig, type ParseMode } from "../sync/ip-parse.ts";
-import { syncAllDomains, syncSystemDomains, syncSingleDomain } from "../sync/domains.ts";
+import { syncAllDomains, syncSystemDomains, syncSingleDomain, type DomainRow } from "../sync/domains.ts";
 import { syncSingleIpSource, syncAllIpSources } from "../sync/ip-sources.ts";
 import { assertSafeHttpUrl } from "../util/url-safety.ts";
 import { fetchWithTimeout } from "../util/fetch.ts";
@@ -413,6 +413,17 @@ export function normalizeDomainSourceInput(input: {
     };
 }
 
+/**
+ * 更新分支读取的既有行投影（issue #63）。
+ *
+ * 形状从 DomainRow 派生，不再逐字段手写；Required 只去掉 DomainRow 里可空列的
+ * 可选标记，让「可空列键在、值可为 null」与整行读出对齐。
+ * 列清单仍由下面的 SELECT 保证：as 断言不做结构校验，改 SQL 时要同步核对该类型。
+ */
+type ExistingDomainRow = Required<
+    Pick<DomainRow, "source_domain" | "source_type" | "source_url" | "fetch_strategy" | "is_system">
+>;
+
 async function handleDomainMutation(
     request: Request,
     db: D1Database,
@@ -449,26 +460,14 @@ async function handleDomainMutation(
         return jsonResponse({ error: "source_type 必须为 domain 或 url。" }, 400);
     }
 
-    let existing: {
-        source_domain: string;
-        source_type: string | null;
-        source_url: string | null;
-        fetch_strategy: string | null;
-        is_system: number;
-    } | null = null;
+    let existing: ExistingDomainRow | null = null;
     if (isUpdate && id) {
         existing = (await db
             .prepare(
                 "SELECT source_domain, source_type, source_url, fetch_strategy, is_system FROM domains WHERE id = ?"
             )
             .bind(id)
-            .first()) as {
-            source_domain: string;
-            source_type: string | null;
-            source_url: string | null;
-            fetch_strategy: string | null;
-            is_system: number;
-        } | null;
+            .first()) as ExistingDomainRow | null;
         if (!existing) return jsonResponse({ error: "目标不存在。" }, 404);
     }
     // 未显式声明时：新建按域名，更新沿用该行已有类型
