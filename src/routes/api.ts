@@ -662,8 +662,9 @@ async function apiGetIpSources(db: D1Database): Promise<Response> {
 
 /**
  * IP 源输入（新增与更新共用），所有字段通过结构校验后才允许落库。
- * fetch_strategy 不在此列（issue #69）：该列是 URL 的抓取方式缓存，唯一可信写入方是同步链的实测结果，
- * 客户端只读不写 —— 与 domains 侧「API 不接收该字段，仅回退写入与 GET 投影展示」同一契约。
+ * fetch_strategy 不在此列（issue #69）：该列是 URL 的抓取方式缓存，除内置源初始化（migrations 里的种子
+ * 插入）外，唯一写入方是同步链的实测结果；客户端只读不写 —— 与 domains 侧
+ * 「API 不接收该字段，仅回退写入与 GET 投影展示」同一契约。
  */
 interface IpSourceInput {
     url: string;
@@ -748,9 +749,12 @@ function validateIpSourceInput(body: IpSourceInputBody): IpSourceValidation {
 type CompanionCheck =
     | {
           status: "ok";
-          /** 目标行在被覆盖前的 URL；新增时为 null（issue #68 判定 URL 是否变更） */ previousUrl: string | null;
-          /** 目标行在被覆盖前的抓取策略缓存；新增时为 null（issue #69 保留语义） */
-          previousFetchStrategy: string | null;
+          /**
+           * 目标行在被覆盖前的快照；新增时为 null。
+           * URL 决定策略缓存是否随旧地址失效（issue #68），策略决定未变更时保留什么（issue #69），
+           * 两者恒同生同灭，合成一份而不是两个平行字段。
+           */
+          previous: { url: string; fetchStrategy: string | null } | null;
       }
     | { status: "conflict"; conflictPath: string }
     | { status: "missing" };
@@ -795,7 +799,10 @@ async function checkCompanionConflict(
     // 「目标不存在」优先于「路径冲突」：更新一个已被删掉的 id 时，报 404 才是使用者能据以行动的信息
     if (excludeId !== undefined && !targetSeen) return { status: "missing" };
     if (conflictPath !== null) return { status: "conflict", conflictPath };
-    return { status: "ok", previousUrl: targetUrl, previousFetchStrategy: targetFetchStrategy };
+    return {
+        status: "ok",
+        previous: targetUrl === null ? null : { url: targetUrl, fetchStrategy: targetFetchStrategy },
+    };
 }
 
 /**
@@ -828,17 +835,22 @@ async function writeIpSource(
             409
         );
     }
-    // fetch_strategy 是 URL 的抓取方式缓存而非用户偏好（issue #69）：唯一可信写入方是同步链的实测结果，
-    // 客户端只读不写 —— 与 domains 侧「API 不接收该字段，仅回退写入与 GET 投影展示」同一契约。
+    // fetch_strategy 是 URL 的抓取方式缓存而非用户偏好（issue #69）：除内置源初始化外，唯一写入方是同步链
+    // 的实测结果，客户端只读不写 —— 与 domains 侧「API 不接收该字段，仅回退写入与 GET 投影展示」同一契约。
     // 新增路径 previousUrl 与 previousFetchStrategy 均为 null，一律落 NULL；
     // 更新路径 URL 未变更时保留库内原值，URL 变更即失效置 NULL。
     // 保留时再过一道适用性判据（issue #68）：历史脏数据里配错站点的策略顺手清掉，
     // 免得它一直挂在列表上误导使用者 —— 判据与同步链、探测共用 isStrategyApplicable。
+    // 「没有缓存」与「缓存不适用」都归到清空，先判 null 再判适用性：
+    // 空串喂给 isStrategyApplicable 会走「未登记即适用」的回落返回 true，读起来像 null 通过了判定。
     // 请求体里带什么（合法名 / 未登记名 / null / 缺省）都不参与判定，也不因此报 400 ——
     // 部署期新旧前端交错时不能因为多带一个字段就把保存拦下来。
-    const urlChanged = check.previousUrl !== null && check.previousUrl !== url;
-    const keepCached = !urlChanged && isStrategyApplicable(check.previousFetchStrategy ?? "", url);
-    const nextFetchStrategy: string | null = keepCached ? check.previousFetchStrategy : null;
+    const previous = check.previous;
+    const cached = previous?.fetchStrategy ?? null;
+    // URL 变更即失效；未变更才谈得上沿用，再补一道适用性判据
+    const keepCached =
+        cached !== null && previous !== null && previous.url === url && isStrategyApplicable(cached, url);
+    const nextFetchStrategy: string | null = keepCached ? cached : null;
     try {
         const result = await db
             .prepare(options.sql)

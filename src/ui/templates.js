@@ -648,7 +648,6 @@ function getDashboardScript(domains, ipSources, settings) {
   let currentIpSources = ${safeJsonForScript(ipSources)};
   let currentSettings = ${safeJsonForScript(settings)};
   let zoneName = currentSettings.zoneName || '';
-  let successfulProbeStrategy = null;
 
   // I2: 客户端渲染统一转义助手（与服务器端 escapeHtml 同语义）
   // 客户端转义助手来自 ./dashboard-helpers.js，注入后可直接被行为测试覆盖。
@@ -742,7 +741,6 @@ function getDashboardInteractionScript() {
           } else { document.getElementById('domainId').value = ''; }
       } else if (modalId === 'ipSourceModal') {
           const form = document.getElementById('ipSourceForm'); form.reset();
-          successfulProbeStrategy = null;
           document.getElementById('probeProgress').style.display = 'none';
           document.getElementById('probeResult').textContent = '';
           document.getElementById('saveIpSourceBtn').disabled = true;
@@ -758,8 +756,8 @@ function getDashboardInteractionScript() {
               document.getElementById('parse_mode').value = source.parse_mode || 'auto';
               document.getElementById('parse_param').value = source.parse_param || '';
               if (source.fetch_strategy) {
-                  successfulProbeStrategy = source.fetch_strategy;
-                  document.getElementById('probeResult').textContent = \`已缓存策略: \${successfulProbeStrategy}\`;
+                  // 缓存策略只用于展示与「能不能点保存」，不进保存体（issue #69）
+                  document.getElementById('probeResult').textContent = \`已缓存策略: \${source.fetch_strategy}\`;
                   document.getElementById('saveIpSourceBtn').disabled = false;
               }
           } else {
@@ -1034,7 +1032,6 @@ function getDashboardBootstrapScript() {
           progress.style.display = 'block';
           progress.removeAttribute('value');
           resultElem.textContent = '正在探测...';
-          successfulProbeStrategy = null;
 
           try {
               // 探测体与保存体同源（issue #57）：解析参数归一不再各写一遍
@@ -1049,7 +1046,6 @@ function getDashboardBootstrapScript() {
               if (result.sampleIps && result.sampleIps.length) samples.push(\`IPv4 样例: \${result.sampleIps.join(', ')}\`);
               if (result.sampleIpv6 && result.sampleIpv6.length) samples.push(\`IPv6 样例: \${result.sampleIpv6.join(', ')}\`);
               resultElem.textContent = \`探测成功！策略: \${result.strategy} | 发现 \${result.ipv4Count} 个IPv4、\${result.ipv6Count} 个IPv6\` + (samples.length ? \` | \${samples.join(' | ')}\` : '');
-              successfulProbeStrategy = result.strategy;
               saveBtn.disabled = false;
           } catch (error) {
               progress.style.display = 'none';

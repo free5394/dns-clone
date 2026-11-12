@@ -248,10 +248,12 @@
 
 `url` / `github_path` 的 NOT NULL、UNIQUE 约束保持不变。
 
-- `fetch_strategy` 是 URL 的抓取方式缓存，不是用户偏好：唯一可信写入方是同步链的实测结果。
-  API 不接收该字段，仅回退写入与 GET 投影展示（与 §8.1 `domains` 侧同一口径）。
+- `fetch_strategy` 是 URL 的抓取方式缓存，不是用户偏好：除内置源初始化（`migrations` 里的种子插入）外，
+  唯一写入方是同步链的实测结果。API 不接收该字段，仅回退写入与 GET 投影展示（与 §8.1 `domains` 侧同一口径）。
 - URL 未变更时保存沿用库内缓存；URL 变更即置 NULL，缓存随旧 URL 失效。判定在服务端完成，
   客户端无需回传该字段。
+- 沿用库内缓存时再过一道适用性判据（issue #68）：策略名已登记但**不适用于该 URL** 的按 NULL 清掉；
+  未登记判定的策略名按 `isStrategyApplicable` 的既定回落视为适用、原样保留。
 
 ### 8.3 迁移
 
@@ -302,15 +304,16 @@
     "url": "https://example.com/ip_list.txt",
     "github_path": "Cloudflare.txt",
     "commit_message": "Update Cloudflare IPs",
-    "fetch_strategy": "direct_regex",
     "parse_mode": "auto",
     "parse_param": null,
 }
 ```
 
-- 保留现有 URL / 路径 / 提交信息 / 策略校验。
-- 策略名合法但**不适用于该 URL** 时不报错、也不落库：视为无效缓存，按 NULL 写入（issue #68）。
-- URL 变更时 `fetch_strategy` 置 NULL，未变更则保留原值——与 `domains` 侧 `normalizeDomainSourceInput` 的「URL 变更丢弃策略」同一语义（issue #68）。
+- 保留现有 URL / 路径 / 提交信息校验。
+- `fetch_strategy` 不属于请求契约（issue #69）：带合法名、未登记名、`null` 或整个缺省，都不改变落库结果，也不返回 4xx。
+- 新增一律写 NULL，策略由同步回退路径在命中后写入。
+- 更新时 URL 未变更则保留库内原值，URL 变更即置 NULL——与 `domains` 侧 `normalizeDomainSourceInput` 的「URL 变更丢弃策略」同一语义（issue #68）。
+- 保留库内原值时再过一道适用性判据：历史脏数据里策略名合法但**不适用于该 URL** 的，一并按 NULL 写入，不报错（issue #68）。
 - 新增解析配置校验。
 - 保存时校验伴生文件路径：长度 ≤512、与其它 `github_path` 不冲突。
 - `GET /api/ip_sources` 投影增加 `parse_mode`、`parse_param`。

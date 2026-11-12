@@ -2052,9 +2052,7 @@ describe("IP 源写库成功路径 (中-7)", () => {
         const created = await readRow("m12p/source.txt");
         expect(created).not.toBeNull();
         // 模拟上一轮同步命中后的缓存态：URL 一改，这份缓存就该失效
-        await env.WUYA.prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE id = ?")
-            .bind("phantomjs_cloud", created?.id)
-            .run();
+        await seedStrategy("phantomjs_cloud", { id: created?.id as number });
 
         const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(created?.id), {
             method: "PUT",
@@ -2092,10 +2090,9 @@ describe("IP 源写库成功路径 (中-7)", () => {
             body: JSON.stringify(payload({ github_path: "m12p/keep.txt", url: "https://example.com/m12p/keep.txt" })),
         });
         expect(created.status).toBe(200);
-        // 策略只能由同步回退路径写入，这里直接写库模拟一轮同步命中后的缓存态
-        await env.WUYA.prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE github_path = ?")
-            .bind("direct", "m12p/keep.txt")
-            .run();
+        // 用真实登记且对所有 URL 适用的策略名，别拿未登记名蒙混过关
+        // （那会把「历史未登记名原样保留」这条回落固化成期望值）。
+        await seedStrategy("jina_reader", { githubPath: "m12p/keep.txt" });
 
         const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(await idOf("m12p/keep.txt")), {
             method: "PUT",
@@ -2107,7 +2104,7 @@ describe("IP 源写库成功路径 (中-7)", () => {
             }),
         });
         expect(res.status).toBe(200);
-        expect((await readRow("m12p/keep.txt"))?.fetch_strategy).toBe("direct");
+        expect((await readRow("m12p/keep.txt"))?.fetch_strategy).toBe("jina_reader");
     });
 
     // issue #68：库内缓存策略本身不适用于该 URL（历史脏数据直写）时，保存动作不报错，
@@ -2123,9 +2120,7 @@ describe("IP 源写库成功路径 (中-7)", () => {
         });
         expect(created.status).toBe(200);
         // 模拟历史脏数据：example.com 上挂着 hostmonit 专用策略
-        await env.WUYA.prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE github_path = ?")
-            .bind("hostmonit_api", "m12p/mismatch.txt")
-            .run();
+        await seedStrategy("hostmonit_api", { githubPath: "m12p/mismatch.txt" });
 
         const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(await idOf("m12p/mismatch.txt")), {
             method: "PUT",
@@ -2140,6 +2135,46 @@ describe("IP 源写库成功路径 (中-7)", () => {
         expect(res.status).toBe(200);
         expect((await readRow("m12p/mismatch.txt"))?.fetch_strategy).toBeNull();
     });
+
+    // issue #69：清理通道只剩「URL 变更」与「回到同步链重算」两条，未登记的存量策略名
+    // 不能靠保存动作顺手清掉 —— isStrategyApplicable 对未登记名一律判适用，原样保留。
+    // 这是刻意固化的口径，写成用例免得日后有人把它当 bug「修」掉。
+    it("PUT 未变更 URL 时，库内未登记策略名按适用处理原样保留（issue #69）", async () => {
+        const cookie = await loginAndGetCookie();
+        const created = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(
+                payload({ github_path: "m12p/legacy.txt", url: "https://example.com/m12p/legacy.txt" })
+            ),
+        });
+        expect(created.status).toBe(200);
+        // 模拟已下线策略名残留在库里
+        await seedStrategy("legacy_removed_strategy", { githubPath: "m12p/legacy.txt" });
+
+        const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(await idOf("m12p/legacy.txt")), {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m12p/legacy.txt",
+                github_path: "m12p/legacy.txt",
+                commit_message: "只改提交信息",
+            }),
+        });
+        expect(res.status).toBe(200);
+        expect((await readRow("m12p/legacy.txt"))?.fetch_strategy).toBe("legacy_removed_strategy");
+    });
+
+    /** 模拟一轮同步命中后的策略缓存态：策略只能由同步回退路径写入，测试直接写库造出这个状态 */
+    async function seedStrategy(value: string, where: { id: number } | { githubPath: string }): Promise<void> {
+        if ("id" in where) {
+            await env.WUYA.prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE id = ?").bind(value, where.id).run();
+            return;
+        }
+        await env.WUYA.prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE github_path = ?")
+            .bind(value, where.githubPath)
+            .run();
+    }
 
     async function idOf(githubPath: string): Promise<number> {
         const row = await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")

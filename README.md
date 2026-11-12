@@ -439,26 +439,26 @@ D1 数据库（绑定名 `WUYA`）共 5 张表，由 `initializeAndMigrateDataba
 
 ### `domains`（克隆目标域名）
 
-| 字段                  | 类型        | 说明                                                     |
-| --------------------- | ----------- | -------------------------------------------------------- |
-| `id`                  | INTEGER PK  | 自增主键                                                 |
-| `source_domain`       | TEXT        | 源域名（或 `internal:hostmonit:yd/dx/lt` 内置源）        |
-| `target_domain`       | TEXT UNIQUE | 目标域名（自动拼接 `前缀.你的域名`）                     |
-| `zone_id`             | TEXT        | Cloudflare Zone ID                                       |
-| `is_deep_resolve`     | INTEGER     | 1=深度解析 CNAME 链；0=浅层克隆 CNAME                    |
-| `ttl`                 | INTEGER     | DNS 记录 TTL（默认 60）                                  |
-| `notes`               | TEXT        | 备注                                                     |
-| `last_synced_records` | TEXT        | 上次同步的记录 JSON（用于变化检测）                      |
-| `last_synced_time`    | TIMESTAMP   | 上次同步时间                                             |
-| `last_sync_status`    | TEXT        | `success` / `no_change` / `failed` / `pending`           |
-| `last_sync_error`     | TEXT        | 上次失败原因                                             |
-| `is_enabled`          | INTEGER     | 1=启用；0=禁用                                           |
-| `is_system`           | INTEGER     | 1=系统预设（不可删，source 不可改）；0=用户添加          |
-| `source_type`         | TEXT        | IP 输入类型 `domain` / `url`（NULL 按 `domain`）         |
-| `source_url`          | TEXT        | `url` 类型的抓取地址（`http(s)`，≤2048 字符）            |
-| `parse_mode`          | TEXT        | 解析模式（NULL / 未知值按 `auto`）                       |
-| `parse_param`         | TEXT        | 解析参数（`json_path` / `custom_regex` 使用）            |
-| `fetch_strategy`      | TEXT        | `url` 类型的抓取策略缓存（同步实测写入，URL 变化时丢弃） |
+| 字段                  | 类型        | 说明                                              |
+| --------------------- | ----------- | ------------------------------------------------- |
+| `id`                  | INTEGER PK  | 自增主键                                          |
+| `source_domain`       | TEXT        | 源域名（或 `internal:hostmonit:yd/dx/lt` 内置源） |
+| `target_domain`       | TEXT UNIQUE | 目标域名（自动拼接 `前缀.你的域名`）              |
+| `zone_id`             | TEXT        | Cloudflare Zone ID                                |
+| `is_deep_resolve`     | INTEGER     | 1=深度解析 CNAME 链；0=浅层克隆 CNAME             |
+| `ttl`                 | INTEGER     | DNS 记录 TTL（默认 60）                           |
+| `notes`               | TEXT        | 备注                                              |
+| `last_synced_records` | TEXT        | 上次同步的记录 JSON（用于变化检测）               |
+| `last_synced_time`    | TIMESTAMP   | 上次同步时间                                      |
+| `last_sync_status`    | TEXT        | `success` / `no_change` / `failed` / `pending`    |
+| `last_sync_error`     | TEXT        | 上次失败原因                                      |
+| `is_enabled`          | INTEGER     | 1=启用；0=禁用                                    |
+| `is_system`           | INTEGER     | 1=系统预设（不可删，source 不可改）；0=用户添加   |
+| `source_type`         | TEXT        | IP 输入类型 `domain` / `url`（NULL 按 `domain`）  |
+| `source_url`          | TEXT        | `url` 类型的抓取地址（`http(s)`，≤2048 字符）     |
+| `parse_mode`          | TEXT        | 解析模式（NULL / 未知值按 `auto`）                |
+| `parse_param`         | TEXT        | 解析参数（`json_path` / `custom_regex` 使用）     |
+| `fetch_strategy`      | TEXT        | `url` 类型的历史抓取策略（URL 变化时丢弃）        |
 
 ### `ip_sources`（IP 抓取源）
 
