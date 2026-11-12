@@ -436,15 +436,20 @@ export async function fetchIpsForTarget(
     }
     // D3 类别化文案：类别前缀 + 每策略摘要，随 last_sync_error 落库（只存 e.message，本文案即 message）
     const detail = attempts.length > 0 ? `（${attempts.join("; ")}）` : "";
+    // 循环必跑：STRATEGY_APPLIES 目前只过滤 hostmonit_api，其余策略恒入链，所以 attempts 至少有一条。
+    // 若将来所有策略都被适用性过滤掉，这里显式失败——否则 lastError 仍是 undefined，会被下面的
+    // describeErrorCategory 兜底成「抓取失败」，把「没有可跑的方案」与「方案都失败了」混为一谈。
+    if (attempts.length === 0) {
+        throw new Error("[无可用IP] 没有适用于该URL的抓取策略，请检查URL或在添加/编辑IP源时重新探测。");
+    }
     // §13.1「成功但 0 条」与「抓取抛错」是两条不同分支：只要有一条策略成功取到正文却没有 IP，
     // 就属于前者——哪怕其它策略抛过错，也不能被 lastError 短路成抓取失败（否则 DNS 侧会误标 failed）。
-    // lastError === undefined 那一项不是在兜 fetchedWithoutIps：它覆盖「没有任何策略被 STRATEGY_APPLIES 放行、
-    // 循环一次都没跑」的情形（当前只有 hostmonit_api 会被过滤，direct_regex 恒适用，所以这条路径暂无生产可达，
-    // 但它是唯一能把「没有可跑的方案」与「方案都没匹配到 IP」区分开的地方）。
-    if (options.emptyWhenNoIps && (fetchedWithoutIps || lastError === undefined)) {
+    if (options.emptyWhenNoIps && fetchedWithoutIps) {
         return { ipv4: [], ipv6: [], strategy: "", configuredStrategy };
     }
-    if (lastError === undefined) {
+    // 旧契约（仅测试调用方不传 emptyWhenNoIps 时可见）：全部策略取到正文却 0 条、且没有任何策略抛错，
+    // 仍以 [无可用IP] + 「未返回任何 IP」收口，不得静默。混合失败（既有 0 条也有抛错）走下面的类别化文案。
+    if (fetchedWithoutIps && lastError === undefined) {
         throw new Error(
             `[无可用IP] 所有抓取策略均未能从该URL获取到IP${detail}，源站页面未返回任何 IP，请确认该列表是否已下架或在添加/编辑IP源时更换源。`
         );
