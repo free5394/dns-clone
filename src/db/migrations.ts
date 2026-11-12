@@ -3,7 +3,7 @@
 // 修订 R2：不引入 schema_version 表，旧幂等逻辑完整保留（已部署实例不受影响）
 // schema 演进留到阶段 F 测试体系就绪后
 
-import { getSetting, setSetting, getCfApiSettings, queryAll } from "./client.ts";
+import { getSetting, setSetting, getCfApiSettings, queryAll, type DomainRow } from "./client.ts";
 import { getZoneName } from "../util/cf.ts";
 
 // 迁移版本：改动 DDL（新增表 / 列 / 索引）时必须一起加一，否则已部署实例会因 24h 时间门控推迟生效。
@@ -123,7 +123,8 @@ export async function initializeAndMigrateDatabase(env: { WUYA: D1Database }): P
     const { token, zoneId } = await getCfApiSettings(db);
     if (!token || !zoneId) return;
 
-    const invalidDomains = await queryAll<{ id: number; target_domain: string }>(
+    // 形状从 DomainRow 派生（issue #66）；键集合与 SELECT 列一一对应，改 SQL 时同步核对该类型
+    const invalidDomains = await queryAll<Pick<DomainRow, "id" | "target_domain">>(
         db,
         "SELECT id, target_domain FROM domains WHERE target_domain LIKE '%.'"
     );
