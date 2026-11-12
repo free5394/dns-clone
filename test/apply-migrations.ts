@@ -2,10 +2,12 @@
 // 官方模式：顶层 await（setup 文件运行在 per-test-file 存储隔离之外，可能执行多次；
 // applyD1Migrations 只应用未应用的迁移，因此重复执行安全）
 import { env, applyD1Migrations } from "cloudflare:test";
+import type { D1Migration } from "@cloudflare/vitest-plugin";
 import { hashPassword } from "../src/util/auth.ts";
 
-// TEST_MIGRATIONS 是 vitest.config.ts 经 miniflare bindings 注入的 D1Migration[] 绑定
-const migrations = (env as unknown as { TEST_MIGRATIONS: Parameters<typeof applyD1Migrations>[1] }).TEST_MIGRATIONS;
+// TEST_MIGRATIONS 是 vitest.config.ts 经 miniflare bindings 注入的 D1Migration[] 绑定。
+// issue #62：第三方签名同样用具名类型 D1Migration，不再按位置反推 applyD1Migrations 的第 2 个参数。
+const migrations = (env as unknown as { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS;
 await applyD1Migrations(env.WUYA, migrations);
 
 // 生成测试账号种子数据：登录所需的 ADMIN_PASSWORD_HASH + PASSWORD_SALT

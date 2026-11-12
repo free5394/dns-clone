@@ -1,13 +1,14 @@
 // migrations.test.ts — D1 迁移幂等性 + 门控写入（I1）
 import { env, applyD1Migrations } from "cloudflare:test";
+import type { D1Migration } from "@cloudflare/vitest-plugin";
 import { describe, it, expect } from "vitest";
 import { ensureInitialData, initializeAndMigrateDatabase, MIGRATION_VERSION } from "../src/db/migrations.ts";
 import { DOMAIN_COLUMNS, IP_SOURCE_COLUMNS } from "../src/db/client.ts";
 
 describe("D1 migrations", () => {
     it("applyD1Migrations runs twice without throwing", async () => {
-        const migrations = (env as unknown as { TEST_MIGRATIONS: Parameters<typeof applyD1Migrations>[1] })
-            .TEST_MIGRATIONS;
+        // issue #62：第三方签名同样用具名类型 D1Migration，不再按位置反推 applyD1Migrations 的第 2 个参数。
+        const migrations = (env as unknown as { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS;
         // 第一遍已在 setupFiles（apply-migrations.ts）跑过；这里再跑两遍验证幂等
         await applyD1Migrations(env.WUYA, migrations);
         await applyD1Migrations(env.WUYA, migrations);

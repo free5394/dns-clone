@@ -6,6 +6,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { fetchIpsFromSource, syncSingleIpSource } from "../src/sync/ip-sources.ts";
 import { deriveCompanionPath } from "../src/sync/github.ts";
 import { makeIpSourceRow, type IpSourceRow } from "./ip-source-row.ts";
+import { makeDomainRow, type DomainRow } from "./domain-row.ts";
 import {
     syncDomainLogic,
     syncSystemDomains,
@@ -1721,7 +1722,7 @@ describe("URL 类型目标端到端 (issue #52)", () => {
         // 二次同步：正文与远端记录都不变
         const fresh = (await env.WUYA.prepare("SELECT * FROM domains WHERE id = ?")
             .bind(domain.id)
-            .first()) as Parameters<typeof syncDomainLogic>[0];
+            .first()) as DomainRow;
         calls.length = 0;
         await syncDomainLogic(fresh, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
 
@@ -1738,17 +1739,7 @@ describe("URL 类型目标端到端 (issue #52)", () => {
 describe("DNS 全来源截断与变更时间备注 (issue #53)", () => {
     /** 造一个 updateCloudflareDns 需要的 domain 字段集 */
     function dnsDomain(overrides: { target: string; ttl?: number }) {
-        return {
-            id: 1,
-            source_domain: "src.example.com",
-            target_domain: overrides.target,
-            zone_id: "test-zone-id",
-            is_deep_resolve: 0,
-            ttl: overrides.ttl ?? 60,
-            last_synced_records: null,
-            is_enabled: 1,
-            is_system: 0,
-        } as Parameters<typeof updateCloudflareDns>[2];
+        return makeDomainRow({ target_domain: overrides.target, ttl: overrides.ttl ?? 60 });
     }
 
     /** 记录发往 CF 的调用；GET 返回 existing，其余按 responder 决定 */
@@ -1951,7 +1942,7 @@ describe("DNS 全来源截断与变更时间备注 (issue #53)", () => {
             .run();
         const domain = (await env.WUYA.prepare("SELECT * FROM domains WHERE target_domain = ?")
             .bind("limit-e2e.example.com")
-            .first()) as Parameters<typeof syncDomainLogic>[0];
+            .first()) as DomainRow;
 
         // 源按数值升序解析：超出 2 条的 3.3.3.3 / 4.4.4.4 必须被截断
         const calls = stubCf([]);
@@ -1986,17 +1977,14 @@ describe("DNS 全来源截断与变更时间备注 (issue #53)", () => {
         await env.WUYA.prepare(
             "INSERT INTO settings (key, value) VALUES ('MAX_IPS_PER_TYPE', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
         ).run();
-        const domain = {
+        const domain = makeDomainRow({
             id: 777,
             source_domain: "internal:hostmonit:yd",
             target_domain: "reuse-context.example.com",
             zone_id: "test-zone",
-            is_deep_resolve: 0,
-            ttl: 60,
             last_synced_records: "[]",
-            is_enabled: 1,
             is_system: 1,
-        } as Parameters<typeof resolveRecordsForDomain>[0];
+        });
         vi.stubGlobal(
             "fetch",
             vi.fn(async () => {
@@ -2019,17 +2007,14 @@ describe("DNS 全来源截断与变更时间备注 (issue #53)", () => {
         await env.WUYA.prepare(
             "INSERT INTO settings (key, value) VALUES ('MAX_IPS_PER_TYPE', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
         ).run();
-        const domain = {
+        const domain = makeDomainRow({
             id: 778,
             source_domain: "internal:hostmonit:yd",
             target_domain: "db-limit.example.com",
             zone_id: "test-zone",
-            is_deep_resolve: 0,
-            ttl: 60,
             last_synced_records: "[]",
-            is_enabled: 1,
             is_system: 1,
-        } as Parameters<typeof resolveRecordsForDomain>[0];
+        });
         vi.stubGlobal(
             "fetch",
             vi.fn(async () => {
