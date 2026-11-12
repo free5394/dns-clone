@@ -46,6 +46,12 @@ jobs:
             - name: 类型检查
               run: pnpm typecheck
 
+            # 测试代码的类型检查（tsconfig.test.json），约 0.4 秒。
+            # 此前 test/ 不在任何 tsconfig 的 include 里，oxlint 又不做类型检查，
+            # 于是 54 处存量类型错误可以一路合进 main（issue #60）。
+            - name: 测试类型检查
+              run: pnpm typecheck:test
+
             # 只检查本次变更新增的中文档代码，存量英文测试标题不触发告警。
             - name: 语言检查
               env:

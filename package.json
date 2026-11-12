@@ -17,7 +17,9 @@
         "cf-typegen": "wrangler types",
         "pretypecheck": "node scripts/ensure-worker-types.cjs",
         "typecheck": "tsc --noEmit",
-        "check": "pnpm typecheck && pnpm check:language && pnpm check:utf8 && pnpm lint && pnpm format:check && pnpm check:dashboard",
+        "pretypecheck:test": "node scripts/ensure-worker-types.cjs",
+        "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
+        "check": "pnpm typecheck && pnpm typecheck:test && pnpm check:language && pnpm check:utf8 && pnpm lint && pnpm format:check && pnpm check:dashboard",
         "verify": "pnpm check && pnpm test",
         "check:dashboard": "node scripts/check-dashboard-script.mjs",
         "check:language": "node scripts/check-changed-language.mjs",
@@ -33,6 +35,7 @@
     },
     "devDependencies": {
         "@cloudflare/vitest-plugin": "1.6.0",
+        "@types/node": "^24.19.2",
         "@vitest/coverage-istanbul": "5.1.0",
         "esbuild": "^0.28.2",
         "oxlint": "^1.91.0",

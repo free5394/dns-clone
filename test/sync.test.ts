@@ -5,6 +5,7 @@ import { env } from "cloudflare:test";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { fetchIpsFromSource, syncSingleIpSource } from "../src/sync/ip-sources.ts";
 import { deriveCompanionPath } from "../src/sync/github.ts";
+import { makeIpSourceRow, type IpSourceRow } from "./ip-source-row.ts";
 import {
     syncDomainLogic,
     syncSystemDomains,
@@ -127,13 +128,7 @@ describe("fetchIpsFromSource multi-source fallback", () => {
             "fetch",
             vi.fn(async () => new Response("3.3.3.3\n1.1.1.1\n2.2.2.2", { status: 200 }))
         );
-        const ips = await fetchIpsFromSource({
-            id: 1,
-            url: "https://example.com/ips.txt",
-            github_path: "ips.txt",
-            commit_message: "update",
-            fetch_strategy: "direct_regex",
-        });
+        const ips = await fetchIpsFromSource(makeIpSourceRow());
         // 排序后返回
         expect(ips).toEqual(["1.1.1.1", "2.2.2.2", "3.3.3.3"]);
     });
@@ -146,13 +141,7 @@ describe("fetchIpsFromSource multi-source fallback", () => {
             vi.fn(async () => new Response("no ips here", { status: 200 }))
         );
         await expect(
-            fetchIpsFromSource({
-                id: 1,
-                url: "https://example.com/empty.txt",
-                github_path: "empty.txt",
-                commit_message: "update",
-                fetch_strategy: "direct_regex",
-            })
+            fetchIpsFromSource(makeIpSourceRow({ url: "https://example.com/empty.txt", github_path: "empty.txt" }))
         ).resolves.toEqual([]);
     });
 
@@ -170,13 +159,7 @@ describe("fetchIpsFromSource multi-source fallback", () => {
                 return new Response("10.0.0.1\n10.0.0.2", { status: 200 });
             })
         );
-        const source = {
-            id: 99,
-            url: "https://example.com/ips.txt",
-            github_path: "fallback-test.txt",
-            commit_message: "update",
-            fetch_strategy: "phantomjs_cloud",
-        };
+        const source = makeIpSourceRow({ id: 99, github_path: "fallback-test.txt", fetch_strategy: "phantomjs_cloud" });
         const ips = await fetchIpsFromSource(source);
         expect(ips).toEqual(["10.0.0.1", "10.0.0.2"]);
         // fetchIpsFromSource 会就地更新 source.fetch_strategy
@@ -193,14 +176,7 @@ describe("fetchIpsFromSource multi-source fallback", () => {
             .run();
         const row = (await env.WUYA.prepare("SELECT * FROM ip_sources WHERE github_path = ?")
             .bind(uniquePath)
-            .first()) as {
-            id: number;
-            url: string;
-            github_path: string;
-            commit_message: string;
-            fetch_strategy: string;
-            is_enabled: number;
-        };
+            .first()) as IpSourceRow;
 
         let callCount = 0;
         vi.stubGlobal(
@@ -232,13 +208,9 @@ describe("fetchIpsFromSource multi-source fallback", () => {
             "fetch",
             vi.fn(async () => new Response("300.1.1.1\n1.1.1.1\n999.999.999.999\n256.0.0.1", { status: 200 }))
         );
-        const ips = await fetchIpsFromSource({
-            id: 1,
-            url: "https://example.com/mixed.txt",
-            github_path: "mixed.txt",
-            commit_message: "update",
-            fetch_strategy: "direct_regex",
-        });
+        const ips = await fetchIpsFromSource(
+            makeIpSourceRow({ url: "https://example.com/mixed.txt", github_path: "mixed.txt" })
+        );
         // 只有合法 IPv4 入选：越界段（999/300/256）不得发布给订阅器
         expect(ips).toEqual(["1.1.1.1"]);
     });
@@ -264,7 +236,8 @@ describe("syncDomainLogic writes back to D1", () => {
             .run();
 
         // mock 外部 fetch：DoH 查询 + Cloudflare API 列表（返回空 → 需新增）
-        const fetchMock = vi.fn(async (url: string) => {
+        // 显式声明签名：mock 实现只关心 url，但断言要读第二个参数（POST 的 method）
+        const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async (url) => {
             if (url.includes("dns-query")) {
                 return new Response(
                     JSON.stringify({

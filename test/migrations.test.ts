@@ -14,13 +14,8 @@ describe("D1 migrations", () => {
         // 若抛异常则测试失败；再验证表结构存在
         const tables = await env.WUYA.prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('settings', 'domains', 'sessions', 'ip_sources') ORDER BY name"
-        ).all();
-        expect(tables.results.map((r: { name: string }) => r.name)).toEqual([
-            "domains",
-            "ip_sources",
-            "sessions",
-            "settings",
-        ]);
+        ).all<{ name: string }>();
+        expect(tables.results.map((r) => r.name)).toEqual(["domains", "ip_sources", "sessions", "settings"]);
     });
 
     it("initializeAndMigrateDatabase writes last_migrated_at gate even without CF credentials (I1)", async () => {
@@ -71,8 +66,8 @@ describe("D1 migrations", () => {
         // 5 张表全部重建
         const tables = await env.WUYA.prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('settings', 'domains', 'sessions', 'login_attempts', 'ip_sources') ORDER BY name"
-        ).all();
-        expect(tables.results.map((r: { name: string }) => r.name)).toEqual([
+        ).all<{ name: string }>();
+        expect(tables.results.map((r) => r.name)).toEqual([
             "domains",
             "ip_sources",
             "login_attempts",

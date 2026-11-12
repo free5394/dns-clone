@@ -6,8 +6,8 @@ describe("smoke", () => {
     it("has WUYA D1 binding with seeded tables", async () => {
         const { results } = await env.WUYA.prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
-        ).all();
-        const names = results.map((r: { name: string }) => r.name);
+        ).all<{ name: string }>();
+        const names = results.map((r) => r.name);
         expect(names).toContain("settings");
         expect(names).toContain("domains");
     });

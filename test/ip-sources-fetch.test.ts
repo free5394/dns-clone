@@ -14,19 +14,15 @@ import {
     describeFetchError,
 } from "../src/sync/ip-sources.ts";
 import { HttpError, TimeoutError } from "../src/util/http-error.ts";
+import { makeIpSourceRow } from "./ip-source-row.ts";
 
 afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
 });
 
-const makeSource = (fetch_strategy = "direct_regex") => ({
-    id: 1,
-    url: "https://example.com/ips.txt",
-    github_path: "ips.txt",
-    commit_message: "update",
-    fetch_strategy,
-});
+/** 用例侧的简写：只关心抓取策略，其余字段取工厂默认值。 */
+const makeSource = (fetch_strategy = "direct_regex") => makeIpSourceRow({ fetch_strategy });
 
 describe("策略层错误路径（D3 类别化）", () => {
     it("源返回 502 时，聚合文案带 HTTP 类别与各策略摘要", async () => {
@@ -110,8 +106,13 @@ describe("策略层错误路径（D3 类别化）", () => {
             })
         );
         // 未传 emptyWhenNoIps（直调 target 层）时：空正文与抛错混合按真实错误类别收口
-        const pending = fetchIpsForTarget(makeSource());
-        const settled = pending.catch((e: unknown) => e as Error);
+        // then 的拒绝分支才把类型收窄成 Error：catch 会保留「成功值」分支，err.message 取不到
+        const settled = fetchIpsForTarget(makeSource()).then(
+            () => {
+                throw new Error("应当失败");
+            },
+            (e: unknown) => e as Error
+        );
         for (let i = 0; i < 4; i++) {
             await vi.advanceTimersByTimeAsync(20000);
         }
@@ -325,11 +326,8 @@ describe("hostmonit 抓取 key 配置化 (issue #25)", () => {
 
 // issue #50：抓取策略只返回正文，IPv4 / IPv6 由统一解析层按配置提取
 describe("统一解析层接入 (issue #50)", () => {
-    const parseSource = (mode: string | null, param: string | null = null) => ({
-        ...makeSource(),
-        parse_mode: mode,
-        parse_param: param,
-    });
+    const parseSource = (mode: string | null, param: string | null = null) =>
+        makeIpSourceRow({ parse_mode: mode, parse_param: param });
 
     it("策略层返回原始正文，不自行提取 IP", async () => {
         const body = "<html><body>1.1.1.1\n2606:4700:4700::1111</body></html>";
