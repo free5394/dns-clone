@@ -35,10 +35,10 @@
         "@cloudflare/vitest-plugin": "1.6.0",
         "@vitest/coverage-istanbul": "5.1.0",
         "esbuild": "^0.28.2",
-        "oxlint": "^1.91.0",
+        "oxlint": "^1.93.0",
         "prettier": "^3.9.10",
         "typescript": "7.0.2",
         "vitest": "^5.1.0",
-        "wrangler": "4.157.0"
+        "wrangler": "4.159.0"
     }
 }
