@@ -66,6 +66,37 @@ async function seedGitHubSettings() {
 }
 
 /**
+ * 捕获同步过程中写入的 console.log，供日志断言用例使用。
+ * 曾按 describe 就近复制三份（issue #22 / #50 / #55），收口到模块层后只此一份：
+ * 行为变更（如增加 warn 捕获、调整 mock 语义）改一处即三处生效。
+ */
+async function captureLogs(run: () => Promise<unknown>): Promise<string[]> {
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((msg?: unknown) => {
+        logs.push(String(msg));
+    });
+    try {
+        await run();
+    } finally {
+        spy.mockRestore();
+    }
+    return logs;
+}
+
+/** 读 ip_sources 的同步状态列，供用例断言 success / failed 与错误文案。 */
+async function syncState(id: number): Promise<{ status: string; error: string | null }> {
+    const row = (await env.WUYA.prepare("SELECT last_sync_status, last_sync_error FROM ip_sources WHERE id = ?")
+        .bind(id)
+        .first()) as { last_sync_status: string; last_sync_error: string | null } | null;
+    return { status: row?.last_sync_status ?? "", error: row?.last_sync_error ?? null };
+}
+
+/** 只取同步状态字符串的便捷包装。 */
+async function lastSyncStatus(id: number): Promise<string> {
+    return (await syncState(id)).status;
+}
+
+/**
  * GitHub 写回链路的 mock（issue #22 / #55 用例组的「单主文件」场景共用），覆盖：
  * repo 端点 200；contents 的 PUT 记录写入体并更新远端内容；contents 的 GET 按 Accept 区分
  * 「变更检测要 raw 正文」与「写前取 sha 要 JSON」；三者之外的请求交给 onOtherRequest。
@@ -339,19 +370,6 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
         return row.id;
     }
 
-    async function captureLogs(run: () => Promise<unknown>): Promise<string[]> {
-        const logs: string[] = [];
-        const spy = vi.spyOn(console, "log").mockImplementation((msg?: unknown) => {
-            logs.push(String(msg));
-        });
-        try {
-            await run();
-        } finally {
-            spy.mockRestore();
-        }
-        return logs;
-    }
-
     it("成功日志行带实际生效策略名", async () => {
         await seedGitHubSettings();
         const id = await insertSource("direct_regex", "https://example.com/ips.txt");
@@ -435,30 +453,6 @@ describe("IP 源主文件语义 (issue #50)", () => {
             id: number;
         };
         return { id: row.id, githubPath };
-    }
-
-    async function syncState(id: number): Promise<{ status: string; error: string | null }> {
-        const row = (await env.WUYA.prepare("SELECT last_sync_status, last_sync_error FROM ip_sources WHERE id = ?")
-            .bind(id)
-            .first()) as { last_sync_status: string; last_sync_error: string | null } | null;
-        return { status: row?.last_sync_status ?? "", error: row?.last_sync_error ?? null };
-    }
-
-    async function lastSyncStatus(id: number): Promise<string> {
-        return (await syncState(id)).status;
-    }
-
-    async function captureLogs(run: () => Promise<unknown>): Promise<string[]> {
-        const logs: string[] = [];
-        const spy = vi.spyOn(console, "log").mockImplementation((msg?: unknown) => {
-            logs.push(String(msg));
-        });
-        try {
-            await run();
-        } finally {
-            spy.mockRestore();
-        }
-        return logs;
     }
 
     it("存量 IPv4 内容一致时逐字节不变，不发 PUT", async () => {
@@ -757,26 +751,6 @@ describe("IP 源空结果语义 (issue #55)", () => {
             .bind(githubPath)
             .first()) as { id: number };
         return { id: row.id, githubPath };
-    }
-
-    async function syncState(id: number): Promise<{ status: string; error: string | null }> {
-        const row = (await env.WUYA.prepare("SELECT last_sync_status, last_sync_error FROM ip_sources WHERE id = ?")
-            .bind(id)
-            .first()) as { last_sync_status: string; last_sync_error: string | null } | null;
-        return { status: row?.last_sync_status ?? "", error: row?.last_sync_error ?? null };
-    }
-
-    async function captureLogs(run: () => Promise<unknown>): Promise<string[]> {
-        const logs: string[] = [];
-        const spy = vi.spyOn(console, "log").mockImplementation((msg?: unknown) => {
-            logs.push(String(msg));
-        });
-        try {
-            await run();
-        } finally {
-            spy.mockRestore();
-        }
-        return logs;
     }
 
     it("三策略都返回 200 空正文：主文件写空内容并标 success", async () => {
@@ -2157,16 +2131,13 @@ describe("三网与深度解析统一走 IP 内核 (issue #59)", () => {
         );
     };
 
-    const threeNetworkDomain = {
+    // 三网分支只读 id / source_domain / target_domain / is_system，其余列走工厂默认值
+    const threeNetworkDomain = makeDomainRow({
         id: 999,
         source_domain: "internal:hostmonit:yd",
         target_domain: "x.example.com",
-        zone_id: "test-zone",
-        is_deep_resolve: 0,
-        ttl: 60,
-        is_enabled: 1,
         is_system: 1,
-    };
+    });
 
     it("三网分支乱序输入按数值升序后截断，「前 N」是数值最小的 N 条", async () => {
         stubNoFetch();
