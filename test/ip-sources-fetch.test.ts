@@ -210,6 +210,50 @@ describe("新增抓取策略（直连被拦 / SPA 渲染）", () => {
         await expect(fetchIpsFromSource(makeSource())).rejects.toThrow("所有抓取策略均未能从该URL获取到IP");
         expect(calls.some((u) => u.includes("api.hostmonit.com"))).toBe(false);
     });
+
+    // issue #68：缓存策略原先不过适用性门控，hostmonit_api 会忽略传入 url 直接返回自己的列表，
+    // 于是「别的站点 + 历史 hostmonit 策略」会把 A 站写成 B 站订阅内容且日志显示成功。
+    it("已缓存的 hostmonit 策略遇到非 hostmonit URL 时不入链（issue #68）", async () => {
+        const calls: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                calls.push(url);
+                if (url.includes("api.hostmonit.com/get_optimization_ip")) {
+                    return new Response(JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }] }), {
+                        status: 200,
+                    });
+                }
+                return new Response("forbidden", { status: 403 });
+            })
+        );
+        const source = makeSource("hostmonit_api");
+        await expect(fetchIpsFromSource(source)).rejects.toThrow("所有抓取策略均未能从该URL获取到IP");
+        expect(calls.some((u) => u.includes("api.hostmonit.com"))).toBe(false);
+        // 未命中就没有「回退成功」可写入，缓存策略保持原样，交由下一次写入或探测清理
+        expect(source.fetch_strategy).toBe("hostmonit_api");
+    });
+
+    it("已缓存的 hostmonit 策略在 hostmonit URL 上仍然优先命中（回归不破）", async () => {
+        const calls: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                calls.push(url);
+                if (url.includes("api.hostmonit.com/get_optimization_ip")) {
+                    return new Response(JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }] }), {
+                        status: 200,
+                    });
+                }
+                return new Response("forbidden", { status: 403 });
+            })
+        );
+        const source = { ...makeSource("hostmonit_api"), url: "https://stock.hostmonit.com/CloudFlareYes" };
+        const ips = await fetchIpsFromSource(source);
+        expect(ips).toEqual(["172.67.172.3"]);
+        expect(calls[0]).toContain("api.hostmonit.com");
+        expect(source.fetch_strategy).toBe("hostmonit_api");
+    });
 });
 
 describe("parseHtmlTableWithOperator（提成导出后直测）", () => {

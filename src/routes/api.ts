@@ -16,7 +16,7 @@ import { jsonResponse, getCookie } from "../util/http.ts";
 import type { WaitUntil } from "../util/http.ts";
 import { hashPassword, isAuthenticated, verifyPassword } from "../util/auth.ts";
 import { getZoneName } from "../util/cf.ts";
-import { FETCH_STRATEGIES, resolveHostmonitKey } from "../sync/ip-sources.ts";
+import { FETCH_STRATEGIES, isStrategyApplicable, resolveHostmonitKey } from "../sync/ip-sources.ts";
 import { deriveCompanionPath, normalizeGithubPath } from "../sync/github.ts";
 import { parseContent, validateParseConfig, type ParseMode } from "../sync/ip-parse.ts";
 import { syncAllDomains, syncSystemDomains, syncSingleDomain, type DomainRow } from "../sync/domains.ts";
@@ -747,7 +747,13 @@ function validateIpSourceInput(body: IpSourceInputBody): IpSourceValidation {
     };
 }
 
-type CompanionCheck = { status: "ok" } | { status: "conflict"; conflictPath: string } | { status: "missing" };
+type CompanionCheck =
+    | {
+          status: "ok";
+          /** 目标行在被覆盖前的 URL；新增时为 null（issue #68 判定 URL 是否变更） */ previousUrl: string | null;
+      }
+    | { status: "conflict"; conflictPath: string }
+    | { status: "missing" };
 
 /**
  * 主文件与 IPv6 伴生文件共用同一份 Git 路径命名空间（issue #51）：
@@ -763,14 +769,17 @@ async function checkCompanionConflict(
 ): Promise<CompanionCheck> {
     // 投影形状从 IpSourceRow 派生（issue #64）；列清单以 SELECT 为准，改 SQL 时同步核对该类型
     const rows = await db
-        .prepare("SELECT id, github_path FROM ip_sources")
-        .all<Pick<IpSourceRow, "id" | "github_path">>();
+        .prepare("SELECT id, github_path, url FROM ip_sources")
+        .all<Pick<IpSourceRow, "id" | "github_path" | "url">>();
     const companion = deriveCompanionPath(githubPath);
     let targetSeen = false;
+    let targetUrl: string | null = null;
     let conflictPath: string | null = null;
     for (const row of rows.results ?? []) {
         if (excludeId !== undefined && row.id === excludeId) {
             targetSeen = true;
+            // 顺带取回旧 URL：写库时据它判断抓取策略缓存是否还有效，不再多打一次 D1 往返
+            targetUrl = row.url;
             continue;
         }
         // 新主文件撞了别人的伴生文件，或新伴生文件撞了别人的主文件
@@ -784,7 +793,7 @@ async function checkCompanionConflict(
     // 「目标不存在」优先于「路径冲突」：更新一个已被删掉的 id 时，报 404 才是使用者能据以行动的信息
     if (excludeId !== undefined && !targetSeen) return { status: "missing" };
     if (conflictPath !== null) return { status: "conflict", conflictPath };
-    return { status: "ok" };
+    return { status: "ok", previousUrl: targetUrl };
 }
 
 /**
@@ -817,10 +826,18 @@ async function writeIpSource(
             409
         );
     }
+    // fetch_strategy 是 URL 的抓取方式缓存而非用户偏好（issue #68）：URL 变了缓存即失效，
+    // 与 domains 侧 normalizeDomainSourceInput 的「URL 变更丢弃 fetch_strategy」保持同一语义。
+    // 新增路径 previousUrl 为 null，不做判定；未变更时原样保留提交值。
+    // 不适用于该 URL 的策略同样视为无效缓存直接丢弃（issue #68）：判据与同步链、探测共用一处，
+    // 这里只清缓存不报 400 —— 名字合法但配错 URL 属于历史遗留数据，保存动作不该因此被拦。
+    const urlChanged = check.previousUrl !== null && check.previousUrl !== url;
+    const cacheValid = !urlChanged && isStrategyApplicable(fetch_strategy, url);
+    const nextFetchStrategy: string | null = cacheValid ? fetch_strategy : null;
     try {
         const result = await db
             .prepare(options.sql)
-            .bind(url, github_path, commit_message, fetch_strategy, parse_mode, parse_param, ...options.bindings)
+            .bind(url, github_path, commit_message, nextFetchStrategy, parse_mode, parse_param, ...options.bindings)
             .run();
         // UPDATE 命中 0 行说明 id 不存在：返回 404，避免把失败包装成「更新成功」
         if (options.notFoundWhenNoRows && (result.meta?.changes ?? 0) === 0) {
@@ -899,7 +916,10 @@ async function apiProbeIpSource(request: Request, db: D1Database): Promise<Respo
     let attempts = 0;
     let budgetExhausted = false;
 
-    for (const [strategyName, strategyFn] of Object.entries(FETCH_STRATEGIES)) {
+    // 候选集合同步链共用适用性判据（issue #68）：探测是写入 fetch_strategy 的上游，
+    // 不门控等于给「hostmonit_api 抓到别人列表」这条错配开正门；声明顺序与总预算不变。
+    const candidates = Object.entries(FETCH_STRATEGIES).filter(([name]) => isStrategyApplicable(name, url));
+    for (const [strategyName, strategyFn] of candidates) {
         const remaining = deadlineAt - Date.now();
         if (remaining <= 0) {
             budgetExhausted = true;

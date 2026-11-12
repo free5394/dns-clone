@@ -105,6 +105,20 @@ const STRATEGY_APPLIES: Record<string, (url: string) => boolean> = {
     hostmonit_api: (url) => /(^|\.)hostmonit\.com$/i.test(new URL(url).hostname),
 };
 
+/**
+ * 策略适用性的唯一判据（issue #68）：同步尝试链、探测候选集合与 ip_sources 写入校验共用这一处。
+ * 未登记判定的策略对所有 URL 适用；URL 无法解析时按不适用处理，不把异常带进调用链。
+ */
+export function isStrategyApplicable(name: string, url: string): boolean {
+    const applies = STRATEGY_APPLIES[name];
+    if (!applies) return true;
+    try {
+        return applies(url);
+    } catch {
+        return false;
+    }
+}
+
 type LogFn = (msg: string) => void;
 
 /** 定时任务：批量同步 IP 源（失败优先） */
@@ -396,11 +410,15 @@ export async function fetchIpsForTarget(
     // 列可空：NULL 归一到空串，避免日志里出现「已从 null 回退」
     const configuredStrategy = target.fetch_strategy ?? "";
     // 构造尝试顺序：缓存策略优先，回退策略按声明顺序依次尝试
-    const strategyNames = Object.keys(FETCH_STRATEGIES).filter((n) => {
-        const applies = STRATEGY_APPLIES[n];
-        return !applies || applies(target.url);
-    });
-    const orderedNames = [configuredStrategy, ...strategyNames.filter((n) => n !== configuredStrategy)];
+    const strategyNames = Object.keys(FETCH_STRATEGIES).filter((n) => isStrategyApplicable(n, target.url));
+    // 显式配置的策略与自动链共用同一判据（issue #68）：hostmonit_api 会忽略传入 url 直接请求自己的 API，
+    // 不过门控就会把别的站点当成 hostmonit 订阅源抓取，所以不适用时从链首剔除而不是照跑。
+    const orderedNames = [
+        ...(configuredStrategy !== "" && isStrategyApplicable(configuredStrategy, target.url)
+            ? [configuredStrategy]
+            : []),
+        ...strategyNames.filter((n) => n !== configuredStrategy),
+    ];
     // 名字未必都有实现：configuredStrategy 可能是空串或已下线的策略名，这类名字会被循环跳过且不记账，
     // 所以「有没有可跑的策略」必须在进循环前按同一判据算出来，不能事后拿 attempts 反推（issue #67）。
     if (!orderedNames.some((name) => FETCH_STRATEGIES[name])) {

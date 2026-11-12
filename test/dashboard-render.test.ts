@@ -278,6 +278,17 @@ describe("IP 源解析配置弹窗 (issue #50)", () => {
         expect(html).toContain("const payload = buildIpSourceSavePayload({");
         expect(html).toContain("const probePayload = buildIpSourceProbePayload({");
     });
+
+    // issue #68：策略是 URL 的抓取方式缓存，URL 变更后会被清空；不弹窗，只给一行静态说明。
+    // 静态契约（issue #42）：可见文案脱离 DOM 无法驱动，只能锁注入点存在。
+    it("编辑弹窗说明抓取策略会随 URL 变更重置", () => {
+        const html = getDashboardPage([], [], {});
+
+        expect(html).toContain("抓取策略是 URL 的抓取方式缓存");
+        expect(html).toContain("会随 URL 变更重置");
+        // 不弹窗、不打断保存：说明是静态文本，不引入 confirm/alert 接线
+        expect(html).not.toContain("confirm('修改 URL 会重置");
+    });
 });
 
 // issue #52：URL 类型域名的卡片展示与弹窗接线。

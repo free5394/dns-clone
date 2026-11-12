@@ -462,19 +462,19 @@ D1 数据库（绑定名 `WUYA`）共 5 张表，由 `initializeAndMigrateDataba
 
 ### `ip_sources`（IP 抓取源）
 
-| 字段               | 类型        | 说明                                                              |
-| ------------------ | ----------- | ----------------------------------------------------------------- |
-| `id`               | INTEGER PK  | 自增主键                                                          |
-| `url`              | TEXT UNIQUE | 抓取地址                                                          |
-| `github_path`      | TEXT UNIQUE | 推送到 GitHub 仓库的文件路径                                      |
-| `commit_message`   | TEXT        | Git 提交信息                                                      |
-| `fetch_strategy`   | TEXT        | 抓取策略（`direct_regex` / `phantomjs_cloud` / `proxy_codetabs`） |
-| `parse_mode`       | TEXT        | 解析模式（同 `domains.parse_mode`，NULL 按 `auto`）               |
-| `parse_param`      | TEXT        | 解析参数（同 `domains.parse_param`）                              |
-| `last_synced_time` | TIMESTAMP   | 上次同步时间                                                      |
-| `last_sync_status` | TEXT        | 同上                                                              |
-| `last_sync_error`  | TEXT        | 上次失败原因                                                      |
-| `is_enabled`       | INTEGER     | 1=启用；0=禁用                                                    |
+| 字段               | 类型        | 说明                                                                                                                       |
+| ------------------ | ----------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `id`               | INTEGER PK  | 自增主键                                                                                                                   |
+| `url`              | TEXT UNIQUE | 抓取地址                                                                                                                   |
+| `github_path`      | TEXT UNIQUE | 推送到 GitHub 仓库的文件路径                                                                                               |
+| `commit_message`   | TEXT        | Git 提交信息                                                                                                               |
+| `fetch_strategy`   | TEXT        | 抓取策略缓存（`direct_regex` / `phantomjs_cloud` / `proxy_codetabs` / `jina_reader` / `hostmonit_api`）；URL 变更即置 NULL |
+| `parse_mode`       | TEXT        | 解析模式（同 `domains.parse_mode`，NULL 按 `auto`）                                                                        |
+| `parse_param`      | TEXT        | 解析参数（同 `domains.parse_param`）                                                                                       |
+| `last_synced_time` | TIMESTAMP   | 上次同步时间                                                                                                               |
+| `last_sync_status` | TEXT        | 同上                                                                                                                       |
+| `last_sync_error`  | TEXT        | 上次失败原因                                                                                                               |
+| `is_enabled`       | INTEGER     | 1=启用；0=禁用                                                                                                             |
 
 ### `sessions`（登录会话）
 

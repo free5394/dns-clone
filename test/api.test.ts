@@ -1180,6 +1180,72 @@ describe("端点直测补齐 (M-12)", () => {
         }
     });
 
+    // issue #68：探测是写入 fetch_strategy 的上游，候选集合必须与同步链共用适用性判据。
+    // 否则贴一个前四个策略都取不到 IP 的 URL 点探测，hostmonit_api 会返回它自己的列表并「探测成功」。
+    it("probe 候选集合不含与 URL 不适配的策略（issue #68）", async () => {
+        const cookie = await loginAndGetCookie();
+        const calls: string[] = [];
+        const origFetch = globalThis.fetch;
+        globalThis.fetch = ((input: RequestInfo | URL) => {
+            const url = String(input);
+            calls.push(url);
+            if (url.includes("api.hostmonit.com/get_optimization_ip")) {
+                return Promise.resolve(
+                    new Response(JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }] }), { status: 200 })
+                );
+            }
+            return Promise.resolve(new Response("forbidden", { status: 403 }));
+        }) as typeof fetch;
+
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/ip_sources/probe", {
+                    method: "POST",
+                    headers: { Cookie: cookie, "Content-Type": "application/json" },
+                    body: JSON.stringify({ url: "https://example.com/m68/not-hostmonit.txt" }),
+                }),
+                env
+            );
+            expect(res.status).toBe(400);
+            expect(calls.some((u) => u.includes("api.hostmonit.com"))).toBe(false);
+        } finally {
+            globalThis.fetch = origFetch;
+        }
+    });
+
+    it("probe 在 hostmonit URL 上仍会尝试 hostmonit_api（回归不破）", async () => {
+        const cookie = await loginAndGetCookie();
+        const calls: string[] = [];
+        const origFetch = globalThis.fetch;
+        globalThis.fetch = ((input: RequestInfo | URL) => {
+            const url = String(input);
+            calls.push(url);
+            if (url.includes("api.hostmonit.com/get_optimization_ip")) {
+                return Promise.resolve(
+                    new Response(JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }] }), { status: 200 })
+                );
+            }
+            return Promise.resolve(new Response("forbidden", { status: 403 }));
+        }) as typeof fetch;
+
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/ip_sources/probe", {
+                    method: "POST",
+                    headers: { Cookie: cookie, "Content-Type": "application/json" },
+                    body: JSON.stringify({ url: "https://stock.hostmonit.com/CloudFlareYes" }),
+                }),
+                env
+            );
+            expect(res.status).toBe(200);
+            const body = (await res.json()) as { strategy?: string };
+            expect(body.strategy).toBe("hostmonit_api");
+            expect(calls.some((u) => u.includes("api.hostmonit.com"))).toBe(true);
+        } finally {
+            globalThis.fetch = origFetch;
+        }
+    });
+
     it("probe 拒绝非 HTTP(S) 协议", async () => {
         const cookie = await loginAndGetCookie();
         const res = await handleApiRequest(
@@ -1994,8 +2060,68 @@ describe("IP 源写库成功路径 (中-7)", () => {
         expect(row?.id).toBe(created?.id);
         expect(row?.url).toBe("https://example.com/m12p/updated.txt");
         expect(row?.commit_message).toBe("更新后的提交信息");
-        expect(row?.fetch_strategy).toBe("phantomjs_cloud");
+        // issue #68：fetch_strategy 是 URL 的抓取方式缓存，URL 变了缓存即失效，与 domains 侧语义对齐
+        expect(row?.fetch_strategy).toBeNull();
     });
+
+    // issue #68：URL 未变更时缓存策略必须原样保留，否则每改一次 commit_message 都要重新探测。
+    it("PUT 只改其它字段时保留原 fetch_strategy（issue #68）", async () => {
+        const cookie = await loginAndGetCookie();
+        const created = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(payload({ github_path: "m12p/keep.txt", url: "https://example.com/m12p/keep.txt" })),
+        });
+        expect(created.status).toBe(200);
+
+        const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(await idOf("m12p/keep.txt")), {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m12p/keep.txt",
+                github_path: "m12p/keep.txt",
+                commit_message: "只改提交信息",
+                fetch_strategy: "direct_regex",
+            }),
+        });
+        expect(res.status).toBe(200);
+        expect((await readRow("m12p/keep.txt"))?.fetch_strategy).toBe("direct_regex");
+    });
+
+    // issue #68：缓存策略本身不适用于该 URL（历史脏数据或 API 直写）时，保存动作不报错，
+    // 但策略不再落库——否则同步链每次都要在链首空跑一次别的站点的策略。
+    it("PUT 提交不适用于该 URL 的策略时不落库，不报错（issue #68）", async () => {
+        const cookie = await loginAndGetCookie();
+        const created = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(
+                payload({ github_path: "m12p/mismatch.txt", url: "https://example.com/m12p/mismatch.txt" })
+            ),
+        });
+        expect(created.status).toBe(200);
+
+        const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(await idOf("m12p/mismatch.txt")), {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m12p/mismatch.txt",
+                github_path: "m12p/mismatch.txt",
+                commit_message: "配错策略",
+                fetch_strategy: "hostmonit_api",
+            }),
+        });
+        expect(res.status).toBe(200);
+        expect((await readRow("m12p/mismatch.txt"))?.fetch_strategy).toBeNull();
+    });
+
+    async function idOf(githubPath: string): Promise<number> {
+        const row = await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind(githubPath)
+            .first<{ id: number }>();
+        expect(row?.id).toBeGreaterThan(0);
+        return row?.id as number;
+    }
 
     it("未登录时新增被拒，且不落库", async () => {
         const res = await SELF.fetch("https://example.com/api/ip_sources", {

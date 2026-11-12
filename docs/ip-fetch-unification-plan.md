@@ -161,6 +161,8 @@
 - 策略改为「返回原始文本」，由统一解析层提取 IP；正文截断到 512KB 后再解析。
 - 回退链的「策略成功」定义为：取得正文 **且** 统一解析后提取到至少 1 个 IP；任一条件不满足（含 HTTP 200 但正文无 IP）视为未命中，继续尝试下一策略，与现有回退语义保持一致。
 - 策略回退顺序、缓存策略优先、回退后持久化 `fetch_strategy` 的行为保持不变。
+- `fetch_strategy` 是 **URL 的抓取方式缓存**，不是用户偏好：URL 变更即失效，写入时置 NULL（issue #68）。
+- 策略适用性是**策略的固有属性**（如 `hostmonit_api` 仅 hostmonit 域名适用），判定收敛在 `isStrategyApplicable(name, url)` 一处，同步链（含已缓存策略）、探测候选集合、`ip_sources` 写入校验三处共用（issue #68）。
 
 ### 6.3 同批缓存
 
@@ -301,6 +303,8 @@
 ```
 
 - 保留现有 URL / 路径 / 提交信息 / 策略校验。
+- 策略名合法但**不适用于该 URL** 时不报错、也不落库：视为无效缓存，按 NULL 写入（issue #68）。
+- URL 变更时 `fetch_strategy` 置 NULL，未变更则保留原值——与 `domains` 侧 `normalizeDomainSourceInput` 的「URL 变更丢弃策略」同一语义（issue #68）。
 - 新增解析配置校验。
 - 保存时校验伴生文件路径：长度 ≤512、与其它 `github_path` 不冲突。
 - `GET /api/ip_sources` 投影增加 `parse_mode`、`parse_param`。
@@ -331,6 +335,7 @@
 ```
 
 - 探测总预算 25 秒、策略串行顺序保持不变。
+- 探测候选集合按 `isStrategyApplicable(name, url)` 过滤，与同步链共用同一判据（issue #68）；不适用的策略不进入候选，也不消耗预算。
 - 解析配置非法时直接 400，不进入抓取。
 - 不返回 `ipCount`：该字段是早期「IPv4 单一计数」时代的兼容别名，与 `ipv4Count` 同值冗余，仓库内前端已全部改用 `ipv4Count`/`ipv6Count`，故删除（issue #58）。仅当出现**可举证的**外部调用方依赖该别名时，才允许以显式别名形式恢复，并在本票补记依赖方证据。
 
