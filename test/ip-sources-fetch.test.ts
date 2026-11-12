@@ -14,7 +14,7 @@ import {
     describeFetchError,
 } from "../src/sync/ip-sources.ts";
 import { HttpError, TimeoutError } from "../src/util/http-error.ts";
-import { makeIpSourceRow } from "./ip-source-row.ts";
+import { makeIpSourceRow, type IpSourceRow } from "./ip-source-row.ts";
 
 afterEach(() => {
     vi.useRealTimers();
@@ -22,7 +22,22 @@ afterEach(() => {
 });
 
 /** 用例侧的简写：只关心抓取策略，其余字段取工厂默认值。 */
-const makeSource = (fetch_strategy = "direct_regex") => makeIpSourceRow({ fetch_strategy });
+const makeSource = (fetch_strategy: IpSourceRow["fetch_strategy"] = "direct_regex") =>
+    makeIpSourceRow({ fetch_strategy });
+
+/**
+ * 断言 promise 一定拒绝，并把拒绝值收窄成 Error。
+ * 用 then 而非 catch：成功分支显式抛错后返回类型只剩 Error；catch 会保留成功值分支，
+ * err.message 取不到。非 Error 拒绝值用 String() 兜底，避免 err.message 为 undefined 误导断言。
+ */
+function rejectionAsError(promise: Promise<unknown>): Promise<Error> {
+    return promise.then(
+        () => {
+            throw new Error("应当失败");
+        },
+        (e: unknown) => (e instanceof Error ? e : new Error(String(e)))
+    );
+}
 
 describe("策略层错误路径（D3 类别化）", () => {
     it("源返回 502 时，聚合文案带 HTTP 类别与各策略摘要", async () => {
@@ -30,12 +45,7 @@ describe("策略层错误路径（D3 类别化）", () => {
             "fetch",
             vi.fn(async () => new Response("boom", { status: 502 }))
         );
-        const err = await fetchIpsFromSource(makeSource()).then(
-            () => {
-                throw new Error("应当失败");
-            },
-            (e: unknown) => e as Error
-        );
+        const err = await rejectionAsError(fetchIpsFromSource(makeSource()));
         expect(err.message).toContain("所有抓取策略均未能从该URL获取到IP");
         expect(err.message).toContain("HTTP 502");
         expect(err.message).toContain("direct_regex");
@@ -80,12 +90,7 @@ describe("策略层错误路径（D3 类别化）", () => {
             "fetch",
             vi.fn(async () => new Response("<table><tbody></tbody></table>", { status: 200 }))
         );
-        const err = await fetchIpsForTarget(makeSource()).then(
-            () => {
-                throw new Error("应当失败");
-            },
-            (e: unknown) => e as Error
-        );
+        const err = await rejectionAsError(fetchIpsForTarget(makeSource()));
         expect(err.message).toContain("[无可用IP]");
         expect(err.message).toContain("direct_regex: 未匹配到 IP");
         expect(err.message).toContain("phantomjs_cloud: 未匹配到 IP");
@@ -106,13 +111,7 @@ describe("策略层错误路径（D3 类别化）", () => {
             })
         );
         // 未传 emptyWhenNoIps（直调 target 层）时：空正文与抛错混合按真实错误类别收口
-        // then 的拒绝分支才把类型收窄成 Error：catch 会保留「成功值」分支，err.message 取不到
-        const settled = fetchIpsForTarget(makeSource()).then(
-            () => {
-                throw new Error("应当失败");
-            },
-            (e: unknown) => e as Error
-        );
+        const settled = rejectionAsError(fetchIpsForTarget(makeSource()));
         for (let i = 0; i < 4; i++) {
             await vi.advanceTimersByTimeAsync(20000);
         }

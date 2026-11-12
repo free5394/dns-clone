@@ -1,6 +1,9 @@
 {
     "extends": "./tsconfig.json",
     "compilerOptions": {
+        // @cloudflare/vitest-plugin/types 提供 cloudflare:test 模块声明；node 供 test/global-setup.ts 等 Node 侧代码使用。
+        // 代价：workerd 内运行的用例也能通过 Buffer/process 的类型检查，而这些全局对象是否可用取决于运行时兼容开关，
+        // 因此测试代码不要依赖 Node 全局对象。
         "types": ["@cloudflare/vitest-plugin/types", "node"]
     },
     "include": ["test/**/*.ts", "worker-configuration.d.ts"]
