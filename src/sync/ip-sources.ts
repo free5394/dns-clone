@@ -401,6 +401,11 @@ export async function fetchIpsForTarget(
         return !applies || applies(target.url);
     });
     const orderedNames = [configuredStrategy, ...strategyNames.filter((n) => n !== configuredStrategy)];
+    // 名字未必都有实现：configuredStrategy 可能是空串或已下线的策略名，这类名字会被循环跳过且不记账，
+    // 所以「有没有可跑的策略」必须在进循环前按同一判据算出来，不能事后拿 attempts 反推（issue #67）。
+    if (!orderedNames.some((name) => FETCH_STRATEGIES[name])) {
+        throw new Error("[无可用IP] 没有适用于该URL的抓取策略，请检查URL或在添加/编辑IP源时重新探测。");
+    }
     // 设置页保存后下一次抓取立即生效：每次抓取都重新读取，不缓存到模块级变量
     const context: FetchStrategyContext = {
         hostmonitKey: db ? await resolveHostmonitKey(db) : DEFAULT_HOSTMONIT_API_KEY,
@@ -436,13 +441,6 @@ export async function fetchIpsForTarget(
     }
     // D3 类别化文案：类别前缀 + 每策略摘要，随 last_sync_error 落库（只存 e.message，本文案即 message）
     const detail = attempts.length > 0 ? `（${attempts.join("; ")}）` : "";
-    // 循环必跑（issue #67）：STRATEGY_APPLIES 目前只过滤 hostmonit_api，其余策略恒入链，所以 attempts 至少有一条。
-    // 只有连 configuredStrategy 都取不到抓取函数（策略表被过滤光 / 配置项失效）时才会落到下面的检查。
-    // 那种情况必须显式失败：未开 emptyWhenNoIps 时会被 describeErrorCategory 兜底成误导性的「抓取失败」，
-    // 生产调用方（传 true）则会静默拿到空结果——两种都把「没有可跑的方案」与「源站没返回 IP」混为一谈。
-    if (attempts.length === 0) {
-        throw new Error("[无可用IP] 没有适用于该URL的抓取策略，请检查URL或在添加/编辑IP源时重新探测。");
-    }
     // §13.1「成功但 0 条」与「抓取抛错」是两条不同分支：只要有一条策略成功取到正文却没有 IP，
     // 就属于前者——哪怕其它策略抛过错，也不能被 lastError 短路成抓取失败（否则 DNS 侧会误标 failed）。
     if (options.emptyWhenNoIps && fetchedWithoutIps) {
