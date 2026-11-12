@@ -177,9 +177,10 @@ export const IP_SOURCE_COLUMNS =
     "parse_mode, parse_param";
 
 /**
- * 表行类型的单一来源（issue #65）：settings / sessions 的读取方从这里 `import type` 派生自己的投影，
- * 不在调用点内联手写行形状。列约束以 `src/db/migrations.ts` 的 `expectedSchemas` DDL 为准，
- * 改表时同步核对这些类型——与上面的列清单同处 db 层，避免行形状在多处漂移。
+ * 表行类型的单一来源（issue #65）：settings / sessions 的读取处一律从这里派生自己的投影
+ * （同文件直接引用，跨层用 `import type`），不在调用点内联手写行形状。
+ * 列约束以 `src/db/migrations.ts` 的 `expectedSchemas` DDL 为准，改表时同步核对这些类型——
+ * 与上面的列清单同处 db 层，避免行形状在多处漂移。
  */
 
 /** settings 表的一行（DDL：src/db/migrations.ts 的 expectedSchemas.settings —— key TEXT PRIMARY KEY NOT NULL、value TEXT NOT NULL） */
