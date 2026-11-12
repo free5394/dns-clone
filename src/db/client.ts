@@ -28,7 +28,7 @@ export async function setSetting(db: D1Database, key: string, value: string | nu
 
 /** 读取全部 settings 为对象 */
 export async function getFullSettings(db: D1Database) {
-    const results = await queryAll<{ key: string; value: string }>(db, "SELECT key, value FROM settings");
+    const results = await queryAll<Pick<SettingsRow, "key" | "value">>(db, "SELECT key, value FROM settings");
     const settings: Record<string, string> = {};
     for (const row of results) {
         settings[row.key] = row.value;
@@ -175,3 +175,21 @@ export const IP_SOURCE_COLUMNS =
     "last_sync_status, last_sync_error, is_enabled, " +
     // issue #49 / 方案 §8.2：新增列进入投影，旧数据读出 null（不报错）
     "parse_mode, parse_param";
+
+/**
+ * 表行类型的单一来源（issue #65）：settings / sessions 的读取方从这里 `import type` 派生自己的投影，
+ * 不在调用点内联手写行形状。列约束以 `src/db/migrations.ts` 的 `expectedSchemas` DDL 为准，
+ * 改表时同步核对这些类型——与上面的列清单同处 db 层，避免行形状在多处漂移。
+ */
+
+/** settings 表的一行（DDL：src/db/migrations.ts 的 expectedSchemas.settings —— key TEXT PRIMARY KEY NOT NULL、value TEXT NOT NULL） */
+export interface SettingsRow {
+    key: string;
+    value: string;
+}
+
+/** sessions 表的一行（DDL：src/db/migrations.ts 的 expectedSchemas.sessions —— token TEXT PRIMARY KEY NOT NULL、expires_at TIMESTAMP NOT NULL） */
+export interface SessionRow {
+    token: string;
+    expires_at: string;
+}
