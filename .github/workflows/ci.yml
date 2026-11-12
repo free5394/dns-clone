@@ -1,11 +1,13 @@
-# ci.yml — 每次 push 到 main 与每个 PR 上跑类型检查与测试
+# ci.yml — 每次 push 到 main / dev 与每个 PR 上跑类型检查与测试
 # 仓库此前没有任何 guardrail：pnpm typecheck / pnpm test 都能跑通，但没有机制保证被跑。
 # 本 workflow 只做两件事，全部依赖已在 devDependencies 内，不额外引入新依赖。
+# dev 也列在 push 分支里：它是集成分支，门禁要在集成分支上就生效，不必等合并到 main 才发现问题。
+# push 事件使用的是被推分支上的 workflow 文件，因此加这一行不需要先合并。
 name: CI
 
 on:
     push:
-        branches: [main]
+        branches: [main, dev]
     pull_request:
 
 # 同一分支的旧运行自动取消，避免 push 频繁时排队堆积
