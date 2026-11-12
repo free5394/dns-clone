@@ -170,15 +170,17 @@ export const DOMAIN_COLUMNS =
     "source_type, source_url, parse_mode, parse_param, fetch_strategy";
 
 /**
- * domains 表的行类型（`SELECT * FROM domains` 读出）。
+ * domains 表的行类型。同步路径以 `SELECT * FROM domains` 读出整行，本类型只声明其中
+ * 被消费的 14 列（与 DDL 的偏差见文末）。
  * 可空列声明为可选，是为了兼容只查部分列的调用方；整行读出时这些键仍然存在。
  *
  * issue #62：测试侧不再用按位置取参数类型的方式反推，改为 `import type` 本类型，
  * 保证领域定义只有这一处——签名一改，测试跟随类型报错而不是静默指向别的参数。
  *
- * issue #66：定义从 `src/sync/domains.ts` 下沉到 db 层。表定义与列清单 `DOMAIN_COLUMNS`
- * 都在这一层，db 层（如 migrations.ts 的 invalid domain 修复）需要派生行形状时，不该反向
- * import sync 层把依赖方向掰反；`sync → db` 是既有方向，本类型不新增任何 import 边。
+ * issue #66：定义从 `src/sync/domains.ts` 下沉到 db 层。表定义（migrations.ts 的
+ * `expectedSchemas.domains`）与列清单 `DOMAIN_COLUMNS` 都在 db 层，db 层（如 migrations.ts
+ * 的 invalid domain 修复）需要派生行形状时，不该反向 import sync 层把依赖方向掰反；
+ * `sync → db` 是既有方向，本类型不新增任何 import 边。
  *
  * 与 DDL 的已知偏差（刻意保持，issue #66 范围外）：`domains` 表有 18 列，本类型只覆盖 14 列，
  * 缺 `notes` / `last_synced_time` / `last_sync_status` / `last_sync_error`。补齐会触发一批
