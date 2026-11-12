@@ -20,7 +20,7 @@ import { FETCH_STRATEGIES, resolveHostmonitKey } from "../sync/ip-sources.ts";
 import { deriveCompanionPath, normalizeGithubPath } from "../sync/github.ts";
 import { parseContent, validateParseConfig, type ParseMode } from "../sync/ip-parse.ts";
 import { syncAllDomains, syncSystemDomains, syncSingleDomain, type DomainRow } from "../sync/domains.ts";
-import { syncSingleIpSource, syncAllIpSources } from "../sync/ip-sources.ts";
+import { syncSingleIpSource, syncAllIpSources, type IpSourceRow } from "../sync/ip-sources.ts";
 import { assertSafeHttpUrl } from "../util/url-safety.ts";
 import { fetchWithTimeout } from "../util/fetch.ts";
 import {
@@ -761,10 +761,10 @@ async function checkCompanionConflict(
     githubPath: string,
     excludeId: number | undefined
 ): Promise<CompanionCheck> {
-    const rows = await db.prepare("SELECT id, github_path FROM ip_sources").all<{
-        id: number;
-        github_path: string;
-    }>();
+    // 投影形状从 IpSourceRow 派生（issue #64）；列清单以 SELECT 为准，改 SQL 时同步核对该类型
+    const rows = await db
+        .prepare("SELECT id, github_path FROM ip_sources")
+        .all<Pick<IpSourceRow, "id" | "github_path">>();
     const companion = deriveCompanionPath(githubPath);
     let targetSeen = false;
     let conflictPath: string | null = null;

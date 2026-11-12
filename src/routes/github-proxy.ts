@@ -3,18 +3,19 @@
 
 import { getGitHubSettings } from "../db/client.ts";
 import { companionSourceCandidate, deriveCompanionPath, readFileForSubscriber } from "../sync/github.ts";
+import type { IpSourceRow } from "../sync/ip-sources.ts";
 
 /**
  * 白名单查询：先按请求路径精确匹配主文件，未命中再按派生规则反查伴生文件所属的源。
  * 主文件与候选主文件一趟 IN 查回来，省掉第二次 D1 往返。
  */
-async function findWhitelistedSource(db: D1Database, path: string): Promise<{ github_path: string } | null> {
+async function findWhitelistedSource(db: D1Database, path: string): Promise<Pick<IpSourceRow, "github_path"> | null> {
     const candidate = companionSourceCandidate(path);
     const keys = candidate === null ? [path] : [path, candidate];
     const rows = await db
         .prepare(`SELECT github_path FROM ip_sources WHERE github_path IN (${keys.map(() => "?").join(", ")})`)
         .bind(...keys)
-        .all<{ github_path: string }>();
+        .all<Pick<IpSourceRow, "github_path">>();
     const found = rows.results ?? [];
 
     const exact = found.find((row) => row.github_path === path);

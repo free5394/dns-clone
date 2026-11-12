@@ -21,7 +21,7 @@ import { HOSTMONIT_API_KEY, normalizeHostmonitKey } from "../db/settings.ts";
 import { forEachIsolated } from "../util/batch-sync.ts";
 import { parseContent } from "./ip-parse.ts";
 
-/** ip_sources 表的一行。导出供测试侧夹具直接引用，避免用 Parameters 反推类型（issue #61）。 */
+/** ip_sources 表的一行。导出供测试夹具与路由层投影共用，避免手写形状或用 Parameters 反推类型（issue #61 / #64）。 */
 export interface IpSourceRow {
     id: number;
     url: string;
@@ -128,7 +128,7 @@ export async function syncScheduledIpSources(env: { WUYA: D1Database }): Promise
             last_synced_time ASC
         LIMIT ?`;
 
-    const sourcesToSync = await queryAll<{ id: number }>(db, query, BATCH_SIZE);
+    const sourcesToSync = await queryAll<Pick<IpSourceRow, "id">>(db, query, BATCH_SIZE);
 
     if (sourcesToSync.length === 0) {
         log("本轮没有需要同步的 IP 源。");
