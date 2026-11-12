@@ -20,6 +20,14 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
+/** 与 seedGitHubSettings 写入的凭据保持一致：mock 只用这一份仓库身份拼 GitHub API URL。 */
+const TEST_GITHUB_OWNER = "test-owner";
+const TEST_GITHUB_REPO = "test-repo";
+const TEST_GITHUB_REPO_API = `https://api.github.com/repos/${TEST_GITHUB_OWNER}/${TEST_GITHUB_REPO}`;
+
+/** 一次 GitHub 写入的记录：path 为目标文件路径，content 为解码后的正文。 */
+type RecordedPut = { path: string; content: string };
+
 /**
  * 独立计算的期望备注：走 Intl 时区库（与既有 beijingTimeLog 同一机制），
  * 而不是复用被测实现的手工 UTC+8 平移——否则时区整体跑偏时两边一起错，测不出问题。
@@ -42,8 +50,8 @@ function expectedChangeComment(now: Date = new Date()): string {
 async function seedGitHubSettings() {
     for (const [key, value] of [
         ["GITHUB_TOKEN", "test-token"],
-        ["GITHUB_OWNER", "test-owner"],
-        ["GITHUB_REPO", "test-repo"],
+        ["GITHUB_OWNER", TEST_GITHUB_OWNER],
+        ["GITHUB_REPO", TEST_GITHUB_REPO],
     ]) {
         await env.WUYA.prepare(
             "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
@@ -54,28 +62,31 @@ async function seedGitHubSettings() {
 }
 
 /**
- * GitHub contents API 的三分支 mock（issue #55 用例组共用）：
+ * GitHub contents API 的三分支 mock（issue #22 / #55 用例组的「单主文件」场景共用）：
  * PUT 记录写入体并把远端内容更新为写入值；GET 按 Accept 区分「变更检测要 raw 正文」与「写前取 sha 要 JSON」。
- * 其余请求交给 onOtherRequest，返回 null 表示未命中，由本函数抛错——漏 mock 必须炸掉，不能静默放行。
+ * 不传 initialFile 表示远端文件一开始不存在（404 → 新建），GET 一律 404。
+ * 非 GitHub 请求（抓取源站）交给 onOtherRequest，返回 null 表示未命中，由本函数抛错——漏 mock 必须炸掉，不能静默放行。
+ * 伴生文件的多文件初态与 PUT 失败注入不在此 helper 内，留给 issue #50 用例自行 mock。
  */
 function stubGitHubContentsMock(options: {
-    githubPath: string;
-    initialRemoteMain: string;
-    puts: Array<{ path: string; content: string }>;
+    initialFile?: { path: string; content: string };
+    puts: RecordedPut[];
     onOtherRequest: (url: string, init?: RequestInit) => Response | null;
 }) {
-    const remoteContents = new Map<string, string>([[options.githubPath, options.initialRemoteMain]]);
+    // 缺省 initialFile 即远端文件不存在：GET 走 404，首次 PUT 时才建出来。
+    const remoteContents = new Map<string, string>();
+    if (options.initialFile) {
+        remoteContents.set(options.initialFile.path, options.initialFile.content);
+    }
     vi.stubGlobal(
         "fetch",
         vi.fn(async (input: unknown, init?: RequestInit) => {
             const url = String(typeof input === "string" ? input : (input as Request).url);
             const method = (init?.method ?? "GET").toUpperCase();
-            const otherResponse = options.onOtherRequest(url, init);
-            if (otherResponse) return otherResponse;
-            if (url === "https://api.github.com/repos/test-owner/test-repo") {
+            if (url === TEST_GITHUB_REPO_API) {
                 return new Response("{}", { status: 200 });
             }
-            if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+            if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
                 const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
                 if (method === "PUT") {
                     const body = JSON.parse(String(init?.body ?? "{}")) as { content: string };
@@ -99,6 +110,9 @@ function stubGitHubContentsMock(options: {
                           headers: { "Content-Type": "application/json" },
                       });
             }
+            // 非 GitHub 请求（抓取源站）才交给用例自定义；未命中照样炸掉。
+            const otherResponse = options.onOtherRequest(url, init);
+            if (otherResponse) return otherResponse;
             throw new Error(`未预期的请求: ${url}`);
         })
     );
@@ -335,26 +349,6 @@ describe("syncSingleIpSource (Task 2.1 is_enabled 守卫)", () => {
 // issue #22（P4）：成功日志必须写明本次实际生效的抓取策略；发生回退时写回退后的那个，
 // 而不是配置里写的那个——否则管理员看到的"策略"与真实抓取链路不符。
 describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)", () => {
-    /** GitHub 侧全部 mock 掉：仓库存在、文件不存在（404 → 新建）、PUT 成功。 */
-    function stubFetch(ipResponseFor: (url: string) => Response | null) {
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async (input: unknown, init?: RequestInit) => {
-                const url = String(typeof input === "string" ? input : (input as Request).url);
-                if (url === "https://api.github.com/repos/test-owner/test-repo") {
-                    return new Response("{}", { status: 200 });
-                }
-                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
-                    if ((init?.method ?? "GET").toUpperCase() === "PUT") return new Response("{}", { status: 200 });
-                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
-                }
-                const ipResponse = ipResponseFor(url);
-                if (ipResponse) return ipResponse;
-                throw new Error(`未预期的请求: ${url}`);
-            })
-        );
-    }
-
     async function insertSource(strategy: string | null, url: string) {
         const uniquePath = `strategy-log-${crypto.randomUUID()}.txt`;
         await env.WUYA.prepare(
@@ -384,7 +378,10 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
     it("成功日志行带实际生效策略名", async () => {
         await seedGitHubSettings();
         const id = await insertSource("direct_regex", "https://example.com/ips.txt");
-        stubFetch((url) => (url === "https://example.com/ips.txt" ? new Response("1.1.1.1\n2.2.2.2") : null));
+        stubGitHubContentsMock({
+            puts: [],
+            onOtherRequest: (url) => (url === "https://example.com/ips.txt" ? new Response("1.1.1.1\n2.2.2.2") : null),
+        });
 
         const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
 
@@ -398,10 +395,13 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
     it("回退后日志显示回退后真正生效的策略", async () => {
         await seedGitHubSettings();
         const id = await insertSource("phantomjs_cloud", "https://example.com/fallback.txt");
-        stubFetch((url) => {
-            if (url.startsWith("https://PhantomJsCloud.com")) return new Response("no ips here");
-            if (url === "https://example.com/fallback.txt") return new Response("10.0.0.1\n10.0.0.2");
-            return null;
+        stubGitHubContentsMock({
+            puts: [],
+            onOtherRequest: (url) => {
+                if (url.startsWith("https://PhantomJsCloud.com")) return new Response("no ips here");
+                if (url === "https://example.com/fallback.txt") return new Response("10.0.0.1\n10.0.0.2");
+                return null;
+            },
         });
 
         const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
@@ -424,7 +424,10 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
         await seedGitHubSettings();
         // 列可空（迁移里 fetch_strategy 无 NOT NULL）：插入 NULL 模拟历史数据
         const id = await insertSource(null, "https://example.com/null-strategy.txt");
-        stubFetch((url) => (url === "https://example.com/null-strategy.txt" ? new Response("9.9.9.9") : null));
+        stubGitHubContentsMock({
+            puts: [],
+            onOtherRequest: (url) => (url === "https://example.com/null-strategy.txt" ? new Response("9.9.9.9") : null),
+        });
 
         const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
 
@@ -489,7 +492,7 @@ describe("IP 源主文件语义 (issue #50)", () => {
                 if (url === "https://example.com/same.txt") {
                     return new Response("2.2.2.2\n1.1.1.1", { status: 200 });
                 }
-                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
                     if ((init?.method ?? "GET").toUpperCase() === "PUT") {
                         putBodies.push(String(init?.body ?? ""));
                         return new Response("{}", { status: 200 });
@@ -524,10 +527,10 @@ describe("IP 源主文件语义 (issue #50)", () => {
                 if (url === "https://example.com/v6.txt") {
                     return new Response("2606:4700:4700::1111", { status: 200 });
                 }
-                if (url === "https://api.github.com/repos/test-owner/test-repo") {
+                if (url === TEST_GITHUB_REPO_API) {
                     return new Response("{}", { status: 200 });
                 }
-                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
                     if ((init?.method ?? "GET").toUpperCase() === "PUT") {
                         puts.push({
                             path: decodeURIComponent(url.split("/contents/")[1]),
@@ -571,7 +574,7 @@ describe("IP 源主文件语义 (issue #50)", () => {
                 if (url === "https://example.com/drop-v6.txt") {
                     return new Response("1.1.1.1", { status: 200 });
                 }
-                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
                     const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
                     if (method === "DELETE") {
                         deleteCalls.push(path);
@@ -618,7 +621,7 @@ describe("IP 源主文件语义 (issue #50)", () => {
                 if (url === "https://example.com/none-v6.txt") {
                     return new Response("1.1.1.1", { status: 200 });
                 }
-                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
                     methods.push(method);
                     const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
                     if (path === githubPath && method === "GET") {
@@ -654,10 +657,10 @@ describe("IP 源主文件语义 (issue #50)", () => {
                 if (url === "https://example.com/same-v6.txt") {
                     return new Response("1.1.1.1\n2606:4700:4700::1111", { status: 200 });
                 }
-                if (url === "https://api.github.com/repos/test-owner/test-repo") {
+                if (url === TEST_GITHUB_REPO_API) {
                     return new Response("{}", { status: 200 });
                 }
-                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
                     const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
                     if (method === "PUT") {
                         puts.push(path);
@@ -706,10 +709,10 @@ describe("IP 源主文件语义 (issue #50)", () => {
                 if (url === "https://example.com/fail-v6.txt") {
                     return new Response("2606:4700:4700::1111", { status: 200 });
                 }
-                if (url === "https://api.github.com/repos/test-owner/test-repo") {
+                if (url === TEST_GITHUB_REPO_API) {
                     return new Response("{}", { status: 200 });
                 }
-                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
                     const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
                     if (method === "PUT") {
                         if (path === companionPath) {
@@ -742,7 +745,7 @@ describe("IP 源主文件语义 (issue #50)", () => {
                 if (url === "https://example.com/fail-v6.txt") {
                     return new Response("2606:4700:4700::1111", { status: 200 });
                 }
-                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
                     const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
                     if (path === githubPath) return new Response("", { status: 200 });
                     if (path === companionPath) return new Response("2606:4700:4700::1111", { status: 200 });
@@ -803,10 +806,9 @@ describe("IP 源空结果语义 (issue #55)", () => {
             "https://example.com/empty.txt",
             "上一轮: 所有抓取策略均未能从该URL获取到IP"
         );
-        const puts: Array<{ path: string; content: string }> = [];
+        const puts: RecordedPut[] = [];
         stubGitHubContentsMock({
-            githubPath,
-            initialRemoteMain: "9.9.9.9",
+            initialFile: { path: githubPath, content: "9.9.9.9" },
             puts,
             onOtherRequest: (url) => {
                 // 三个抓取策略（含 phantomjs / codetabs / jina）一律 200 空正文
@@ -840,10 +842,9 @@ describe("IP 源空结果语义 (issue #55)", () => {
         // 这条用例钉住该边界，避免以后有人为了「0 条就该 success」去改强制分支。
         await seedGitHubSettings();
         const { id, githubPath } = await insertSource("https://example.com/still-empty.txt");
-        const puts: Array<{ path: string; content: string }> = [];
+        const puts: RecordedPut[] = [];
         stubGitHubContentsMock({
-            githubPath,
-            initialRemoteMain: "1.2.3.4",
+            initialFile: { path: githubPath, content: "1.2.3.4" },
             puts,
             onOtherRequest: (url) => {
                 if (
@@ -915,10 +916,9 @@ describe("IP 源空结果语义 (issue #55)", () => {
         // 不是 bug；想改成「失败优先」必须先改 fetchIpsForTarget 的分支口径并同步 DNS 侧。
         await seedGitHubSettings();
         const { id, githubPath } = await insertSource("https://example.com/mixed.txt");
-        const puts: Array<{ path: string; content: string }> = [];
+        const puts: RecordedPut[] = [];
         stubGitHubContentsMock({
-            githubPath,
-            initialRemoteMain: "1.1.1.1",
+            initialFile: { path: githubPath, content: "1.1.1.1" },
             puts,
             onOtherRequest: (url) => {
                 if (url === "https://example.com/mixed.txt") {
@@ -948,11 +948,9 @@ describe("IP 源空结果语义 (issue #55)", () => {
     it("0 条时同步日志不出现空策略占位，也不误报回退", async () => {
         await seedGitHubSettings();
         const { id } = await insertSource("https://example.com/empty-log.txt");
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async (input: unknown, init?: RequestInit) => {
-                const url = String(typeof input === "string" ? input : (input as Request).url);
-                const method = (init?.method ?? "GET").toUpperCase();
+        stubGitHubContentsMock({
+            puts: [],
+            onOtherRequest: (url) => {
                 if (url === "https://example.com/empty-log.txt") return new Response("no ips", { status: 200 });
                 if (
                     url.startsWith("https://PhantomJsCloud.com") ||
@@ -961,17 +959,9 @@ describe("IP 源空结果语义 (issue #55)", () => {
                 ) {
                     return new Response("no ips", { status: 200 });
                 }
-                if (url === "https://api.github.com/repos/test-owner/test-repo") {
-                    return new Response("{}", { status: 200 });
-                }
-                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
-                    return method === "GET"
-                        ? new Response(JSON.stringify({ message: "Not Found" }), { status: 404 })
-                        : new Response("{}", { status: 200 });
-                }
-                throw new Error(`未预期的请求: ${url}`);
-            })
-        );
+                return null;
+            },
+        });
 
         const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
 
