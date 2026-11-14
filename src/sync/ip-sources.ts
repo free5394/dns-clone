@@ -119,6 +119,33 @@ export function isStrategyApplicable(name: string, url: string): boolean {
     }
 }
 
+/**
+ * 写库路径的 fetch_strategy 缓存裁决（issue #68 / #69）：
+ * fetch_strategy 是 URL 的抓取方式缓存而非用户偏好，唯一合法写入方是同步链的实测结果。
+ * URL 未变更且缓存策略对该 URL 仍适用时保留原值，其余（无缓存 / URL 变更 / 不适用）一律置 NULL。
+ * 判据与同步尝试链、探测候选集合共用 isStrategyApplicable；previous 快照由调用方
+ * 顺自己的 D1 扫描取回（ip_sources 写入路径复用伴生冲突检查那趟全表扫描，不加往返）。
+ * 请求体里带什么（合法名 / 未登记名 / null / 缺省）不参与本裁决也不因此报 400——
+ * 部署期新旧前端交错时不能因为多带一个字段把保存拦下来。
+ */
+export interface StrategyCacheSnapshot {
+    /** 目标行被覆盖前的 URL；决定缓存是否随旧地址失效（issue #68） */
+    url: string;
+    /** 目标行被覆盖前的策略缓存；决定未变更时保留什么（issue #69） */
+    fetchStrategy: string | null;
+}
+
+export function resolvePersistedFetchStrategy(previous: StrategyCacheSnapshot | null, nextUrl: string): string | null {
+    // 先判 null 再判适用性：空串喂给 isStrategyApplicable 会走「未登记即适用」的回落返回 true，
+    // 读起来像 null 通过了判定。
+    if (previous === null) return null;
+    const cached = previous.fetchStrategy;
+    if (cached === null) return null;
+    // URL 变更即失效；未变更才谈得上沿用，再补一道适用性判据
+    if (previous.url !== nextUrl) return null;
+    return isStrategyApplicable(cached, nextUrl) ? cached : null;
+}
+
 type LogFn = (msg: string) => void;
 
 /** 定时任务：批量同步 IP 源（失败优先） */
