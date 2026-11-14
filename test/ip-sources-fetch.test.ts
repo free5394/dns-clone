@@ -15,6 +15,7 @@ import {
 } from "../src/sync/ip-sources.ts";
 import { HttpError, TimeoutError } from "../src/util/http-error.ts";
 import { makeIpSourceRow, type IpSourceRow } from "./ip-source-row.ts";
+import { stubHostmonitOnlyFetch } from "./hostmonit-stub.ts";
 
 afterEach(() => {
     vi.useRealTimers();
@@ -159,27 +160,12 @@ describe("回退顺序与策略字段", () => {
 
 describe("新增抓取策略（直连被拦 / SPA 渲染）", () => {
     it("hostmonit 源命中专用 API 策略，不依赖 phantomjs 配额", async () => {
-        const calls: string[] = [];
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async (url: string) => {
-                calls.push(url);
-                if (url.includes("api.hostmonit.com/get_optimization_ip")) {
-                    return new Response(
-                        JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }, { ip: "198.41.208.168" }] }),
-                        {
-                            status: 200,
-                        }
-                    );
-                }
-                return new Response("forbidden", { status: 403 });
-            })
-        );
+        const stub = stubHostmonitOnlyFetch({ ips: ["172.67.172.3", "198.41.208.168"] });
         const source = { ...makeSource("direct_regex"), url: "https://stock.hostmonit.com/CloudFlareYes" };
         const ips = await fetchIpsFromSource(source);
         expect(ips).toEqual(["172.67.172.3", "198.41.208.168"]);
         expect(source.fetch_strategy).toBe("hostmonit_api");
-        expect(calls.some((u) => u.includes("api.hostmonit.com"))).toBe(true);
+        expect(stub.calls.some((u) => u.includes("api.hostmonit.com"))).toBe(true);
     });
 
     it("直连被 403 时 jina_reader 回退可读，并写回策略", async () => {
@@ -214,44 +200,20 @@ describe("新增抓取策略（直连被拦 / SPA 渲染）", () => {
     // issue #68：缓存策略原先不过适用性门控，hostmonit_api 会忽略传入 url 直接返回自己的列表，
     // 于是「别的站点 + 历史 hostmonit 策略」会把 A 站写成 B 站订阅内容且日志显示成功。
     it("已缓存的 hostmonit 策略遇到非 hostmonit URL 时不入链（issue #68）", async () => {
-        const calls: string[] = [];
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async (url: string) => {
-                calls.push(url);
-                if (url.includes("api.hostmonit.com/get_optimization_ip")) {
-                    return new Response(JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }] }), {
-                        status: 200,
-                    });
-                }
-                return new Response("forbidden", { status: 403 });
-            })
-        );
+        const stub = stubHostmonitOnlyFetch();
         const source = makeSource("hostmonit_api");
         await expect(fetchIpsFromSource(source)).rejects.toThrow("所有抓取策略均未能从该URL获取到IP");
-        expect(calls.some((u) => u.includes("api.hostmonit.com"))).toBe(false);
+        expect(stub.calls.some((u) => u.includes("api.hostmonit.com"))).toBe(false);
         // 未命中就没有「回退成功」可写入，缓存策略保持原样，交由下一次写入或探测清理
         expect(source.fetch_strategy).toBe("hostmonit_api");
     });
 
     it("已缓存的 hostmonit 策略在 hostmonit URL 上仍然优先命中（回归不破）", async () => {
-        const calls: string[] = [];
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async (url: string) => {
-                calls.push(url);
-                if (url.includes("api.hostmonit.com/get_optimization_ip")) {
-                    return new Response(JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }] }), {
-                        status: 200,
-                    });
-                }
-                return new Response("forbidden", { status: 403 });
-            })
-        );
+        const stub = stubHostmonitOnlyFetch();
         const source = { ...makeSource("hostmonit_api"), url: "https://stock.hostmonit.com/CloudFlareYes" };
         const ips = await fetchIpsFromSource(source);
         expect(ips).toEqual(["172.67.172.3"]);
-        expect(calls[0]).toContain("api.hostmonit.com");
+        expect(stub.calls[0]).toContain("api.hostmonit.com");
         expect(source.fetch_strategy).toBe("hostmonit_api");
     });
 });
@@ -303,18 +265,8 @@ async function writeHostmonitKey(value: string | null): Promise<void> {
 
 /** 只让 hostmonit 专用接口成功，并记录请求体里的 key */
 function stubHostmonitFetch(): { bodies: string[] } {
-    const bodies: string[] = [];
-    vi.stubGlobal(
-        "fetch",
-        vi.fn(async (url: string, init?: RequestInit) => {
-            if (url.includes("api.hostmonit.com/get_optimization_ip")) {
-                bodies.push(String(init?.body ?? ""));
-                return new Response(JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }] }), { status: 200 });
-            }
-            return new Response("forbidden", { status: 403 });
-        })
-    );
-    return { bodies };
+    const stub = stubHostmonitOnlyFetch();
+    return { bodies: stub.bodies };
 }
 
 describe("hostmonit 抓取 key 配置化 (issue #25)", () => {

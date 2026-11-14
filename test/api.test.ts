@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { handleApiRequest } from "../src/routes/api.ts";
 import { verifyPassword } from "../src/util/auth.ts";
 import { DEFAULT_HOSTMONIT_API_KEY, resolveHostmonitKey } from "../src/sync/ip-sources.ts";
+import { stubHostmonitOnlyFetch } from "./hostmonit-stub.ts";
 
 // 种子密码（见 apply-migrations.ts）
 const PASSWORD = "test-password-123";
@@ -1197,18 +1198,7 @@ describe("端点直测补齐 (M-12)", () => {
     // 否则贴一个前四个策略都取不到 IP 的 URL 点探测，hostmonit_api 会返回它自己的列表并「探测成功」。
     it("probe 候选集合不含与 URL 不适配的策略（issue #68）", async () => {
         const cookie = await loginAndGetCookie();
-        const calls: string[] = [];
-        const origFetch = globalThis.fetch;
-        globalThis.fetch = ((input: RequestInfo | URL) => {
-            const url = String(input);
-            calls.push(url);
-            if (url.includes("api.hostmonit.com/get_optimization_ip")) {
-                return Promise.resolve(
-                    new Response(JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }] }), { status: 200 })
-                );
-            }
-            return Promise.resolve(new Response("forbidden", { status: 403 }));
-        }) as typeof fetch;
+        const stub = stubHostmonitOnlyFetch();
 
         try {
             const res = await handleApiRequest(
@@ -1220,26 +1210,15 @@ describe("端点直测补齐 (M-12)", () => {
                 env
             );
             expect(res.status).toBe(400);
-            expect(calls.some((u) => u.includes("api.hostmonit.com"))).toBe(false);
+            expect(stub.calls.some((u) => u.includes("api.hostmonit.com"))).toBe(false);
         } finally {
-            globalThis.fetch = origFetch;
+            stub.restore();
         }
     });
 
     it("probe 在 hostmonit URL 上仍会尝试 hostmonit_api（回归不破）", async () => {
         const cookie = await loginAndGetCookie();
-        const calls: string[] = [];
-        const origFetch = globalThis.fetch;
-        globalThis.fetch = ((input: RequestInfo | URL) => {
-            const url = String(input);
-            calls.push(url);
-            if (url.includes("api.hostmonit.com/get_optimization_ip")) {
-                return Promise.resolve(
-                    new Response(JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }] }), { status: 200 })
-                );
-            }
-            return Promise.resolve(new Response("forbidden", { status: 403 }));
-        }) as typeof fetch;
+        const stub = stubHostmonitOnlyFetch();
 
         try {
             const res = await handleApiRequest(
@@ -1253,9 +1232,9 @@ describe("端点直测补齐 (M-12)", () => {
             expect(res.status).toBe(200);
             const body = (await res.json()) as { strategy?: string };
             expect(body.strategy).toBe("hostmonit_api");
-            expect(calls.some((u) => u.includes("api.hostmonit.com"))).toBe(true);
+            expect(stub.calls.some((u) => u.includes("api.hostmonit.com"))).toBe(true);
         } finally {
-            globalThis.fetch = origFetch;
+            stub.restore();
         }
     });
 
