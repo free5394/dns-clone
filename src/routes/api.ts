@@ -313,11 +313,11 @@ async function resolveZoneName(
         const detail = e instanceof Error ? `：${e.message}` : "";
         return {
             ok: false,
-            error: `无法获取 Cloudflare 区域名称，请先在「系统设置」重新保存 Cloudflare 配置${detail}`,
+            error: `无法获取 Cloudflare 区域名称，请先在「设置」重新保存 Cloudflare 配置${detail}`,
         };
     }
     if (!zoneName) {
-        return { ok: false, error: "无法获取 Cloudflare 区域名称，请先在「系统设置」重新保存 Cloudflare 配置。" };
+        return { ok: false, error: "无法获取 Cloudflare 区域名称，请先在「设置」重新保存 Cloudflare 配置。" };
     }
     await setSetting(db, "CF_ZONE_NAME", zoneName);
     return { ok: true, zoneName };
@@ -530,7 +530,7 @@ async function handleDomainMutation(
     try {
         const { zoneId, token } = await getCfApiSettings(db);
         if (!token || !zoneId) {
-            return jsonResponse({ error: "Cloudflare API 未配置，请先在「系统设置」填写 API 令牌与区域 ID。" }, 400);
+            return jsonResponse({ error: "Cloudflare API 未配置，请先在「设置」填写 API 令牌与区域 ID。" }, 400);
         }
         const resolved = await resolveZoneName(db, token, zoneId);
         if (!resolved.ok) return jsonResponse({ error: resolved.error }, 400);

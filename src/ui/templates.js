@@ -548,10 +548,10 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
 export function getDashboardPage(domains, ipSources, settings) {
     const githubSettingsComplete = settings.GITHUB_CONFIGURED === true;
     const cfSettingsComplete = canAddDomains(settings);
-    return `<aside class="sidebar"><div class="sidebar-header"><h3>DNS Clone</h3><button id="theme-toggle" type="button" aria-label="切换到深色主题"><i class="fa-solid fa-moon" aria-hidden="true"></i></button></div><nav class="sidebar-nav"><a href="#page-dns-clone" class="nav-link active" data-target="page-dns-clone"><i class="fa-solid fa-clone fa-fw"></i> 域名克隆</a><a href="#page-github-upload" class="nav-link" data-target="page-github-upload"><i class="fa-brands fa-github fa-fw"></i> GitHub 上传</a><a href="#page-settings" class="nav-link" data-target="page-settings"><i class="fa-solid fa-gear fa-fw"></i> 系统设置</a></nav></aside>
+    return `<aside class="sidebar"><div class="sidebar-header"><h3>DNS Clone</h3><button id="theme-toggle" type="button" aria-label="切换到深色主题"><i class="fa-solid fa-moon" aria-hidden="true"></i></button></div><nav class="sidebar-nav"><a href="#page-dns-clone" class="nav-link active" data-target="page-dns-clone"><i class="fa-solid fa-clone fa-fw"></i> 域名</a><a href="#page-github-upload" class="nav-link" data-target="page-github-upload"><i class="fa-brands fa-github fa-fw"></i> GitHub</a><a href="#page-settings" class="nav-link" data-target="page-settings"><i class="fa-solid fa-gear fa-fw"></i> 设置</a></nav></aside>
     <div class="main-content">
         <div id="page-dns-clone" class="page active">
-            <div class="page-header"><h2>域名克隆列表</h2><button id="addDomainBtn" ${cfSettingsComplete ? "" : "disabled"}>＋ 添加克隆目标</button></div>
+            <div class="page-header"><h2>域名列表</h2><button id="addDomainBtn" ${cfSettingsComplete ? "" : "disabled"}>＋ 添加克隆目标</button></div>
             <div id="domain-list-container"></div>
             <article><h3>手动操作</h3><p>点击下方按钮，可以立即为所有已启用的目标执行一次同步任务。</p><button id="manualSyncBtn">手动同步所有目标</button><pre id="logOutput" class="sync-log" style="display:none;"></pre></article>
         </div>
@@ -561,7 +561,7 @@ export function getDashboardPage(domains, ipSources, settings) {
             <article><h3>手动操作</h3><p>点击下方按钮，可以立即为所有已启用的IP源执行一次同步并上传到GitHub。</p><button id="manualSyncIpSourcesBtn">同步所有IP源</button><pre id="ipLogOutput" class="sync-log" style="display:none;"></pre></article>
         </div>
         <div id="page-settings" class="page">
-            <div class="page-header"><h2>系统设置</h2></div>
+            <div class="page-header"><h2>设置</h2></div>
             <form id="settingsForm">
                 <fieldset><legend><i class="fa-brands fa-cloudflare"></i> Cloudflare API 设置</legend><label for="cfToken">API 令牌 (Token)</label><input type="password" id="cfToken" value="" placeholder="${settings.CF_CONFIGURED ? "已配置，留空保持不变" : "输入 Cloudflare API 令牌"}"><label><input type="checkbox" id="cfClear"> 清除已保存的 Cloudflare 配置</label><label for="cfZoneId">区域 (Zone) ID</label><input type="text" id="cfZoneId" value="${escapeHtml(settings.CF_ZONE_ID || "")}">
                     <details class="tutorial-details"><summary>如何获取 API 令牌和区域 ID？</summary><div class="tutorial-content"><ol><li><strong>获取 API 令牌 (Token):</strong><ol type="a"><li>登录 <a href="https://dash.cloudflare.com/" target="_blank">Cloudflare</a>，进入 <strong>“我的个人资料”</strong> &rarr; <strong>“API 令牌”</strong>。</li><li>点击 <strong>“创建令牌”</strong>，然后选择 <strong>“编辑区域 DNS”</strong> 模板并点击“使用模板”。</li><li>在 <strong>“区域资源”</strong> 部分，选择您需要操作的具体域名区域。</li><li>点击“继续以显示摘要”和“创建令牌”，复制生成的令牌。<strong>注意：令牌仅显示一次，请妥善保管。</strong></li></ol></li><li><strong>获取区域 ID (Zone ID):</strong><ol type="a"><li>在 Cloudflare 仪表板主页，点击您需要操作的域名。</li><li>在域名的“概述”页面，您可以在右下角找到 <strong>“区域 ID”</strong>，点击即可复制。</li></ol></li></ol></div></details>
@@ -696,7 +696,7 @@ function getDashboardRenderScript() {
       if (currentIpSources.length > 0) {
         container.innerHTML = '<div class="domain-list-head row-grid"><span>GitHub 文件路径</span><span>抓取策略</span><span>上次同步</span><span></span></div>' + currentIpSources.map(renderIpSourceCard).join('');
       } else {
-        container.innerHTML = '<div class="empty-state"><p>暂无 IP 源，点右上角「添加IP源」新建一条（需先在「系统设置」填好 GitHub Token / 用户名 / 仓库）。</p></div>';
+        container.innerHTML = '<div class="empty-state"><p>暂无 IP 源，点右上角「添加IP源」新建一条（需先在「设置」填好 GitHub Token / 用户名 / 仓库）。</p></div>';
       }
   }
 `;
