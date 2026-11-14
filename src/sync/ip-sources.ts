@@ -446,8 +446,9 @@ export async function fetchIpsForTarget(
             : []),
         ...strategyNames.filter((n) => n !== configuredStrategy),
     ];
-    // 名字未必都有实现：configuredStrategy 可能是空串或已下线的策略名，这类名字会被循环跳过且不记账，
-    // 所以「有没有可跑的策略」必须在进循环前按同一判据算出来，不能事后拿 attempts 反推（issue #67）。
+    // 名字未必都有实现：configuredStrategy 可能是空串或已下线的策略名，这类名字会被循环跳过且不记账。
+    // 不变量（issue #67）：会跑的策略集合在进循环前按同一判据一次算定，循环体内对有名项零剔除——
+    // 「循环必跑」，因此事后拿 attempts 反推「有没有可跑的策略」必然漏掉这些无名跳过项。
     if (!orderedNames.some((name) => FETCH_STRATEGIES[name])) {
         throw new Error("[无可用IP] 没有适用于该URL的抓取策略，请检查URL或在添加/编辑IP源时重新探测。");
     }
