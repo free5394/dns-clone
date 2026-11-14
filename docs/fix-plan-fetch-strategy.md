@@ -125,7 +125,7 @@ ip-sources-fetch.test.ts 五处（:163、:218、:239 内联 + :305 旧 helper + 
 
 - :163 用例传 `{ ips: ["172.67.172.3", "198.41.208.168"] }`（它是唯一要求两个 IP 的用例，其余走默认单 IP）；
 - :218 / :239 用例走默认参数；
-- :305 旧 `stubHostmonitFetch` 删除，#25 用例群改用共享 helper 的 `stub.bodies`（语义不变：只记录 hostmonit 请求的 body）；
+- :305 旧 `stubHostmonitFetch` **保留为薄委托**（内部一行调用共享 helper，返回 `{ bodies }` 契约不变），#25 用例群零改动——P1 落地（9732111）采取了改动面更小的委托方案，语义等价；
 - 文件顶部增加 `import { stubHostmonitOnlyFetch } from "./hostmonit-stub.js";`（按仓库现有 import 风格核对后缀写法）。
 
 ### 1.4 验收
@@ -133,7 +133,7 @@ ip-sources-fetch.test.ts 五处（:163、:218、:239 内联 + :305 旧 helper + 
 1. `pnpm exec vitest run test/api.test.ts test/ip-sources-fetch.test.ts` 全绿（注意：`pnpm test -- <file>` 不会过滤，必须用 `pnpm exec vitest run`）；
 2. `ops_grep` 复核 `api.hostmonit.com/get_optimization_ip` 字符串在 test/ 下只剩 `hostmonit-stub.ts` 一处；
 3. `pnpm check` 七项全绿；
-4. 注意：`test/` 不在 typecheck 范围（tsconfig include 只含 src，见 issue #60），helper 的类型错误 CI 拦不住，提交前在 IDE 里过一遍。
+4. 注意：`test/` 的类型由 `typecheck:test`（tsconfig.test.json，include 为 `test/**/*.ts`）覆盖，`typecheck`（src）不含——helper 的类型错误会被 `pnpm check` 第 2 项拦住（原文「不在 typecheck 范围」为 issue #60 时期的过时陈述，9732111 复审后更正）。
 
 ---
 
@@ -265,6 +265,6 @@ export function resolvePersistedFetchStrategy(previous: StrategyCacheSnapshot | 
 注意事项汇总：
 
 - `pnpm test -- <file>` 不做过滤（会跑全量），定向验证一律 `pnpm exec vitest run <file>`。
-- `test/` 不在 typecheck 范围（issue #60 追踪中），P1 的 helper 类型需 IDE 自查。
+- `test/` 由 `typecheck:test`（tsconfig.test.json）覆盖；P1 的 helper 类型错误会被门禁拦截（复审更正原过时陈述）。
 - 新增注释/用例标题保持简体中文（语言门禁 + CODING_STANDARDS 三档规则）。
-- 本方案文档本身无可执行内容，无需评审即可提交；P1/P2 含可执行改动，按仓库「实现 → commit → 复审」红线走。
+- 本方案文档含 vitest/pnpm 命令与 TS 代码块，按仓库红线属可执行内容，同样要评审（9732111 已随 P1 一并复审）；P1/P2 含可执行改动，按仓库「实现 → commit → 复审」红线走。
