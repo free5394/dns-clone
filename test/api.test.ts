@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { handleApiRequest } from "../src/routes/api.ts";
 import { verifyPassword } from "../src/util/auth.ts";
 import { DEFAULT_HOSTMONIT_API_KEY, resolveHostmonitKey } from "../src/sync/ip-sources.ts";
+import { stubHostmonitOnlyFetch } from "./hostmonit-stub.ts";
 
 // 种子密码（见 apply-migrations.ts）
 const PASSWORD = "test-password-123";
@@ -661,6 +662,87 @@ describe("POST /api/settings (Task 2.6 白名单 + 配对验证)", () => {
         const row = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'BATCH_SIZE'").first();
         expect(row).toBeNull();
     });
+
+    it("接受 1-200 内的 MAX_IPS_PER_TYPE 并在刷新后回传同一值 (issue #49)", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/settings", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({ MAX_IPS_PER_TYPE: 30 }),
+        });
+        expect(res.status).toBe(200);
+        const row = (await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").first()) as {
+            value: string;
+        } | null;
+        expect(row?.value).toBe("30");
+
+        // 刷新（GET）必须回传同一个值，设置页据此回填
+        const get = await SELF.fetch("https://example.com/api/settings", { headers: { Cookie: cookie } });
+        expect(get.status).toBe(200);
+        expect(((await get.json()) as { MAX_IPS_PER_TYPE: number }).MAX_IPS_PER_TYPE).toBe(30);
+    });
+
+    it("拒绝非法 MAX_IPS_PER_TYPE 且不覆盖已存值 (issue #49)", async () => {
+        const cookie = await loginAndGetCookie();
+        // 同文件用例共享 D1 状态：先放一个合法值，验证被拒的请求既不 200 也不覆盖它
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('MAX_IPS_PER_TYPE', '25') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run();
+        for (const bad of [0, 201, 1.5, -1, "abc"]) {
+            const res = await SELF.fetch("https://example.com/api/settings", {
+                method: "POST",
+                headers: { Cookie: cookie, "Content-Type": "application/json" },
+                body: JSON.stringify({ MAX_IPS_PER_TYPE: bad }),
+            });
+            expect(res.status, `MAX_IPS_PER_TYPE=${JSON.stringify(bad)} 应被拒绝`).toBe(400);
+        }
+        const row = (await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").first()) as {
+            value: string;
+        } | null;
+        expect(row?.value).toBe("25");
+    });
+
+    it("缺失、损坏或清除后 MAX_IPS_PER_TYPE 一律回退 20 (issue #49)", async () => {
+        const cookie = await loginAndGetCookie();
+        const readMax = async (): Promise<number> => {
+            const res = await SELF.fetch("https://example.com/api/settings", { headers: { Cookie: cookie } });
+            return ((await res.json()) as { MAX_IPS_PER_TYPE: number }).MAX_IPS_PER_TYPE;
+        };
+
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").run();
+        expect(await readMax()).toBe(20);
+
+        // 损坏的存量值（手工改库或旧版本遗留）同样回退，而不是把脏值透给前端
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('MAX_IPS_PER_TYPE', 'oops') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run();
+        expect(await readMax()).toBe(20);
+
+        // 显式清除：null 落为删除指令，读取回到默认 20
+        const cleared = await SELF.fetch("https://example.com/api/settings", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({ MAX_IPS_PER_TYPE: null }),
+        });
+        expect(cleared.status).toBe(200);
+        const row = await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").first();
+        expect(row).toBeNull();
+        expect(await readMax()).toBe(20);
+    });
+
+    it("非字符串却折叠成空的非法值整批 400，且不落库 (issue #49 复核)", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").run();
+
+        // String([]) === ""，若按折叠结果判「显式清除」会被误判成合法清除并返回 200（方案 §9.5 要求 400）
+        const res = await SELF.fetch("https://example.com/api/settings", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({ MAX_IPS_PER_TYPE: [] }),
+        });
+        expect(res.status).toBe(400);
+        expect(await env.WUYA.prepare("SELECT value FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").first()).toBeNull();
+    });
 });
 
 describe("GET /api/settings (Task 2.5 敏感字段过滤)", () => {
@@ -678,13 +760,13 @@ describe("GET /api/settings (Task 2.5 敏感字段过滤)", () => {
     });
 });
 
-// M-7 回归：IP 源输入必须在信任边界做结构校验（策略白名单、路径形态、消息长度）
+// M-7 回归：IP 源输入必须在信任边界做结构校验（路径形态、消息长度）。
+// issue #69 起 fetch_strategy 不再属于输入契约，请求体带什么都不参与校验。
 describe("POST/PUT /api/ip_sources 输入校验 (M-7)", () => {
     const valid = {
         url: "https://example.com/m7/valid.txt",
         github_path: "m7/valid.txt",
         commit_message: "同步 IP 列表",
-        fetch_strategy: "direct_regex",
     };
 
     afterAll(async () => {
@@ -702,25 +784,35 @@ describe("POST/PUT /api/ip_sources 输入校验 (M-7)", () => {
         expect(((await res.json()) as { success?: boolean }).success).toBe(true);
     });
 
-    it("拒绝未登记的 fetch_strategy，且不落库", async () => {
+    // issue #69：请求体里的 fetch_strategy 一律不采信也不报错 —— 部署期新旧前端交错时，
+    // 老前端多带一个字段不能把保存动作拦下来。四种形态落库结果必须完全一致（均为 NULL）。
+    it("请求体带 fetch_strategy（合法名/未登记名/null/缺省）都静默忽略，落库均为 NULL", async () => {
         const cookie = await loginAndGetCookie();
-        const res = await SELF.fetch("https://example.com/api/ip_sources", {
-            method: "POST",
-            headers: { Cookie: cookie, "Content-Type": "application/json" },
-            body: JSON.stringify({
-                ...valid,
-                url: "https://example.com/m7/bad-strategy.txt",
-                github_path: "m7/bad-strategy.txt",
-                fetch_strategy: "no_such_strategy",
-            }),
-        });
-        expect(res.status).toBe(400);
-        expect(((await res.json()) as { error?: string }).error).toContain("策略");
+        const cases: { name: string; body: Record<string, unknown> }[] = [
+            { name: "legal", body: { fetch_strategy: "direct_regex" } },
+            { name: "unknown", body: { fetch_strategy: "no_such_strategy" } },
+            { name: "null", body: { fetch_strategy: null } },
+            { name: "absent", body: {} },
+        ];
+        for (const item of cases) {
+            const githubPath = `m7/strategy-${item.name}.txt`;
+            const res = await SELF.fetch("https://example.com/api/ip_sources", {
+                method: "POST",
+                headers: { Cookie: cookie, "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    ...valid,
+                    url: `https://example.com/${githubPath}`,
+                    github_path: githubPath,
+                    ...item.body,
+                }),
+            });
+            expect(res.status).toBe(200);
 
-        const row = await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
-            .bind("m7/bad-strategy.txt")
-            .first();
-        expect(row).toBeNull();
+            const row = await env.WUYA.prepare("SELECT fetch_strategy FROM ip_sources WHERE github_path = ?")
+                .bind(githubPath)
+                .first<{ fetch_strategy: string | null }>();
+            expect(row?.fetch_strategy).toBeNull();
+        }
     });
 
     it("拒绝首尾带空白的 github_path", async () => {
@@ -786,12 +878,14 @@ describe("POST/PUT /api/ip_sources 输入校验 (M-7)", () => {
         expect(((await res.json()) as { error?: string }).error).toContain("提交");
     });
 
-    it("PUT 更新同样拒绝非法 fetch_strategy，且不改变原记录", async () => {
+    // issue #69：PUT 同样不采信请求体里的策略。URL 未变更 → 保留库内原值（客户端无需回传）；
+    // 未登记名既不拦也不生效，落库值仍是库内原值。
+    it("PUT 未变更 URL 时保留库内原 fetch_strategy，未登记名不报错也不覆盖", async () => {
         const cookie = await loginAndGetCookie();
         await env.WUYA.prepare(
             "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
         )
-            .bind("https://example.com/m7/put.txt", "m7/put.txt", "更新前", "direct_regex")
+            .bind("https://example.com/m7/put.txt", "m7/put.txt", "更新前", "phantomjs_cloud")
             .run();
         const row = (await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
             .bind("m7/put.txt")
@@ -804,16 +898,17 @@ describe("POST/PUT /api/ip_sources 输入校验 (M-7)", () => {
                 ...valid,
                 url: "https://example.com/m7/put.txt",
                 github_path: "m7/put.txt",
+                commit_message: "更新后",
                 fetch_strategy: "no_such_strategy",
             }),
         });
-        expect(res.status).toBe(400);
+        expect(res.status).toBe(200);
 
         const after = (await env.WUYA.prepare("SELECT fetch_strategy, commit_message FROM ip_sources WHERE id = ?")
             .bind(row.id)
-            .first()) as { fetch_strategy: string; commit_message: string };
-        expect(after.fetch_strategy).toBe("direct_regex");
-        expect(after.commit_message).toBe("更新前");
+            .first()) as { fetch_strategy: string | null; commit_message: string };
+        expect(after.fetch_strategy).toBe("phantomjs_cloud");
+        expect(after.commit_message).toBe("更新后");
     });
 });
 
@@ -1082,12 +1177,64 @@ describe("端点直测补齐 (M-12)", () => {
                 env
             );
             expect(res.status).toBe(200);
-            const body = (await res.json()) as { success?: boolean; strategy?: string; ipCount?: number };
+            const body = (await res.json()) as {
+                success?: boolean;
+                strategy?: string;
+                ipv4Count?: number;
+                ipv6Count?: number;
+            };
             expect(body.success).toBe(true);
             expect(body.strategy).toBe("direct_regex");
-            expect(body.ipCount).toBe(2);
+            expect(body.ipv4Count).toBe(2);
+            expect(body.ipv6Count).toBe(0);
+            // ipCount 兼容字段已移除，响应只保留 ipv4Count / ipv6Count 一份真相
+            expect(body).not.toHaveProperty("ipCount");
         } finally {
             globalThis.fetch = origFetch;
+        }
+    });
+
+    // issue #68：探测是写入 fetch_strategy 的上游，候选集合必须与同步链共用适用性判据。
+    // 否则贴一个前四个策略都取不到 IP 的 URL 点探测，hostmonit_api 会返回它自己的列表并「探测成功」。
+    it("probe 候选集合不含与 URL 不适配的策略（issue #68）", async () => {
+        const cookie = await loginAndGetCookie();
+        const stub = stubHostmonitOnlyFetch();
+
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/ip_sources/probe", {
+                    method: "POST",
+                    headers: { Cookie: cookie, "Content-Type": "application/json" },
+                    body: JSON.stringify({ url: "https://example.com/m68/not-hostmonit.txt" }),
+                }),
+                env
+            );
+            expect(res.status).toBe(400);
+            expect(stub.calls.some((u) => u.includes("api.hostmonit.com"))).toBe(false);
+        } finally {
+            stub.restore();
+        }
+    });
+
+    it("probe 在 hostmonit URL 上仍会尝试 hostmonit_api（回归不破）", async () => {
+        const cookie = await loginAndGetCookie();
+        const stub = stubHostmonitOnlyFetch();
+
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/ip_sources/probe", {
+                    method: "POST",
+                    headers: { Cookie: cookie, "Content-Type": "application/json" },
+                    body: JSON.stringify({ url: "https://stock.hostmonit.com/CloudFlareYes" }),
+                }),
+                env
+            );
+            expect(res.status).toBe(200);
+            const body = (await res.json()) as { strategy?: string };
+            expect(body.strategy).toBe("hostmonit_api");
+            expect(stub.calls.some((u) => u.includes("api.hostmonit.com"))).toBe(true);
+        } finally {
+            stub.restore();
         }
     });
 
@@ -1104,6 +1251,300 @@ describe("端点直测补齐 (M-12)", () => {
         expect(res.status).toBe(400);
         const body = (await res.json()) as { error?: string };
         expect(body.error).toBeTruthy();
+    });
+});
+
+// issue #50：IP 源的解析模式端到端（保存 / 校验 / 回填 / 探测）
+describe("IP 源解析模式 (issue #50)", () => {
+    const basePayload = (overrides: Record<string, unknown> = {}) => ({
+        url: "https://example.com/m50/source.txt",
+        github_path: "m50/source.txt",
+        commit_message: "解析模式",
+        fetch_strategy: "direct_regex",
+        parse_mode: "auto",
+        parse_param: null,
+        ...overrides,
+    });
+
+    afterAll(async () => {
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm50/%'").run();
+    });
+
+    it("保存 json_path 解析配置并原样回读", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(basePayload({ parse_mode: "json_path", parse_param: "data.list.ipv4" })),
+        });
+        expect(res.status).toBe(200);
+
+        const row = await env.WUYA.prepare("SELECT parse_mode, parse_param FROM ip_sources WHERE github_path = ?")
+            .bind("m50/source.txt")
+            .first<{ parse_mode: string; parse_param: string }>();
+        expect(row?.parse_mode).toBe("json_path");
+        expect(row?.parse_param).toBe("data.list.ipv4");
+    });
+
+    it("拒绝白名单外的 parse_mode，且不落库", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(
+                basePayload({
+                    url: "https://example.com/m50/bad-mode.txt",
+                    github_path: "m50/bad-mode.txt",
+                    parse_mode: "regex",
+                })
+            ),
+        });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toContain("解析模式");
+
+        const row = await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind("m50/bad-mode.txt")
+            .first();
+        expect(row).toBeNull();
+    });
+
+    it("json_path 缺少点路径时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(
+                basePayload({
+                    url: "https://example.com/m50/missing-param.txt",
+                    github_path: "m50/missing-param.txt",
+                    parse_mode: "json_path",
+                    parse_param: "",
+                })
+            ),
+        });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toContain("JSON");
+    });
+
+    it("PUT 切回 auto 时把残留参数归一为 NULL", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy, parse_mode, parse_param) VALUES (?, ?, ?, ?, ?, ?)"
+        )
+            .bind(
+                "https://example.com/m50/switch.txt",
+                "m50/switch.txt",
+                "切换前",
+                "direct_regex",
+                "json_path",
+                "data.ips"
+            )
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind("m50/switch.txt")
+            .first()) as { id: number };
+
+        const res = await SELF.fetch(`https://example.com/api/ip_sources/${row.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(
+                basePayload({
+                    url: "https://example.com/m50/switch.txt",
+                    github_path: "m50/switch.txt",
+                    parse_mode: "auto",
+                    parse_param: "data.ips",
+                })
+            ),
+        });
+        expect(res.status).toBe(200);
+
+        const after = await env.WUYA.prepare("SELECT parse_mode, parse_param FROM ip_sources WHERE id = ?")
+            .bind(row.id)
+            .first<{ parse_mode: string; parse_param: string | null }>();
+        expect(after?.parse_mode).toBe("auto");
+        expect(after?.parse_param).toBeNull();
+    });
+
+    it("probe 返回 IPv4/IPv6 数量与两类样例", async () => {
+        const cookie = await loginAndGetCookie();
+        const origFetch = globalThis.fetch;
+        globalThis.fetch = (() =>
+            Promise.resolve(
+                new Response("8.8.8.8\n1.1.1.1\n2606:4700:4700::1111", {
+                    status: 200,
+                    headers: { "Content-Type": "text/plain" },
+                })
+            )) as typeof fetch;
+
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/ip_sources/probe", {
+                    method: "POST",
+                    headers: { Cookie: cookie, "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        url: "https://example.com/m50/probe.txt",
+                        parse_mode: "auto",
+                        parse_param: null,
+                    }),
+                }),
+                env
+            );
+            expect(res.status).toBe(200);
+            const body = (await res.json()) as {
+                success?: boolean;
+                strategy?: string;
+                ipv4Count?: number;
+                ipv6Count?: number;
+                sampleIps?: string[];
+                sampleIpv6?: string[];
+            };
+            expect(body.success).toBe(true);
+            expect(body.strategy).toBe("direct_regex");
+            expect(body.ipv4Count).toBe(2);
+            expect(body.ipv6Count).toBe(1);
+            expect(body).not.toHaveProperty("ipCount");
+            expect(body.sampleIps).toEqual(["1.1.1.1", "8.8.8.8"]);
+            expect(body.sampleIpv6).toEqual(["2606:4700:4700::1111"]);
+        } finally {
+            globalThis.fetch = origFetch;
+        }
+    });
+
+    it("probe 解析配置非法时直接 400，且不发起抓取", async () => {
+        const cookie = await loginAndGetCookie();
+        const origFetch = globalThis.fetch;
+        let fetchCalls = 0;
+        globalThis.fetch = (() => {
+            fetchCalls++;
+            return Promise.resolve(new Response("1.1.1.1", { status: 200 }));
+        }) as typeof fetch;
+
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/ip_sources/probe", {
+                    method: "POST",
+                    headers: { Cookie: cookie, "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        url: "https://example.com/m50/bad-probe.txt",
+                        parse_mode: "json_path",
+                        parse_param: "",
+                    }),
+                }),
+                env
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error?: string }).error).toContain("JSON");
+            expect(fetchCalls).toBe(0);
+        } finally {
+            globalThis.fetch = origFetch;
+        }
+    });
+});
+
+// issue #56：custom_regex 与 json_path 对齐 trim 判空，保存与探测共用同一套规则
+describe("custom_regex 空白归一 (issue #56)", () => {
+    const regexPayload = (overrides: Record<string, unknown> = {}) => ({
+        url: "https://example.com/m56/source.txt",
+        github_path: "m56/source.txt",
+        commit_message: "空白归一",
+        fetch_strategy: "direct_regex",
+        parse_mode: "custom_regex",
+        parse_param: "[0-9]+",
+        ...overrides,
+    });
+
+    afterAll(async () => {
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm56/%'").run();
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain LIKE 'm56-%'").run();
+    });
+
+    it("保存入口拒绝全空白 custom_regex，且不落库", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(regexPayload({ parse_param: "   " })),
+        });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toBe("custom_regex 模式必须填写正则表达式。");
+        const row = await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind("m56/source.txt")
+            .first();
+        expect(row).toBeNull();
+    });
+
+    it("探测入口拒绝全空白 custom_regex，且不发起抓取", async () => {
+        const cookie = await loginAndGetCookie();
+        const origFetch = globalThis.fetch;
+        let fetchCalls = 0;
+        globalThis.fetch = (() => {
+            fetchCalls++;
+            return Promise.resolve(new Response("[0-9]", { status: 200 }));
+        }) as typeof fetch;
+        try {
+            const res = await handleApiRequest(
+                new Request("https://example.com/api/ip_sources/probe", {
+                    method: "POST",
+                    headers: { Cookie: cookie, "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        url: "https://example.com/m56/probe.txt",
+                        parse_mode: "custom_regex",
+                        parse_param: "\t  ",
+                    }),
+                }),
+                env
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error?: string }).error).toBe("custom_regex 模式必须填写正则表达式。");
+            expect(fetchCalls).toBe(0);
+        } finally {
+            globalThis.fetch = origFetch;
+        }
+    });
+
+    it("保存带首尾空白的合法正则：落库为 trim 后的值", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const res = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(
+                regexPayload({
+                    url: "https://example.com/m56/trim.txt",
+                    github_path: "m56/trim.txt",
+                    parse_param: "  [0-9]+  ",
+                })
+            ),
+        });
+        expect(res.status).toBe(200);
+        const row = await env.WUYA.prepare("SELECT parse_mode, parse_param FROM ip_sources WHERE github_path = ?")
+            .bind("m56/trim.txt")
+            .first<{ parse_mode: string; parse_param: string }>();
+        expect(row?.parse_mode).toBe("custom_regex");
+        expect(row?.parse_param).toBe("[0-9]+");
+    });
+
+    it("域名 URL 保存入口同样拒绝全空白 custom_regex", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const res = await SELF.fetch("https://example.com/api/domains", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_type: "url",
+                source_url: "https://ips.example.com/m56/list.txt",
+                parse_mode: "custom_regex",
+                parse_param: " \n ",
+                target_domain_prefix: "m56-base",
+                ttl: 60,
+            }),
+        });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toBe("custom_regex 模式必须填写正则表达式。");
+        const row = await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("m56-base.example.com")
+            .first();
+        expect(row).toBeNull();
     });
 });
 
@@ -1175,6 +1616,200 @@ describe("IP 源写库冲突 (M-3)", () => {
             .first()) as { github_path: string; commit_message: string };
         expect(after.github_path).toBe("m3/b.txt");
         expect(after.commit_message).toBe("B");
+    });
+});
+
+// issue #51：伴生路径长度与主文件/伴生文件的双向路径冲突在保存时就要拒绝
+describe("IP 源伴生路径校验 (issue #51)", () => {
+    const ABSENT_ID = 987654321;
+
+    afterAll(async () => {
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm51/%'").run();
+    });
+
+    function postIpSource(cookie: string, payload: Record<string, unknown>) {
+        return SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+    }
+
+    it("主文件路径合法但派生伴生路径超过 512 时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        // 单段 ≤255：拼成 510 字符的主文件路径，派生后 513 字符（超过 512 上限）
+        const mainPath = `m51/${"a".repeat(200)}/${"b".repeat(200)}/${"c".repeat(100)}.txt`;
+        expect(mainPath.length).toBe(510);
+        expect(mainPath.slice(0, -4).length + "-v6.txt".length).toBe(513);
+
+        const res = await postIpSource(cookie, {
+            url: "https://example.com/m51/too-long.txt",
+            github_path: mainPath,
+            commit_message: "长路径",
+            fetch_strategy: "direct_regex",
+        });
+
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toContain("512");
+        const count = (await env.WUYA.prepare("SELECT COUNT(*) AS n FROM ip_sources WHERE github_path = ?")
+            .bind(mainPath)
+            .first()) as { n: number };
+        expect(count.n).toBe(0);
+    });
+
+    it("派生伴生路径的单段超过 255 时返回 400，不留到同步期才炸", async () => {
+        const cookie = await loginAndGetCookie();
+        // 主路径总长只有 257，但末段 253 字符：派生出的 "-v6.txt" 把它撑到 256，
+        // 保存阶段就该拒绝——否则每轮同步都在 normalizeGithubPath 里抛错、永不收敛
+        const mainPath = `m51/${"d".repeat(249)}.txt`;
+        const companionPath = `m51/${"d".repeat(249)}-v6.txt`;
+        expect(mainPath.length).toBeLessThan(512);
+        expect(companionPath.length).toBeLessThan(512);
+        expect(companionPath.split("/").at(-1)!.length).toBe(256);
+
+        const res = await postIpSource(cookie, {
+            url: "https://example.com/m51/segment.txt",
+            github_path: mainPath,
+            commit_message: "单段超限",
+            fetch_strategy: "direct_regex",
+        });
+
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error?: string };
+        expect(body.error).toContain("伴生");
+        expect(body.error).toContain("255");
+        const count = (await env.WUYA.prepare("SELECT COUNT(*) AS n FROM ip_sources WHERE github_path = ?")
+            .bind(mainPath)
+            .first()) as { n: number };
+        expect(count.n).toBe(0);
+    });
+
+    it("新增源的伴生路径撞上已有源主文件时返回 409", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/m51/own.txt", "m51/own.txt", "已有", "direct_regex")
+            .run();
+
+        const res = await postIpSource(cookie, {
+            url: "https://example.com/m51/claim-v6.txt",
+            // m51/own.txt 的伴生文件就是它，主文件不能抢占
+            github_path: "m51/own-v6.txt",
+            commit_message: "抢占伴生",
+            fetch_strategy: "direct_regex",
+        });
+
+        expect(res.status).toBe(409);
+        expect(((await res.json()) as { error?: string }).error).toContain("伴生");
+        const count = (await env.WUYA.prepare("SELECT COUNT(*) AS n FROM ip_sources WHERE github_path = ?")
+            .bind("m51/own-v6.txt")
+            .first()) as { n: number };
+        expect(count.n).toBe(0);
+    });
+
+    it("新增源的伴生路径撞上已有源伴生文件时返回 409（反向）", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/m51/pair.txt", "m51/pair.txt", "已有", "direct_regex")
+            .run();
+
+        const res = await postIpSource(cookie, {
+            url: "https://example.com/m51/pair-v6.txt",
+            // 它的伴生路径是 m51/pair-v6-v6.txt，但主文件本身占用了别人的伴生路径
+            github_path: "m51/pair-v6.txt",
+            commit_message: "撞伴生",
+            fetch_strategy: "direct_regex",
+        });
+
+        expect(res.status).toBe(409);
+    });
+
+    it("更新自身路径不与自身冲突，正常返回 200", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/m51/self.txt", "m51/self.txt", "自更新", "direct_regex")
+            .run();
+        const row = (await env.WUYA.prepare(
+            "SELECT id FROM ip_sources WHERE github_path = 'm51/self.txt'"
+        ).first()) as {
+            id: number;
+        };
+
+        const res = await SELF.fetch(`https://example.com/api/ip_sources/${row.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m51/self.txt",
+                github_path: "m51/self.txt",
+                commit_message: "换个提交信息",
+                fetch_strategy: "direct_regex",
+            }),
+        });
+
+        expect(res.status).toBe(200);
+    });
+
+    it("更新成别的源的伴生路径时返回 409", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.batch([
+            env.WUYA.prepare(
+                "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+            ).bind("https://example.com/m51/keep.txt", "m51/keep.txt", "保留", "direct_regex"),
+            env.WUYA.prepare(
+                "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+            ).bind("https://example.com/m51/move.txt", "m51/move.txt", "改路径", "direct_regex"),
+        ]);
+        const target = (await env.WUYA.prepare(
+            "SELECT id FROM ip_sources WHERE github_path = 'm51/move.txt'"
+        ).first()) as {
+            id: number;
+        };
+
+        const res = await SELF.fetch(`https://example.com/api/ip_sources/${target.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m51/move.txt",
+                github_path: "m51/keep-v6.txt",
+                commit_message: "撞伴生",
+                fetch_strategy: "direct_regex",
+            }),
+        });
+
+        expect(res.status).toBe(409);
+        const after = (await env.WUYA.prepare("SELECT github_path FROM ip_sources WHERE id = ?")
+            .bind(target.id)
+            .first()) as { github_path: string };
+        expect(after.github_path).toBe("m51/move.txt");
+    });
+
+    it("更新一个已不存在的 id 且路径撞别人时，报 404 而不是 409", async () => {
+        const cookie = await loginAndGetCookie();
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/m51/gone.txt", "m51/gone.txt", "占位", "direct_regex")
+            .run();
+
+        const res = await SELF.fetch(`https://example.com/api/ip_sources/${ABSENT_ID}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m51/gone.txt",
+                // 这条路径本身会撞上 m51/gone.txt 的伴生文件，但目标行不存在，404 优先
+                github_path: "m51/gone-v6.txt",
+                commit_message: "目标不存在",
+                fetch_strategy: "direct_regex",
+            }),
+        });
+
+        expect(res.status).toBe(404);
+        expect(((await res.json()) as { error?: string }).error).toBe("目标不存在。");
     });
 });
 
@@ -1295,7 +1930,7 @@ describe("IP 源路径百分号语义 (高-3)", () => {
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE github_path LIKE 'm13/%'").run();
     });
 
-    function postIpSource(cookie: string, githubPath: string) {
+    function postIpSourceWithPath(cookie: string, githubPath: string) {
         return SELF.fetch("https://example.com/api/ip_sources", {
             method: "POST",
             headers: { Cookie: cookie, "Content-Type": "application/json" },
@@ -1310,7 +1945,7 @@ describe("IP 源路径百分号语义 (高-3)", () => {
 
     it("百分号编码路径落库时归一为解码后的同一路径", async () => {
         const cookie = await loginAndGetCookie();
-        const res = await postIpSource(cookie, "m13/a%20b.txt");
+        const res = await postIpSourceWithPath(cookie, "m13/a%20b.txt");
         expect(res.status).toBe(200);
 
         const row = await env.WUYA.prepare("SELECT github_path FROM ip_sources WHERE github_path = ?")
@@ -1321,7 +1956,7 @@ describe("IP 源路径百分号语义 (高-3)", () => {
 
     it("非法百分号转义返回 400 且不落库", async () => {
         const cookie = await loginAndGetCookie();
-        const res = await postIpSource(cookie, "m13/%zz.txt");
+        const res = await postIpSourceWithPath(cookie, "m13/%zz.txt");
         expect(res.status).toBe(400);
         expect(((await res.json()) as { error?: string }).error).toContain("GitHub 文件路径");
 
@@ -1333,7 +1968,7 @@ describe("IP 源路径百分号语义 (高-3)", () => {
 
     it("孤立代理项返回 400 而不是保存成功", async () => {
         const cookie = await loginAndGetCookie();
-        const res = await postIpSource(cookie, "\uD800m13.txt");
+        const res = await postIpSourceWithPath(cookie, "\uD800m13.txt");
         expect(res.status).toBe(400);
         expect(((await res.json()) as { error?: string }).error).toContain("GitHub 文件路径");
     });
@@ -1362,7 +1997,6 @@ describe("IP 源写库成功路径 (中-7)", () => {
             url: "https://example.com/m12p/source.txt",
             github_path: "m12p/source.txt",
             commit_message: "首次同步",
-            fetch_strategy: "direct_regex",
             ...overrides,
         };
     }
@@ -1388,13 +2022,16 @@ describe("IP 源写库成功路径 (中-7)", () => {
         expect(row).not.toBeNull();
         expect(row?.url).toBe("https://example.com/m12p/source.txt");
         expect(row?.commit_message).toBe("首次同步");
-        expect(row?.fetch_strategy).toBe("direct_regex");
+        // issue #69：新增一律落 NULL，策略只能由同步回退路径写入
+        expect(row?.fetch_strategy).toBeNull();
     });
 
     it("PUT 成功会真的改掉字段，且 id 不变", async () => {
         const cookie = await loginAndGetCookie();
         const created = await readRow("m12p/source.txt");
         expect(created).not.toBeNull();
+        // 模拟上一轮同步命中后的缓存态：URL 一改，这份缓存就该失效
+        await seedStrategy("phantomjs_cloud", { id: created?.id as number });
 
         const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(created?.id), {
             method: "PUT",
@@ -1403,6 +2040,7 @@ describe("IP 源写库成功路径 (中-7)", () => {
                 payload({
                     url: "https://example.com/m12p/updated.txt",
                     commit_message: "更新后的提交信息",
+                    // issue #69：请求体里带策略不采信，清空 URL 缓存的判定完全由服务端做
                     fetch_strategy: "phantomjs_cloud",
                 })
             ),
@@ -1417,8 +2055,113 @@ describe("IP 源写库成功路径 (中-7)", () => {
         expect(row?.id).toBe(created?.id);
         expect(row?.url).toBe("https://example.com/m12p/updated.txt");
         expect(row?.commit_message).toBe("更新后的提交信息");
-        expect(row?.fetch_strategy).toBe("phantomjs_cloud");
+        // issue #68：fetch_strategy 是 URL 的抓取方式缓存，URL 变了缓存即失效，与 domains 侧语义对齐
+        expect(row?.fetch_strategy).toBeNull();
     });
+
+    // issue #68 + #69：URL 未变更时保留库内原值，且客户端根本不需要回传——
+    // 保存体里没有该字段，服务端照样保住策略，否则每改一次 commit_message 都要重新探测。
+    it("PUT 未变更 URL 且请求体不含策略时保留库内原 fetch_strategy（issue #69）", async () => {
+        const cookie = await loginAndGetCookie();
+        const created = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(payload({ github_path: "m12p/keep.txt", url: "https://example.com/m12p/keep.txt" })),
+        });
+        expect(created.status).toBe(200);
+        // 用真实登记且对所有 URL 适用的策略名，别拿未登记名蒙混过关
+        // （那会把「历史未登记名原样保留」这条回落固化成期望值）。
+        await seedStrategy("jina_reader", { githubPath: "m12p/keep.txt" });
+
+        const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(await idOf("m12p/keep.txt")), {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m12p/keep.txt",
+                github_path: "m12p/keep.txt",
+                commit_message: "只改提交信息",
+            }),
+        });
+        expect(res.status).toBe(200);
+        expect((await readRow("m12p/keep.txt"))?.fetch_strategy).toBe("jina_reader");
+    });
+
+    // issue #68：库内缓存策略本身不适用于该 URL（历史脏数据直写）时，保存动作不报错，
+    // 但策略不再保留——否则同步链每次都要在链首空跑一次别的站点的策略。
+    it("PUT 未变更 URL 但库内策略不适用于该 URL 时清空，不报错（issue #68）", async () => {
+        const cookie = await loginAndGetCookie();
+        const created = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(
+                payload({ github_path: "m12p/mismatch.txt", url: "https://example.com/m12p/mismatch.txt" })
+            ),
+        });
+        expect(created.status).toBe(200);
+        // 模拟历史脏数据：example.com 上挂着 hostmonit 专用策略
+        await seedStrategy("hostmonit_api", { githubPath: "m12p/mismatch.txt" });
+
+        const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(await idOf("m12p/mismatch.txt")), {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m12p/mismatch.txt",
+                github_path: "m12p/mismatch.txt",
+                commit_message: "配错策略",
+                fetch_strategy: "hostmonit_api",
+            }),
+        });
+        expect(res.status).toBe(200);
+        expect((await readRow("m12p/mismatch.txt"))?.fetch_strategy).toBeNull();
+    });
+
+    // issue #69：清理通道只剩「URL 变更」与「回到同步链重算」两条，未登记的存量策略名
+    // 不能靠保存动作顺手清掉 —— isStrategyApplicable 对未登记名一律判适用，原样保留。
+    // 这是刻意固化的口径，写成用例免得日后有人把它当 bug「修」掉。
+    it("PUT 未变更 URL 时，库内未登记策略名按适用处理原样保留（issue #69）", async () => {
+        const cookie = await loginAndGetCookie();
+        const created = await SELF.fetch("https://example.com/api/ip_sources", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(
+                payload({ github_path: "m12p/legacy.txt", url: "https://example.com/m12p/legacy.txt" })
+            ),
+        });
+        expect(created.status).toBe(200);
+        // 模拟已下线策略名残留在库里
+        await seedStrategy("legacy_removed_strategy", { githubPath: "m12p/legacy.txt" });
+
+        const res = await SELF.fetch("https://example.com/api/ip_sources/" + String(await idOf("m12p/legacy.txt")), {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: "https://example.com/m12p/legacy.txt",
+                github_path: "m12p/legacy.txt",
+                commit_message: "只改提交信息",
+            }),
+        });
+        expect(res.status).toBe(200);
+        expect((await readRow("m12p/legacy.txt"))?.fetch_strategy).toBe("legacy_removed_strategy");
+    });
+
+    /** 模拟一轮同步命中后的策略缓存态：策略只能由同步回退路径写入，测试直接写库造出这个状态 */
+    async function seedStrategy(value: string, where: { id: number } | { githubPath: string }): Promise<void> {
+        if ("id" in where) {
+            await env.WUYA.prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE id = ?").bind(value, where.id).run();
+            return;
+        }
+        await env.WUYA.prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE github_path = ?")
+            .bind(value, where.githubPath)
+            .run();
+    }
+
+    async function idOf(githubPath: string): Promise<number> {
+        const row = await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind(githubPath)
+            .first<{ id: number }>();
+        expect(row?.id).toBeGreaterThan(0);
+        return row?.id as number;
+    }
 
     it("未登录时新增被拒，且不落库", async () => {
         const res = await SELF.fetch("https://example.com/api/ip_sources", {
@@ -1706,5 +2449,502 @@ describe("HOSTMONIT_API_KEY 三态 API 级语义 (issue #31)", () => {
         await seedHostmonitKey("   ");
         expect((await readSafeSettings(await loginAndGetCookie())).HOSTMONIT_CONFIGURED).toBe(false);
         expect(await resolveHostmonitKey(env.WUYA)).toBe(DEFAULT_HOSTMONIT_API_KEY);
+    });
+});
+
+// issue #49：列表投影必须包含新列，旧行读出 null 而不是报错（方案 §15.1.7 归 test/api.test.ts）
+describe("列表投影包含新列 (issue #49)", () => {
+    // 清单是契约锁（issue #49）：列定义真相源在 src/db/client.ts 的 DOMAIN_COLUMNS / IP_SOURCE_COLUMNS，
+    // 这里复刻一份用于断言「投影真的带出这些列」，将来加列时需同步两处。
+    const NEW_DOMAIN_COLUMNS = ["source_type", "source_url", "parse_mode", "parse_param", "fetch_strategy"] as const;
+    const NEW_IP_SOURCE_COLUMNS = ["parse_mode", "parse_param"] as const;
+
+    it("GET /api/domains 返回新字段，旧数据读出 null", async () => {
+        const cookie = await loginAndGetCookie();
+        const row = await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, is_enabled) VALUES (?, ?, 'test-zone-id', 1, 60, 1)"
+        )
+            .bind("legacy-projection.example.com", "projection.example.com")
+            .run();
+        try {
+            const res = await SELF.fetch("https://example.com/api/domains", { headers: { Cookie: cookie } });
+            expect(res.status).toBe(200);
+            const rows = (await res.json()) as Array<Record<string, unknown>>;
+            const target = rows.find((item) => item.target_domain === "projection.example.com");
+            expect(target, "新插入的域名应出现在列表里").toBeDefined();
+            for (const column of NEW_DOMAIN_COLUMNS) {
+                expect(Object.keys(target as object), `投影缺列 ${column}`).toContain(column);
+                expect((target as Record<string, unknown>)[column], `${column} 旧数据应为 null`).toBeNull();
+            }
+        } finally {
+            await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(row.meta.last_row_id).run();
+        }
+    });
+
+    it("GET /api/ip_sources 返回新字段，旧数据读出 null", async () => {
+        const cookie = await loginAndGetCookie();
+        const row = await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/projection/legacy.txt", "projection/legacy.txt", "投影测试", "direct_regex")
+            .run();
+        try {
+            const res = await SELF.fetch("https://example.com/api/ip_sources", { headers: { Cookie: cookie } });
+            expect(res.status).toBe(200);
+            const rows = (await res.json()) as Array<Record<string, unknown>>;
+            const target = rows.find((item) => item.github_path === "projection/legacy.txt");
+            expect(target, "新插入的 IP 源应出现在列表里").toBeDefined();
+            for (const column of NEW_IP_SOURCE_COLUMNS) {
+                expect(Object.keys(target as object), `投影缺列 ${column}`).toContain(column);
+                expect((target as Record<string, unknown>)[column], `${column} 旧数据应为 null`).toBeNull();
+            }
+        } finally {
+            await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(row.meta.last_row_id).run();
+        }
+    });
+
+    // issue #69：写入面收窄到同步链之后，读取面必须原样保留 —— 列表与编辑页靠这一列展示缓存策略。
+    it("GET /api/ip_sources 仍投影 fetch_strategy 的库内实值（issue #69）", async () => {
+        const cookie = await loginAndGetCookie();
+        const row = await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)"
+        )
+            .bind("https://example.com/projection/cached.txt", "projection/cached.txt", "投影测试", "jina_reader")
+            .run();
+        try {
+            const res = await SELF.fetch("https://example.com/api/ip_sources", { headers: { Cookie: cookie } });
+            expect(res.status).toBe(200);
+            const rows = (await res.json()) as Array<Record<string, unknown>>;
+            const target = rows.find((item) => item.github_path === "projection/cached.txt") as
+                Record<string, unknown> | undefined;
+            expect(target?.fetch_strategy).toBe("jina_reader");
+        } finally {
+            await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(row.meta.last_row_id).run();
+        }
+    });
+});
+
+describe("域名 URL 输入类型 (issue #52)", () => {
+    /** POST /api/domains 的薄封装，自动带 Cookie 与 JSON 头 */
+    async function postDomain(cookie: string, payload: Record<string, unknown>) {
+        return await SELF.fetch("https://example.com/api/domains", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+    }
+
+    it("URL 类型保存成功：派生 hostname、强制关闭深度解析、写入解析配置", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "https://ips.example.com/list.json?v=1",
+            parse_mode: "json_path",
+            parse_param: "data.list",
+            target_domain_prefix: "url-save",
+            is_deep_resolve: 1,
+            ttl: 60,
+            notes: "URL 目标",
+        });
+        expect(res.status).toBe(200);
+        const row = (await env.WUYA.prepare(
+            "SELECT source_domain, source_type, source_url, parse_mode, parse_param, is_deep_resolve FROM domains WHERE target_domain = ?"
+        )
+            .bind("url-save.example.com")
+            .first()) as {
+            source_domain: string;
+            source_type: string;
+            source_url: string;
+            parse_mode: string;
+            parse_param: string;
+            is_deep_resolve: number;
+        };
+        expect(row.source_domain).toBe("ips.example.com");
+        expect(row.source_type).toBe("url");
+        expect(row.source_url).toBe("https://ips.example.com/list.json?v=1");
+        expect(row.parse_mode).toBe("json_path");
+        expect(row.parse_param).toBe("data.list");
+        // URL 类型强制关闭深度解析，即使请求里传了 1
+        expect(row.is_deep_resolve).toBe(0);
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain = ?").bind("url-save.example.com").run();
+    });
+
+    it("域名类型忽略 URL 相关字段，写库为 domain 且解析配置清空", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const res = await postDomain(cookie, {
+            source_type: "domain",
+            source_domain: "plain.example.com",
+            source_url: "https://should-be-ignored.example.com/list.txt",
+            parse_mode: "custom_regex",
+            parse_param: "\\d+",
+            target_domain_prefix: "plain",
+            ttl: 60,
+        });
+        expect(res.status).toBe(200);
+        const row = (await env.WUYA.prepare(
+            "SELECT source_domain, source_type, source_url, parse_mode, parse_param FROM domains WHERE target_domain = ?"
+        )
+            .bind("plain.example.com")
+            .first()) as {
+            source_domain: string;
+            source_type: string;
+            source_url: string | null;
+            parse_mode: string | null;
+            parse_param: string | null;
+        };
+        expect(row.source_domain).toBe("plain.example.com");
+        expect(row.source_type).toBe("domain");
+        expect(row.source_url).toBeNull();
+        expect(row.parse_mode).toBeNull();
+        expect(row.parse_param).toBeNull();
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain = ?").bind("plain.example.com").run();
+    });
+
+    it("缺少 source_url 时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postDomain(cookie, { source_type: "url", target_domain_prefix: "no-url" });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("source_url");
+    });
+
+    it("source_url 超过 2048 字符时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const longUrl = "https://example.com/" + "a".repeat(2100);
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: longUrl,
+            target_domain_prefix: "long-url",
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("2048");
+    });
+
+    it("非 http/https 协议返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "ftp://example.com/ips.txt",
+            target_domain_prefix: "bad-scheme",
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("http/https");
+    });
+
+    it("内网地址被 SSRF 校验拦截", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "http://169.254.169.254/latest/meta-data/",
+            target_domain_prefix: "ssrf",
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("内网");
+    });
+
+    it("解析模式非法时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "https://example.com/ips.txt",
+            parse_mode: "bad_mode",
+            target_domain_prefix: "bad-mode",
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("解析模式");
+    });
+
+    it.each([[""], [null]])("解析模式缺省（%s）按 auto 落库", async (mode) => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const prefix = mode === "" ? "default-mode-empty" : "default-mode-null";
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "https://example.com/ips.txt",
+            parse_mode: mode,
+            target_domain_prefix: prefix,
+        });
+        expect(res.status).toBe(200);
+        const row = (await env.WUYA.prepare("SELECT parse_mode, parse_param FROM domains WHERE target_domain = ?")
+            .bind(`${prefix}.example.com`)
+            .first()) as { parse_mode: string; parse_param: string | null };
+        expect(row.parse_mode).toBe("auto");
+        expect(row.parse_param).toBeNull();
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain = ?").bind(`${prefix}.example.com`).run();
+    });
+
+    it("json_path 缺少解析参数时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "https://example.com/ips.json",
+            parse_mode: "json_path",
+            target_domain_prefix: "no-param",
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("json_path");
+    });
+
+    it("source_type 非法时返回 400", async () => {
+        const cookie = await loginAndGetCookie();
+        const res = await postDomain(cookie, { source_type: "ftp", target_domain_prefix: "bad-type" });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("source_type");
+    });
+
+    it("系统预设域名不允许切换输入类型（403）", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system) VALUES (?, ?, ?, 1, 60, ?, 1)"
+        )
+            .bind("internal:hostmonit:lt", "lt.example.com", "test-zone-id", "系统")
+            .run();
+        const sysRow = (await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("lt.example.com")
+            .first()) as { id: number };
+        const res = await SELF.fetch(`https://example.com/api/domains/${sysRow.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_type: "url",
+                source_url: "https://example.com/ips.txt",
+                source_domain: "internal:hostmonit:lt",
+                target_domain_prefix: "lt",
+                ttl: 60,
+            }),
+        });
+        expect(res.status).toBe(403);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("不允许切换输入类型");
+        const after = (await env.WUYA.prepare("SELECT source_domain, source_type FROM domains WHERE id = ?")
+            .bind(sysRow.id)
+            .first()) as { source_domain: string; source_type: string | null };
+        expect(after.source_domain).toBe("internal:hostmonit:lt");
+        expect(after.source_type).toBeNull();
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain = ?").bind("lt.example.com").run();
+    });
+
+    it("PUT 未显式传 source_type 时沿用该行已有类型（URL 保持 URL）", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, parse_param, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 60, NULL, 0)"
+        )
+            .bind(
+                "ips.example.com",
+                "url",
+                "https://ips.example.com/list.txt",
+                "auto",
+                null,
+                "url-keep.example.com",
+                "test-zone-id"
+            )
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("url-keep.example.com")
+            .first()) as { id: number };
+        const res = await SELF.fetch(`https://example.com/api/domains/${row.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_url: "https://ips.example.com/list-v2.txt",
+                target_domain_prefix: "url-keep",
+                ttl: 60,
+            }),
+        });
+        expect(res.status).toBe(200);
+        const after = (await env.WUYA.prepare(
+            "SELECT source_type, source_url, source_domain, is_deep_resolve FROM domains WHERE id = ?"
+        )
+            .bind(row.id)
+            .first()) as {
+            source_type: string;
+            source_url: string;
+            source_domain: string;
+            is_deep_resolve: number;
+        };
+        expect(after.source_type).toBe("url");
+        expect(after.source_url).toBe("https://ips.example.com/list-v2.txt");
+        expect(after.source_domain).toBe("ips.example.com");
+        expect(after.is_deep_resolve).toBe(0);
+        await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(row.id).run();
+    });
+
+    it("从 URL 切回域名时清空 URL 相关列与历史策略", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, parse_param, fetch_strategy, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 60, NULL, 0)"
+        )
+            .bind(
+                "ips.example.com",
+                "url",
+                "https://ips.example.com/list.txt",
+                "auto",
+                null,
+                "jina_reader",
+                "url-to-domain.example.com",
+                "test-zone-id"
+            )
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("url-to-domain.example.com")
+            .first()) as { id: number };
+        const res = await SELF.fetch(`https://example.com/api/domains/${row.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_type: "domain",
+                source_domain: "target.example.com",
+                target_domain_prefix: "url-to-domain",
+                ttl: 60,
+            }),
+        });
+        expect(res.status).toBe(200);
+        const after = (await env.WUYA.prepare(
+            "SELECT source_type, source_url, parse_mode, parse_param, fetch_strategy, source_domain FROM domains WHERE id = ?"
+        )
+            .bind(row.id)
+            .first()) as {
+            source_type: string;
+            source_url: string | null;
+            parse_mode: string | null;
+            parse_param: string | null;
+            fetch_strategy: string | null;
+            source_domain: string;
+        };
+        expect(after.source_type).toBe("domain");
+        expect(after.source_domain).toBe("target.example.com");
+        expect(after.source_url).toBeNull();
+        expect(after.parse_mode).toBeNull();
+        expect(after.parse_param).toBeNull();
+        expect(after.fetch_strategy).toBeNull();
+        await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(row.id).run();
+    });
+
+    it("GET /api/domains 投影包含 URL 类型字段", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "https://projection.example.com/list.txt",
+            parse_mode: "lines",
+            target_domain_prefix: "url-proj",
+            ttl: 60,
+        });
+        expect(res.status).toBe(200);
+        const listRes = await SELF.fetch("https://example.com/api/domains", { headers: { Cookie: cookie } });
+        const list = (await listRes.json()) as Record<string, unknown>[];
+        const target = list.find((d) => d.target_domain === "url-proj.example.com");
+        expect(target).toBeDefined();
+        expect(target?.source_type).toBe("url");
+        expect(target?.source_url).toBe("https://projection.example.com/list.txt");
+        expect(target?.parse_mode).toBe("lines");
+        expect(target?.parse_param).toBeNull();
+        expect(target).toHaveProperty("fetch_strategy");
+        await env.WUYA.prepare("DELETE FROM domains WHERE target_domain = ?").bind("url-proj.example.com").run();
+    });
+
+    it("IPv6 字面量 URL 的派生主机名不合规时拒绝保存（§9.5）", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        const res = await postDomain(cookie, {
+            source_type: "url",
+            source_url: "http://[2606:4700::1111]/list.txt",
+            target_domain_prefix: "url-ipv6",
+            ttl: 60,
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain("主机名格式无效");
+        const rows = await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("url-ipv6.example.com")
+            .all();
+        expect(rows.results.length).toBe(0);
+    });
+
+    it("URL 改动后不沿用为旧 URL 缓存的历史策略", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, parse_param, fetch_strategy, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 60, NULL, 0)"
+        )
+            .bind(
+                "ips.example.com",
+                "url",
+                "https://ips.example.com/list.txt",
+                "auto",
+                null,
+                "jina_reader",
+                "url-strategy.example.com",
+                "test-zone-id"
+            )
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("url-strategy.example.com")
+            .first()) as { id: number };
+        const res = await SELF.fetch(`https://example.com/api/domains/${row.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_url: "https://other.example.com/list.txt",
+                target_domain_prefix: "url-strategy",
+                ttl: 60,
+            }),
+        });
+        expect(res.status).toBe(200);
+        const after = (await env.WUYA.prepare("SELECT source_url, fetch_strategy FROM domains WHERE id = ?")
+            .bind(row.id)
+            .first()) as { source_url: string; fetch_strategy: string | null };
+        expect(after.source_url).toBe("https://other.example.com/list.txt");
+        expect(after.fetch_strategy).toBeNull();
+        await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(row.id).run();
+    });
+
+    it("PUT 保留原 URL 时不丢弃已探测到的策略", async () => {
+        const cookie = await loginAndGetCookie();
+        await seedCfSettings();
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, parse_param, fetch_strategy, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 60, NULL, 0)"
+        )
+            .bind(
+                "ips.example.com",
+                "url",
+                "https://ips.example.com/list.txt",
+                "auto",
+                null,
+                "jina_reader",
+                "url-keep-strategy.example.com",
+                "test-zone-id"
+            )
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM domains WHERE target_domain = ?")
+            .bind("url-keep-strategy.example.com")
+            .first()) as { id: number };
+        const res = await SELF.fetch(`https://example.com/api/domains/${row.id}`, {
+            method: "PUT",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source_url: "https://ips.example.com/list.txt",
+                target_domain_prefix: "url-keep-strategy",
+                ttl: 300,
+            }),
+        });
+        expect(res.status).toBe(200);
+        const after = (await env.WUYA.prepare("SELECT fetch_strategy, ttl FROM domains WHERE id = ?")
+            .bind(row.id)
+            .first()) as { fetch_strategy: string | null; ttl: number };
+        expect(after.fetch_strategy).toBe("jina_reader");
+        expect(after.ttl).toBe(300);
+        await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(row.id).run();
     });
 });

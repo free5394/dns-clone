@@ -12,7 +12,7 @@ export async function queryAll<T = unknown>(db: D1Database, sql: string, ...bind
     return results as T[];
 }
 
-/** 读取单个 setting */
+/** 读取单个 setting。D1 的 `first(colName)` 只取单列且返回 unknown，故此处保留断言；不适用行类型派生 */
 export async function getSetting(db: D1Database, key: string): Promise<string | null> {
     return (await db.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first("value")) as string | null;
 }
@@ -28,7 +28,7 @@ export async function setSetting(db: D1Database, key: string, value: string | nu
 
 /** 读取全部 settings 为对象 */
 export async function getFullSettings(db: D1Database) {
-    const results = await queryAll<{ key: string; value: string }>(db, "SELECT key, value FROM settings");
+    const results = await queryAll<Pick<SettingsRow, "key" | "value">>(db, "SELECT key, value FROM settings");
     const settings: Record<string, string> = {};
     for (const row of results) {
         settings[row.key] = row.value;
@@ -65,10 +65,12 @@ export async function acquireManualSyncLock(db: D1Database): Promise<string | nu
         .run();
     if ((inserted.meta.changes ?? 0) === 1) return token;
 
+    // 锁路径刻意不改为调用 getSetting：issue #65 只做类型收口，不动互斥路径的语句与调用链；
+    // 行形状仍从 SettingsRow 派生，保持单一来源。
     const row = await db
         .prepare("SELECT value FROM settings WHERE key = ?")
         .bind(MANUAL_SYNC_LOCK_KEY)
-        .first<{ value: string }>();
+        .first<Pick<SettingsRow, "value">>();
     if (!row) return null; // 竞态：对方刚释放，交给调用方下一轮再抢
 
     const current = Number(row.value);
@@ -165,9 +167,68 @@ export async function getGitHubSettings(db: D1Database) {
 export const DOMAIN_COLUMNS =
     "id, source_domain, target_domain, zone_id, is_deep_resolve, ttl, notes, " +
     "strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_time) as last_synced_time, " +
-    "last_sync_status, last_sync_error, is_enabled, is_system";
+    "last_sync_status, last_sync_error, is_enabled, is_system, " +
+    // issue #49 / 方案 §8.1：新增列进入投影，旧数据读出 null（不报错）
+    "source_type, source_url, parse_mode, parse_param, fetch_strategy";
+
+/**
+ * domains 表的行类型。同步路径以 `SELECT * FROM domains` 读出整行，本类型只声明其中
+ * 被消费的 14 列（与 DDL 的偏差见文末）。
+ * 可空列声明为可选，是为了兼容只查部分列的调用方；整行读出时这些键仍然存在。
+ *
+ * issue #62：测试侧不再用按位置取参数类型的方式反推，改为 `import type` 本类型，
+ * 保证领域定义只有这一处——签名一改，测试跟随类型报错而不是静默指向别的参数。
+ *
+ * issue #66：定义从 `src/sync/domains.ts` 下沉到 db 层。表定义（migrations.ts 的
+ * `expectedSchemas.domains`）与列清单 `DOMAIN_COLUMNS` 都在 db 层，db 层（如 migrations.ts
+ * 的 invalid domain 修复）需要派生行形状时，不该反向 import sync 层把依赖方向掰反；
+ * `sync → db` 是既有方向，本类型不新增任何 import 边。
+ *
+ * 与 DDL 的已知偏差（刻意保持，issue #66 范围外）：`domains` 表有 18 列，本类型只覆盖 14 列，
+ * 缺 `notes` / `last_synced_time` / `last_sync_status` / `last_sync_error`。补齐会触发一批
+ * 既有类型报错，属另一个议题。
+ */
+export interface DomainRow {
+    id: number;
+    source_domain: string;
+    target_domain: string;
+    zone_id: string;
+    is_deep_resolve: number;
+    ttl: number;
+    last_synced_records?: string | null;
+    is_enabled: number;
+    is_system: number;
+    // issue #52 / 方案 §8.1：来源类型与 URL 解析配置。列可空，存量数据读出 null 按域名目标处理
+    source_type?: string | null;
+    source_url?: string | null;
+    parse_mode?: string | null;
+    parse_param?: string | null;
+    fetch_strategy?: string | null;
+}
 
 export const IP_SOURCE_COLUMNS =
     "id, url, github_path, commit_message, fetch_strategy, " +
     "strftime('%Y-%m-%dT%H:%M:%SZ', last_synced_time) as last_synced_time, " +
-    "last_sync_status, last_sync_error, is_enabled";
+    "last_sync_status, last_sync_error, is_enabled, " +
+    // issue #49 / 方案 §8.2：新增列进入投影，旧数据读出 null（不报错）
+    "parse_mode, parse_param";
+
+/**
+ * 表行类型的单一来源（issue #65）：src/ 生产代码里 settings / sessions 的读取一律从这里派生投影
+ * （同文件直接引用，跨层用 `import type`），不在调用点内联手写行形状。
+ * test/ 里直接读 D1 原始行、断言库内真值的用例刻意不走这层（要验的是库里的值，不是生产投影）。
+ * 列约束以 `src/db/migrations.ts` 的 `expectedSchemas` DDL 为准，改表时同步核对这些类型——
+ * 与上面的列清单同处 db 层，避免行形状在多处漂移。
+ */
+
+/** settings 表的一行（DDL：src/db/migrations.ts 的 expectedSchemas.settings —— key TEXT PRIMARY KEY NOT NULL、value TEXT NOT NULL） */
+export interface SettingsRow {
+    key: string;
+    value: string;
+}
+
+/** sessions 表的一行（DDL：src/db/migrations.ts 的 expectedSchemas.sessions —— token TEXT PRIMARY KEY NOT NULL、expires_at TIMESTAMP NOT NULL） */
+export interface SessionRow {
+    token: string;
+    expires_at: string;
+}

@@ -4,17 +4,155 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { fetchIpsFromSource, syncSingleIpSource } from "../src/sync/ip-sources.ts";
+import { deriveCompanionPath } from "../src/sync/github.ts";
+import { makeIpSourceRow, type IpSourceRow } from "./ip-source-row.ts";
+import { makeDomainRow, type DomainRow } from "./domain-row.ts";
 import {
     syncDomainLogic,
     syncSystemDomains,
     resolveRecordsForDomain,
+    resolveRecursively,
     processInChunks,
     updateCloudflareDns,
+    formatChangeComment,
+    limitIpRecords,
 } from "../src/sync/domains.ts";
 
 afterEach(() => {
     vi.unstubAllGlobals();
 });
+
+const GITHUB_API_ROOT = "https://api.github.com";
+
+/** 与 seedGitHubSettings 写入的凭据保持一致：mock 只用这一份仓库身份拼 GitHub API URL。 */
+const TEST_GITHUB_OWNER = "test-owner";
+const TEST_GITHUB_REPO = "test-repo";
+const TEST_GITHUB_REPO_API = `${GITHUB_API_ROOT}/repos/${TEST_GITHUB_OWNER}/${TEST_GITHUB_REPO}`;
+
+/** 一次 GitHub 写入的记录：path 为目标文件路径，content 为解码后的正文。 */
+type RecordedPut = { path: string; content: string };
+
+/**
+ * 独立计算的期望备注：走 Intl 时区库（与既有 beijingTimeLog 同一机制），
+ * 而不是复用被测实现的手工 UTC+8 平移——否则时区整体跑偏时两边一起错，测不出问题。
+ */
+function expectedChangeComment(now: Date = new Date()): string {
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+    }).formatToParts(now);
+    const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+    return `DNS Clone 变更于 ${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`;
+}
+
+/** 向 settings 表写入 GitHub 凭据，供 syncSingleIpSource 走 GitHub 写回链路。 */
+async function seedGitHubSettings() {
+    for (const [key, value] of [
+        ["GITHUB_TOKEN", "test-token"],
+        ["GITHUB_OWNER", TEST_GITHUB_OWNER],
+        ["GITHUB_REPO", TEST_GITHUB_REPO],
+    ]) {
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
+            .bind(key, value)
+            .run();
+    }
+}
+
+/**
+ * 捕获同步过程中写入的 console.log，供日志断言用例使用。
+ * 曾按 describe 就近复制三份（issue #22 / #50 / #55），收口到模块层后只此一份：
+ * 行为变更（如增加 warn 捕获、调整 mock 语义）改一处即三处生效。
+ */
+async function captureLogs(run: () => Promise<unknown>): Promise<string[]> {
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((msg?: unknown) => {
+        logs.push(String(msg));
+    });
+    try {
+        await run();
+    } finally {
+        spy.mockRestore();
+    }
+    return logs;
+}
+
+/** 读 ip_sources 的同步状态列，供用例断言 success / failed 与错误文案。 */
+async function syncState(id: number): Promise<{ status: string; error: string | null }> {
+    const row = (await env.WUYA.prepare("SELECT last_sync_status, last_sync_error FROM ip_sources WHERE id = ?")
+        .bind(id)
+        .first()) as { last_sync_status: string; last_sync_error: string | null } | null;
+    return { status: row?.last_sync_status ?? "", error: row?.last_sync_error ?? null };
+}
+
+/** 只取同步状态字符串的便捷包装。 */
+async function lastSyncStatus(id: number): Promise<string> {
+    return (await syncState(id)).status;
+}
+
+/**
+ * GitHub 写回链路的 mock（issue #22 / #55 用例组的「单主文件」场景共用），覆盖：
+ * repo 端点 200；contents 的 PUT 记录写入体并更新远端内容；contents 的 GET 按 Accept 区分
+ * 「变更检测要 raw 正文」与「写前取 sha 要 JSON」；三者之外的请求交给 onOtherRequest。
+ * initialFile 传 null 表示远端文件一开始不存在（404 → 新建），GET 一律 404；传对象则以此为初值。
+ * onOtherRequest 返回 null 表示未命中，由本函数抛错——漏 mock 必须炸掉，不能静默放行。
+ * 伴生文件的多文件初态与 PUT 失败注入不在此 helper 内，留给 issue #50 用例自行 mock。
+ */
+function stubGitHubContentsMock(options: {
+    initialFile: { path: string; content: string } | null;
+    puts: RecordedPut[];
+    onOtherRequest: (url: string, init?: RequestInit) => Response | null;
+}) {
+    // initialFile 为 null 即远端文件不存在：GET 走 404，首次 PUT 时才建出来。
+    const remoteContents = new Map<string, string>();
+    if (options.initialFile) {
+        remoteContents.set(options.initialFile.path, options.initialFile.content);
+    }
+    vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: unknown, init?: RequestInit) => {
+            const url = String(typeof input === "string" ? input : (input as Request).url);
+            const method = (init?.method ?? "GET").toUpperCase();
+            if (url === TEST_GITHUB_REPO_API) {
+                return new Response("{}", { status: 200 });
+            }
+            if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
+                const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+                if (method === "PUT") {
+                    const body = JSON.parse(String(init?.body ?? "{}")) as { content: string };
+                    const content = Buffer.from(body.content, "base64").toString("utf8");
+                    options.puts.push({ path, content });
+                    remoteContents.set(path, content);
+                    return new Response("{}", { status: 200 });
+                }
+                // 同一个 URL 的两种 GET：变更检测要 raw 正文，写前取 sha 要 JSON
+                const accept = String((init?.headers as Record<string, string> | undefined)?.["Accept"] ?? "");
+                const remoteContent = remoteContents.get(path);
+                if (accept.includes("raw")) {
+                    return remoteContent === undefined
+                        ? new Response(JSON.stringify({ message: "Not Found" }), { status: 404 })
+                        : new Response(remoteContent, { status: 200 });
+                }
+                return remoteContent === undefined
+                    ? new Response(JSON.stringify({ message: "Not Found" }), { status: 404 })
+                    : new Response(JSON.stringify({ sha: "main-sha" }), {
+                          status: 200,
+                          headers: { "Content-Type": "application/json" },
+                      });
+            }
+            // 上面三个分支没拦住的请求（抓取源站、其它 GitHub 端点）交给用例自定义；未命中照样炸掉。
+            const otherResponse = options.onOtherRequest(url, init);
+            if (otherResponse) return otherResponse;
+            throw new Error(`未预期的请求: ${url}`);
+        })
+    );
+}
 
 describe("fetchIpsFromSource multi-source fallback", () => {
     it("uses the primary strategy successfully", async () => {
@@ -22,31 +160,21 @@ describe("fetchIpsFromSource multi-source fallback", () => {
             "fetch",
             vi.fn(async () => new Response("3.3.3.3\n1.1.1.1\n2.2.2.2", { status: 200 }))
         );
-        const ips = await fetchIpsFromSource({
-            id: 1,
-            url: "https://example.com/ips.txt",
-            github_path: "ips.txt",
-            commit_message: "update",
-            fetch_strategy: "direct_regex",
-        });
+        const ips = await fetchIpsFromSource(makeIpSourceRow());
         // 排序后返回
         expect(ips).toEqual(["1.1.1.1", "2.2.2.2", "3.3.3.3"]);
     });
 
-    it("throws when the strategy returns no IPs", async () => {
+    // issue #55：IP 源侧「取得正文但 0 条」不再抛错，改为返回空数组，
+    // 让同步层把主文件写成空内容并标 success（§13.1）；抛错语义只留给「全部策略抓取失败」。
+    it("策略返回 0 条时返回空数组，不再抛错（issue #55）", async () => {
         vi.stubGlobal(
             "fetch",
             vi.fn(async () => new Response("no ips here", { status: 200 }))
         );
         await expect(
-            fetchIpsFromSource({
-                id: 1,
-                url: "https://example.com/empty.txt",
-                github_path: "empty.txt",
-                commit_message: "update",
-                fetch_strategy: "direct_regex",
-            })
-        ).rejects.toThrow("所有抓取策略均未能从该URL获取到IP");
+            fetchIpsFromSource(makeIpSourceRow({ url: "https://example.com/empty.txt", github_path: "empty.txt" }))
+        ).resolves.toEqual([]);
     });
 
     it("falls back to another strategy when primary fails", async () => {
@@ -63,13 +191,7 @@ describe("fetchIpsFromSource multi-source fallback", () => {
                 return new Response("10.0.0.1\n10.0.0.2", { status: 200 });
             })
         );
-        const source = {
-            id: 99,
-            url: "https://example.com/ips.txt",
-            github_path: "fallback-test.txt",
-            commit_message: "update",
-            fetch_strategy: "phantomjs_cloud",
-        };
+        const source = makeIpSourceRow({ id: 99, github_path: "fallback-test.txt", fetch_strategy: "phantomjs_cloud" });
         const ips = await fetchIpsFromSource(source);
         expect(ips).toEqual(["10.0.0.1", "10.0.0.2"]);
         // fetchIpsFromSource 会就地更新 source.fetch_strategy
@@ -86,14 +208,7 @@ describe("fetchIpsFromSource multi-source fallback", () => {
             .run();
         const row = (await env.WUYA.prepare("SELECT * FROM ip_sources WHERE github_path = ?")
             .bind(uniquePath)
-            .first()) as {
-            id: number;
-            url: string;
-            github_path: string;
-            commit_message: string;
-            fetch_strategy: string;
-            is_enabled: number;
-        };
+            .first()) as IpSourceRow;
 
         let callCount = 0;
         vi.stubGlobal(
@@ -125,13 +240,9 @@ describe("fetchIpsFromSource multi-source fallback", () => {
             "fetch",
             vi.fn(async () => new Response("300.1.1.1\n1.1.1.1\n999.999.999.999\n256.0.0.1", { status: 200 }))
         );
-        const ips = await fetchIpsFromSource({
-            id: 1,
-            url: "https://example.com/mixed.txt",
-            github_path: "mixed.txt",
-            commit_message: "update",
-            fetch_strategy: "direct_regex",
-        });
+        const ips = await fetchIpsFromSource(
+            makeIpSourceRow({ url: "https://example.com/mixed.txt", github_path: "mixed.txt" })
+        );
         // 只有合法 IPv4 入选：越界段（999/300/256）不得发布给订阅器
         expect(ips).toEqual(["1.1.1.1"]);
     });
@@ -157,7 +268,8 @@ describe("syncDomainLogic writes back to D1", () => {
             .run();
 
         // mock 外部 fetch：DoH 查询 + Cloudflare API 列表（返回空 → 需新增）
-        const fetchMock = vi.fn(async (url: string) => {
+        // 显式声明签名：mock 实现只关心 url，但断言要读第二个参数（POST 的 method）
+        const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async (url) => {
             if (url.includes("dns-query")) {
                 return new Response(
                     JSON.stringify({
@@ -245,40 +357,6 @@ describe("syncSingleIpSource (Task 2.1 is_enabled 守卫)", () => {
 // issue #22（P4）：成功日志必须写明本次实际生效的抓取策略；发生回退时写回退后的那个，
 // 而不是配置里写的那个——否则管理员看到的"策略"与真实抓取链路不符。
 describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)", () => {
-    async function seedGitHubSettings() {
-        for (const [key, value] of [
-            ["GITHUB_TOKEN", "test-token"],
-            ["GITHUB_OWNER", "test-owner"],
-            ["GITHUB_REPO", "test-repo"],
-        ]) {
-            await env.WUYA.prepare(
-                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-            )
-                .bind(key, value)
-                .run();
-        }
-    }
-
-    /** GitHub 侧全部 mock 掉：仓库存在、文件不存在（404 → 新建）、PUT 成功。 */
-    function stubFetch(ipResponseFor: (url: string) => Response | null) {
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async (input: unknown, init?: RequestInit) => {
-                const url = String(typeof input === "string" ? input : (input as Request).url);
-                if (url === "https://api.github.com/repos/test-owner/test-repo") {
-                    return new Response("{}", { status: 200 });
-                }
-                if (url.startsWith("https://api.github.com/repos/test-owner/test-repo/contents/")) {
-                    if ((init?.method ?? "GET").toUpperCase() === "PUT") return new Response("{}", { status: 200 });
-                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
-                }
-                const ipResponse = ipResponseFor(url);
-                if (ipResponse) return ipResponse;
-                throw new Error(`未预期的请求: ${url}`);
-            })
-        );
-    }
-
     async function insertSource(strategy: string | null, url: string) {
         const uniquePath = `strategy-log-${crypto.randomUUID()}.txt`;
         await env.WUYA.prepare(
@@ -292,23 +370,14 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
         return row.id;
     }
 
-    async function captureLogs(run: () => Promise<unknown>): Promise<string[]> {
-        const logs: string[] = [];
-        const spy = vi.spyOn(console, "log").mockImplementation((msg?: unknown) => {
-            logs.push(String(msg));
-        });
-        try {
-            await run();
-        } finally {
-            spy.mockRestore();
-        }
-        return logs;
-    }
-
     it("成功日志行带实际生效策略名", async () => {
         await seedGitHubSettings();
         const id = await insertSource("direct_regex", "https://example.com/ips.txt");
-        stubFetch((url) => (url === "https://example.com/ips.txt" ? new Response("1.1.1.1\n2.2.2.2") : null));
+        stubGitHubContentsMock({
+            initialFile: null,
+            puts: [],
+            onOtherRequest: (url) => (url === "https://example.com/ips.txt" ? new Response("1.1.1.1\n2.2.2.2") : null),
+        });
 
         const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
 
@@ -322,10 +391,14 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
     it("回退后日志显示回退后真正生效的策略", async () => {
         await seedGitHubSettings();
         const id = await insertSource("phantomjs_cloud", "https://example.com/fallback.txt");
-        stubFetch((url) => {
-            if (url.startsWith("https://PhantomJsCloud.com")) return new Response("no ips here");
-            if (url === "https://example.com/fallback.txt") return new Response("10.0.0.1\n10.0.0.2");
-            return null;
+        stubGitHubContentsMock({
+            initialFile: null,
+            puts: [],
+            onOtherRequest: (url) => {
+                if (url.startsWith("https://PhantomJsCloud.com")) return new Response("no ips here");
+                if (url === "https://example.com/fallback.txt") return new Response("10.0.0.1\n10.0.0.2");
+                return null;
+            },
         });
 
         const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
@@ -348,7 +421,11 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
         await seedGitHubSettings();
         // 列可空（迁移里 fetch_strategy 无 NOT NULL）：插入 NULL 模拟历史数据
         const id = await insertSource(null, "https://example.com/null-strategy.txt");
-        stubFetch((url) => (url === "https://example.com/null-strategy.txt" ? new Response("9.9.9.9") : null));
+        stubGitHubContentsMock({
+            initialFile: null,
+            puts: [],
+            onOtherRequest: (url) => (url === "https://example.com/null-strategy.txt" ? new Response("9.9.9.9") : null),
+        });
 
         const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
 
@@ -356,6 +433,502 @@ describe("syncSingleIpSource 日志包含实际生效的抓取策略 (issue #22)
         // NULL 已在读取处归一为空串，fellBack 因此为 false：只写实际策略，不带回退说明
         expect(successLine).toMatch(/（抓取策略: direct_regex）/);
         expect(successLine).not.toContain("已从");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+});
+
+// issue #50：主文件只写 IPv4；仅解析到 IPv6 时写空主文件，伴生文件留给后续能力
+describe("IP 源主文件语义 (issue #50)", () => {
+    async function insertSource(url: string) {
+        const githubPath = `ip-main-${crypto.randomUUID()}.txt`;
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy, parse_mode) VALUES (?, ?, ?, ?, ?)"
+        )
+            .bind(url, githubPath, "update", "direct_regex", "auto")
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind(githubPath)
+            .first()) as {
+            id: number;
+        };
+        return { id: row.id, githubPath };
+    }
+
+    it("存量 IPv4 内容一致时逐字节不变，不发 PUT", async () => {
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/same.txt");
+        const putBodies: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                if (url === "https://example.com/same.txt") {
+                    return new Response("2.2.2.2\n1.1.1.1", { status: 200 });
+                }
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
+                    if ((init?.method ?? "GET").toUpperCase() === "PUT") {
+                        putBodies.push(String(init?.body ?? ""));
+                        return new Response("{}", { status: 200 });
+                    }
+                    // 主文件线上就是排序后的同一内容；伴生文件远端不存在（#51 起仍要 GET 一次判断是否删除）
+                    if (decodeURIComponent(url.split("/contents/")[1]) === githubPath) {
+                        return new Response("1.1.1.1\n2.2.2.2", { status: 200 });
+                    }
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        expect(putBodies).toHaveLength(0);
+        expect(logs.some((line) => line.includes("无变化") || line.includes("内容一致"))).toBe(true);
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("仅解析到 IPv6 时主文件写空内容，IPv6 写入伴生文件", async () => {
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/v6.txt");
+        const companionPath = deriveCompanionPath(githubPath);
+        const puts: Array<{ path: string; body: string }> = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                if (url === "https://example.com/v6.txt") {
+                    return new Response("2606:4700:4700::1111", { status: 200 });
+                }
+                if (url === TEST_GITHUB_REPO_API) {
+                    return new Response("{}", { status: 200 });
+                }
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
+                    if ((init?.method ?? "GET").toUpperCase() === "PUT") {
+                        puts.push({
+                            path: decodeURIComponent(url.split("/contents/")[1]),
+                            body: String(init?.body ?? ""),
+                        });
+                        return new Response("{}", { status: 200 });
+                    }
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        // 主文件（空内容）+ 伴生文件（IPv6）各写一次
+        expect(puts).toHaveLength(2);
+        expect(puts[0].path).toBe(githubPath);
+        expect((JSON.parse(puts[0].body) as { content: string }).content).toBe("");
+        expect(puts[1].path).toBe(companionPath);
+        expect(Buffer.from((JSON.parse(puts[1].body) as { content: string }).content, "base64").toString("utf8")).toBe(
+            "2606:4700:4700::1111"
+        );
+        expect(logs.some((line) => line.includes("IPv6 伴生文件"))).toBe(true);
+
+        expect(await lastSyncStatus(id)).toBe("success");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("IPv6 为空且远端存在伴生文件时删除，状态记 success", async () => {
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/drop-v6.txt");
+        const companionPath = deriveCompanionPath(githubPath);
+        const deleteCalls: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                const method = (init?.method ?? "GET").toUpperCase();
+                if (url === "https://example.com/drop-v6.txt") {
+                    return new Response("1.1.1.1", { status: 200 });
+                }
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
+                    const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+                    if (method === "DELETE") {
+                        deleteCalls.push(path);
+                        return new Response("{}", { status: 200 });
+                    }
+                    if (path === githubPath) {
+                        // 主文件已是同样的 IPv4，不需要再写
+                        return new Response("1.1.1.1", { status: 200 });
+                    }
+                    if (path === companionPath) {
+                        return new Response(
+                            JSON.stringify({
+                                content: Buffer.from("2606:4700:4700::1111", "utf8").toString("base64"),
+                                sha: "companion-sha",
+                            }),
+                            { status: 200, headers: { "Content-Type": "application/json" } }
+                        );
+                    }
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        expect(deleteCalls).toEqual([companionPath]);
+        expect(logs.some((line) => line.includes("已删除 IPv6 伴生文件"))).toBe(true);
+
+        expect(await lastSyncStatus(id)).toBe("success");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("IPv6 为空且远端无伴生文件时不发 DELETE，状态记 no_change", async () => {
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/none-v6.txt");
+        const methods: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                const method = (init?.method ?? "GET").toUpperCase();
+                if (url === "https://example.com/none-v6.txt") {
+                    return new Response("1.1.1.1", { status: 200 });
+                }
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
+                    methods.push(method);
+                    const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+                    if (path === githubPath && method === "GET") {
+                        return new Response("1.1.1.1", { status: 200 });
+                    }
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        expect(methods).not.toContain("DELETE");
+        expect(methods).not.toContain("PUT");
+        expect(logs.some((line) => line.includes("跳过删除"))).toBe(true);
+
+        expect(await lastSyncStatus(id)).toBe("no_change");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("伴生文件内容一致时不重复写入，但主文件更新仍记 success", async () => {
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/same-v6.txt");
+        const companionPath = deriveCompanionPath(githubPath);
+        const puts: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                const method = (init?.method ?? "GET").toUpperCase();
+                if (url === "https://example.com/same-v6.txt") {
+                    return new Response("1.1.1.1\n2606:4700:4700::1111", { status: 200 });
+                }
+                if (url === TEST_GITHUB_REPO_API) {
+                    return new Response("{}", { status: 200 });
+                }
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
+                    const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+                    if (method === "PUT") {
+                        puts.push(path);
+                        return new Response("{}", { status: 200 });
+                    }
+                    // 同一个 URL 有两种 GET 语义：变更检测要 raw 正文，写前取 sha 要 JSON
+                    const accept = String((init?.headers as Record<string, string> | undefined)?.["Accept"] ?? "");
+                    if (accept.includes("raw")) {
+                        if (path === githubPath) return new Response("9.9.9.9", { status: 200 });
+                        if (path === companionPath) return new Response("2606:4700:4700::1111", { status: 200 });
+                        return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                    }
+                    if (path === githubPath) {
+                        return new Response(JSON.stringify({ sha: "main-sha" }), {
+                            status: 200,
+                            headers: { "Content-Type": "application/json" },
+                        });
+                    }
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        expect(puts).toEqual([githubPath]);
+        expect(logs.some((line) => line.includes("IPv6 伴生文件内容无变化"))).toBe(true);
+
+        expect(await lastSyncStatus(id)).toBe("success");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("伴生文件写入失败时整轮记 failed，下一轮按内容比对收敛 (issue #51)", async () => {
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/fail-v6.txt");
+        const companionPath = deriveCompanionPath(githubPath);
+        const puts: string[] = [];
+        // 第一轮：主文件写成功、伴生文件 PUT 恒 500，同步应整轮失败
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                const method = (init?.method ?? "GET").toUpperCase();
+                if (url === "https://example.com/fail-v6.txt") {
+                    return new Response("2606:4700:4700::1111", { status: 200 });
+                }
+                if (url === TEST_GITHUB_REPO_API) {
+                    return new Response("{}", { status: 200 });
+                }
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
+                    const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+                    if (method === "PUT") {
+                        if (path === companionPath) {
+                            return new Response(JSON.stringify({ message: "boom" }), { status: 500 });
+                        }
+                        puts.push(path);
+                        return new Response("{}", { status: 200 });
+                    }
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        const logs = await captureLogs(async () => {
+            await expect(syncSingleIpSource(id, env, false)).rejects.toThrow();
+        });
+
+        expect(logs.some((line) => line.includes("同步失败"))).toBe(true);
+        const failed = await syncState(id);
+        expect(failed.status).toBe("failed");
+        expect(failed.error).toBeTruthy();
+
+        // 第二轮：伴生文件已在远端存下同样的内容，主文件也一致 → 全链路无写入，状态收敛为 no_change
+        expect(puts).toEqual([githubPath]);
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                if (url === "https://example.com/fail-v6.txt") {
+                    return new Response("2606:4700:4700::1111", { status: 200 });
+                }
+                if (url.startsWith(`${TEST_GITHUB_REPO_API}/contents/`)) {
+                    const path = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+                    if (path === githubPath) return new Response("", { status: 200 });
+                    if (path === companionPath) return new Response("2606:4700:4700::1111", { status: 200 });
+                    return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+                }
+                throw new Error(`未预期的请求: ${url}`);
+            })
+        );
+
+        await captureLogs(() => syncSingleIpSource(id, env, false));
+        expect(await lastSyncStatus(id)).toBe("no_change");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+});
+
+// issue #55：GitHub 侧「成功但 0 条」按空内容处理并标 success —— 与「全部策略抛错」是两种语义。
+// 这一组把方案 §13.1 的异常语义钉死：能清空远端主文件，但绝不能把抓取失败也当成 0 条；§15.1 的测试清单亦已同步。
+describe("IP 源空结果语义 (issue #55)", () => {
+    // presetError：预置上一轮的非空 last_sync_error，用来真正验证「本轮成功后错误被清空」（AC1）
+    async function insertSource(url: string, presetError?: string) {
+        const githubPath = `ip-empty-${crypto.randomUUID()}.txt`;
+        await env.WUYA.prepare(
+            "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy, parse_mode, last_sync_status, last_sync_error) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        )
+            .bind(url, githubPath, "update", "direct_regex", "auto", presetError ? "failed" : null, presetError ?? null)
+            .run();
+        const row = (await env.WUYA.prepare("SELECT id FROM ip_sources WHERE github_path = ?")
+            .bind(githubPath)
+            .first()) as { id: number };
+        return { id: row.id, githubPath };
+    }
+
+    it("三策略都返回 200 空正文：主文件写空内容并标 success", async () => {
+        await seedGitHubSettings();
+        // 上一轮失败过：本轮成功后 last_sync_error 必须被清空，不能留着陈旧错误
+        const { id, githubPath } = await insertSource(
+            "https://example.com/empty.txt",
+            "上一轮: 所有抓取策略均未能从该URL获取到IP"
+        );
+        const puts: RecordedPut[] = [];
+        stubGitHubContentsMock({
+            initialFile: { path: githubPath, content: "9.9.9.9" },
+            puts,
+            onOtherRequest: (url) => {
+                // 三个抓取策略（含 phantomjs / codetabs / jina）一律 200 空正文
+                if (
+                    url.startsWith("https://example.com/") ||
+                    url.includes("codetabs") ||
+                    url.includes("r.jina.ai") ||
+                    url.startsWith("https://PhantomJsCloud.com")
+                ) {
+                    return new Response("<table><tbody></tbody></table>", { status: 200 });
+                }
+                return null;
+            },
+        });
+
+        await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        // 远端主文件原为 9.9.9.9，本轮写成空内容（§13.1 / §17.1 风险 7 已确认允许清空）
+        expect(puts).toContainEqual({ path: githubPath, content: "" });
+        expect(puts).toHaveLength(1);
+        const state = await syncState(id);
+        expect(state.status).toBe("success");
+        expect(state.error).toBeNull();
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("连续两轮 0 条：首轮清空远端标 success，次轮内容已一致转 no_change", async () => {
+        // 状态由「本轮有没有写入」决定（§13.1），不是「是不是 0 条」：
+        // 第一轮远端还有旧内容 → 写入空内容 → success；第二轮远端已是空内容 → 不写 → no_change。
+        // 这条用例钉住该边界，避免以后有人为了「0 条就该 success」去改强制分支。
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/still-empty.txt");
+        const puts: RecordedPut[] = [];
+        stubGitHubContentsMock({
+            initialFile: { path: githubPath, content: "1.2.3.4" },
+            puts,
+            onOtherRequest: (url) => {
+                if (
+                    url.startsWith("https://example.com/") ||
+                    url.includes("codetabs") ||
+                    url.includes("r.jina.ai") ||
+                    url.startsWith("https://PhantomJsCloud.com")
+                ) {
+                    return new Response("still no ips", { status: 200 });
+                }
+                return null;
+            },
+        });
+
+        await captureLogs(() => syncSingleIpSource(id, env, false));
+        expect(puts).toContainEqual({ path: githubPath, content: "" });
+        expect(puts).toHaveLength(1);
+        expect((await syncState(id)).status).toBe("success");
+
+        await captureLogs(() => syncSingleIpSource(id, env, false));
+        // 第二轮不产生任何写入，状态按通用口径降为 no_change
+        expect(puts).toHaveLength(1);
+        expect((await syncState(id)).status).toBe("no_change");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    // 验收 #55-②「纯 IPv6 → 主文件空 + 伴生写入 + success」由「IP 源主文件语义 (issue #50)」的
+    // 「仅解析到 IPv6 时主文件写空内容，IPv6 写入伴生文件」用例覆盖，同一行为不在此重复一份——
+    // 重复用例只会让一处断言漂移时两处都要改。按用例标题搜 "#50"，不要按行号定位。
+
+    it("全部策略抛错仍是 failed，错误文案保留类别前缀与逐策略摘要", async () => {
+        await seedGitHubSettings();
+        const { id } = await insertSource("https://example.com/boom.txt");
+        const methods: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (input: unknown, init?: RequestInit) => {
+                const url = String(typeof input === "string" ? input : (input as Request).url);
+                const method = (init?.method ?? "GET").toUpperCase();
+                if (url.startsWith(`${GITHUB_API_ROOT}/`)) {
+                    methods.push(method);
+                    return new Response("{}", { status: 200 });
+                }
+                // 所有策略都失败：既没有拿到正文，也就不是「成功但 0 条」
+                return new Response("boom", { status: 502 });
+            })
+        );
+
+        await captureLogs(async () => {
+            await expect(syncSingleIpSource(id, env, false)).rejects.toThrow(/所有抓取策略均未能从该URL获取到IP/);
+        });
+
+        const state = await syncState(id);
+        expect(state.status).toBe("failed");
+        expect(state.error).toContain("[HTTP 502]");
+        expect(state.error).toContain("direct_regex");
+        expect(state.error).toContain("phantomjs_cloud");
+        // 抓取阶段就失败，根本不该发出任何 GitHub 写请求
+        expect(methods).not.toContain("PUT");
+        expect(methods).not.toContain("DELETE");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("混合情形（部分抛错 + 部分空正文）算「成功但 0 条」，会清空远端主文件", async () => {
+        // 语义裁决（issue #55）：只要有一条策略成功取到正文却没解析出 IP，就按「成功但 0 条」处理，
+        // 哪怕其它策略抛过错。注意：这条路径会把远端主文件写成空内容 —— 这是已确认接受的清空行为，
+        // 不是 bug；想改成「失败优先」必须先改 fetchIpsForTarget 的分支口径并同步 DNS 侧。
+        await seedGitHubSettings();
+        const { id, githubPath } = await insertSource("https://example.com/mixed.txt");
+        const puts: RecordedPut[] = [];
+        stubGitHubContentsMock({
+            initialFile: { path: githubPath, content: "1.1.1.1" },
+            puts,
+            onOtherRequest: (url) => {
+                if (url === "https://example.com/mixed.txt") {
+                    // 主策略拿到正文但页面无 IP
+                    return new Response("no ips here", { status: 200 });
+                }
+                if (
+                    url.startsWith("https://PhantomJsCloud.com") ||
+                    url.includes("codetabs") ||
+                    url.includes("r.jina.ai")
+                ) {
+                    return new Response("boom", { status: 502 });
+                }
+                return null;
+            },
+        });
+
+        await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        expect(puts).toContainEqual({ path: githubPath, content: "" });
+        expect(puts).toHaveLength(1);
+        expect((await syncState(id)).status).toBe("success");
+
+        await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
+    });
+
+    it("0 条时同步日志不出现空策略占位，也不误报回退", async () => {
+        await seedGitHubSettings();
+        const { id } = await insertSource("https://example.com/empty-log.txt");
+        stubGitHubContentsMock({
+            initialFile: null,
+            puts: [],
+            onOtherRequest: (url) => {
+                if (url === "https://example.com/empty-log.txt") return new Response("no ips", { status: 200 });
+                if (
+                    url.startsWith("https://PhantomJsCloud.com") ||
+                    url.includes("codetabs") ||
+                    url.includes("r.jina.ai")
+                ) {
+                    return new Response("no ips", { status: 200 });
+                }
+                return null;
+            },
+        });
+
+        const logs = await captureLogs(() => syncSingleIpSource(id, env, false));
+
+        const countLine = logs.find((line) => line.includes("成功获取"));
+        expect(countLine).toBeDefined();
+        // 0 个 IPv4 / 0 个 IPv6 仍是可读的成功行，但不许拼出「（抓取策略: ）」这种空占位
+        expect(countLine).not.toContain("抓取策略");
+        expect(countLine).not.toContain("已从");
+        expect(countLine).toContain("0 个IPv4");
+        // 0 条时必须有一句人话说明主文件被按空内容处理，避免管理员把「0 个」当成抓取坏了。
+        // 断言用 0 条专属文案：仅 IPv6 的日志同样含「主文件按空内容处理」，用那个子串会互相误命中。
+        expect(logs.some((line) => line.includes("本轮未解析到任何 IP"))).toBe(true);
 
         await env.WUYA.prepare("DELETE FROM ip_sources WHERE id = ?").bind(id).run();
     });
@@ -727,6 +1300,8 @@ describe("updateCloudflareDns 编码与全量分页", () => {
                 );
             }
             if (init?.method === "DELETE") return new Response(JSON.stringify({ success: true }), { status: 200 });
+            // issue #53：本次有删除，保留下来的 A 记录要 PATCH 刷新变更备注
+            if (init?.method === "PATCH") return new Response(JSON.stringify({ success: true }), { status: 200 });
             throw new Error("意外的请求：" + String(input));
         });
         vi.stubGlobal("fetch", fetchMock);
@@ -753,5 +1328,920 @@ describe("updateCloudflareDns 编码与全量分页", () => {
             ([input, init]) => new URL(String(input)).pathname.endsWith("/stale-page-2") && init?.method === "DELETE"
         );
         expect(deleteCalls).toHaveLength(1);
+
+        // 本次既有删除也有新增，保留记录的备注必须刷新（issue #53 / 方案 §12.4）
+        const patchCalls = fetchMock.mock.calls.filter(
+            ([input, init]) => new URL(String(input)).pathname.endsWith("/kept-record") && init?.method === "PATCH"
+        );
+        expect(patchCalls).toHaveLength(1);
+        expect(JSON.parse(String(patchCalls[0][1]?.body))).toEqual({ comment: expectedChangeComment() });
+    });
+});
+
+describe("URL 类型目标端到端 (issue #52)", () => {
+    /** 插入一条 URL 类型目标并返回整行 */
+    async function insertUrlDomain(overrides: {
+        target: string;
+        url?: string;
+        parse_mode?: string | null;
+        parse_param?: string | null;
+        fetch_strategy?: string | null;
+        last_synced_records?: string | null;
+        last_sync_status?: string | null;
+    }) {
+        const url = overrides.url ?? "https://example.com/ips.txt";
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, parse_param, fetch_strategy, target_domain, zone_id, is_deep_resolve, ttl, notes, is_system, is_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 60, NULL, 0, 1)"
+        )
+            .bind(
+                new URL(url).hostname,
+                "url",
+                url,
+                overrides.parse_mode ?? "auto",
+                overrides.parse_param ?? null,
+                overrides.fetch_strategy ?? null,
+                overrides.target,
+                "test-zone-id"
+            )
+            .run();
+        if (overrides.last_synced_records !== undefined || overrides.last_sync_status !== undefined) {
+            await env.WUYA.prepare(
+                "UPDATE domains SET last_synced_records = ?, last_sync_status = ? WHERE target_domain = ?"
+            )
+                .bind(overrides.last_synced_records ?? null, overrides.last_sync_status ?? null, overrides.target)
+                .run();
+        }
+        return (await env.WUYA.prepare("SELECT * FROM domains WHERE target_domain = ?")
+            .bind(overrides.target)
+            .first()) as {
+            id: number;
+            source_domain: string;
+            source_type: string | null;
+            source_url: string | null;
+            parse_mode: string | null;
+            parse_param: string | null;
+            fetch_strategy: string | null;
+            target_domain: string;
+            zone_id: string;
+            is_deep_resolve: number;
+            ttl: number;
+            last_synced_records: string | null;
+            is_enabled: number;
+            is_system: number;
+        };
+    }
+
+    /** 记录发往 Cloudflare API 的调用，列表接口按传入的现有记录返回 */
+    function stubCfAndSource(sourceFn: (url: string) => Response | Promise<Response>, existing: unknown[] = []) {
+        const calls: { url: string; method: string; body?: string }[] = [];
+        const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+            if (url.includes("api.cloudflare.com")) {
+                const method = init?.method ?? "GET";
+                calls.push({ url, method, body: typeof init?.body === "string" ? init.body : undefined });
+                if (method === "GET") {
+                    return new Response(JSON.stringify({ success: true, result: existing }), { status: 200 });
+                }
+                return new Response(JSON.stringify({ success: true, result: {} }), { status: 200 });
+            }
+            calls.push({ url, method: init?.method ?? "GET" });
+            return await sourceFn(url);
+        });
+        vi.stubGlobal("fetch", fetchMock);
+        return calls;
+    }
+
+    it("由 URL 正文生成 A 记录并写入 Cloudflare（数值升序）", async () => {
+        const domain = await insertUrlDomain({ target: "url-a.example.com" });
+        const calls = stubCfAndSource(() => new Response("3.3.3.3\n1.1.1.1\n10.0.0.1\n2.2.2.2", { status: 200 }));
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status, last_synced_records FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_synced_records: string };
+        expect(row.last_sync_status).toBe("success");
+        expect(JSON.parse(row.last_synced_records)).toEqual([
+            { type: "A", content: "1.1.1.1" },
+            { type: "A", content: "2.2.2.2" },
+            { type: "A", content: "3.3.3.3" },
+            { type: "A", content: "10.0.0.1" },
+        ]);
+        const posts = calls.filter((c) => c.method === "POST" && c.url.includes("api.cloudflare.com"));
+        expect(posts).toHaveLength(4);
+        const posted = posts.map((c) => JSON.parse(c.body as string)) as { content: string; type: string }[];
+        expect(posted.every((p) => p.type === "A")).toBe(true);
+        expect(posted.map((p) => p.content)).toEqual(["1.1.1.1", "2.2.2.2", "3.3.3.3", "10.0.0.1"]);
+    });
+
+    it("IPv4 与 IPv6 同时生成，IPv6 规范化后字典序排列", async () => {
+        const domain = await insertUrlDomain({ target: "url-dual.example.com" });
+        const calls = stubCfAndSource(
+            () => new Response("2001:0db8:0000:0000:0000:0000:0000:0002\n2001:db8::1\n8.8.8.8", { status: 200 })
+        );
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const row = (await env.WUYA.prepare("SELECT last_synced_records FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_synced_records: string };
+        expect(JSON.parse(row.last_synced_records)).toEqual([
+            { type: "A", content: "8.8.8.8" },
+            { type: "AAAA", content: "2001:db8::1" },
+            { type: "AAAA", content: "2001:db8::2" },
+        ]);
+        const posted = calls
+            .filter((c) => c.method === "POST" && c.url.includes("api.cloudflare.com"))
+            .map((c) => JSON.parse(c.body as string).type as string);
+        expect(posted.sort()).toEqual(["A", "AAAA", "AAAA"]);
+    });
+
+    it("同批内相同 url + parse_mode + parse_param 只抓取一次", async () => {
+        const domainA = await insertUrlDomain({ target: "url-share-a.example.com" });
+        const domainB = await insertUrlDomain({ target: "url-share-b.example.com" });
+        let sourceHits = 0;
+        stubCfAndSource(() => {
+            sourceHits++;
+            return new Response("1.1.1.1", { status: 200 });
+        });
+        const syncContext = {};
+
+        const recordsA = await resolveRecordsForDomain(domainA, env.WUYA, () => {}, syncContext);
+        const recordsB = await resolveRecordsForDomain(domainB, env.WUYA, () => {}, syncContext);
+
+        expect(sourceHits).toBe(1);
+        expect(recordsA).toEqual([{ type: "A", content: "1.1.1.1" }]);
+        expect(recordsB).toEqual(recordsA);
+    });
+
+    it("解析配置不同则各自抓取（缓存键含 parse_mode）", async () => {
+        const domainA = await insertUrlDomain({ target: "url-key-a.example.com", parse_mode: "lines" });
+        const domainB = await insertUrlDomain({ target: "url-key-b.example.com", parse_mode: "auto" });
+        let sourceHits = 0;
+        stubCfAndSource(() => {
+            sourceHits++;
+            return new Response("1.1.1.1", { status: 200 });
+        });
+        const syncContext = {};
+
+        await resolveRecordsForDomain(domainA, env.WUYA, () => {}, syncContext);
+        await resolveRecordsForDomain(domainB, env.WUYA, () => {}, syncContext);
+
+        expect(sourceHits).toBe(2);
+    });
+
+    it("抓取全部失败时标记 failed 且不改动现有 DNS", async () => {
+        const domain = await insertUrlDomain({ target: "url-fail.example.com" });
+        const calls = stubCfAndSource(() => new Response("boom", { status: 500 }));
+
+        await expect(syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {})).rejects.toThrow(
+            /所有抓取策略均未能从该URL获取到IP/
+        );
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status, last_sync_error FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_sync_error: string | null };
+        expect(row.last_sync_status).toBe("failed");
+        expect(row.last_sync_error).toBeTruthy();
+        // 抓取阶段就失败，根本不该进入 Cloudflare 写回
+        expect(calls.filter((c) => c.url.includes("api.cloudflare.com"))).toHaveLength(0);
+    });
+
+    it("取得正文但解析 0 条：上次无记录 → no_change", async () => {
+        const domain = await insertUrlDomain({ target: "url-empty-new.example.com", last_synced_records: null });
+        const calls = stubCfAndSource(() => new Response("这里没有任何 IP", { status: 200 }));
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string };
+        expect(row.last_sync_status).toBe("no_change");
+        expect(calls.filter((c) => c.url.includes("api.cloudflare.com"))).toHaveLength(0);
+    });
+
+    it("取得正文但解析 0 条：上次有记录 → failed 且保留旧记录", async () => {
+        const previous = JSON.stringify([{ type: "A", content: "9.9.9.9" }]);
+        const domain = await insertUrlDomain({
+            target: "url-empty-old.example.com",
+            last_synced_records: previous,
+            last_sync_status: "success",
+        });
+        const calls = stubCfAndSource(() => new Response("这里没有任何 IP", { status: 200 }));
+
+        await expect(syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {})).rejects.toThrow(
+            /上次曾有记录/
+        );
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status, last_synced_records FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_synced_records: string };
+        expect(row.last_sync_status).toBe("failed");
+        expect(row.last_synced_records).toBe(previous);
+        expect(calls.filter((c) => c.url.includes("api.cloudflare.com"))).toHaveLength(0);
+    });
+
+    it("仅解析到 IPv6 时生成 AAAA 并删除旧 A", async () => {
+        const domain = await insertUrlDomain({ target: "url-v6only.example.com" });
+        const calls = stubCfAndSource(
+            () => new Response("2001:db8::5", { status: 200 }),
+            [{ id: "old-a", type: "A", content: "9.9.9.9", proxied: false, ttl: 60 }]
+        );
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const deletes = calls.filter((c) => c.method === "DELETE");
+        expect(deletes).toHaveLength(1);
+        expect(deletes[0].url).toContain("old-a");
+        const posts = calls.filter((c) => c.method === "POST" && c.url.includes("api.cloudflare.com"));
+        expect(posts).toHaveLength(1);
+        expect(JSON.parse(posts[0].body as string)).toMatchObject({ type: "AAAA", content: "2001:db8::5" });
+    });
+
+    it("策略回退命中后把实际生效策略持久化到 domains", async () => {
+        const domain = await insertUrlDomain({ target: "url-fallback.example.com" });
+        stubCfAndSource((url) => {
+            // direct_regex 直连源站失败，jina_reader 命中
+            if (url.includes("r.jina.ai")) return new Response("5.5.5.5", { status: 200 });
+            return new Response("blocked", { status: 403 });
+        });
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const row = (await env.WUYA.prepare("SELECT fetch_strategy FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { fetch_strategy: string | null };
+        expect(row.fetch_strategy).toBe("jina_reader");
+    });
+
+    it("回退后下一轮优先使用已持久化策略", async () => {
+        const domain = await insertUrlDomain({
+            target: "url-fallback-priority.example.com",
+            fetch_strategy: "jina_reader",
+        });
+        const attempted: string[] = [];
+        stubCfAndSource((url) => {
+            attempted.push(url);
+            if (url.includes("r.jina.ai")) return new Response("5.5.5.5", { status: 200 });
+            return new Response("blocked", { status: 403 });
+        });
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        // 首轮只打一次：缓存策略优先且直接命中，不再尝试其它策略
+        expect(attempted).toHaveLength(1);
+        expect(attempted[0]).toContain("r.jina.ai");
+    });
+
+    it("一条策略抛错、另一条取得正文但 0 条时按 0 条分支处理（§13.1）", async () => {
+        const domain = await insertUrlDomain({ target: "url-mixed-empty.example.com" });
+        // direct_regex 抛 HTTP 500，其余策略都成功取回正文但不含任何 IP
+        const calls = stubCfAndSource((url) => {
+            if (url.includes("r.jina.ai") || url.includes("codetabs") || url.includes("PhantomJsCloud")) {
+                return new Response("这个列表已经下架了", { status: 200 });
+            }
+            return new Response("boom", { status: 500 });
+        });
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status, last_sync_error FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_sync_error: string | null };
+        // 有策略真的取回了正文，只是里面没 IP —— 属于「成功但 0 条」，不该被其它策略的异常改判为抓取失败
+        expect(row.last_sync_status).toBe("no_change");
+        expect(row.last_sync_error).toBeNull();
+        expect(calls.filter((c) => c.url.includes("api.cloudflare.com"))).toHaveLength(0);
+    });
+
+    it("同批缓存命中的目标也会把实际生效策略落库（验收 #6）", async () => {
+        const domainA = await insertUrlDomain({ target: "url-cache-a.example.com" });
+        const domainB = await insertUrlDomain({ target: "url-cache-b.example.com" });
+        stubCfAndSource((url) => {
+            if (url.includes("r.jina.ai")) return new Response("5.5.5.5", { status: 200 });
+            return new Response("blocked", { status: 403 });
+        });
+        const syncContext = {};
+
+        await resolveRecordsForDomain(domainA, env.WUYA, () => {}, syncContext);
+        await resolveRecordsForDomain(domainB, env.WUYA, () => {}, syncContext);
+
+        const rows = (await env.WUYA.prepare(
+            "SELECT target_domain, fetch_strategy FROM domains WHERE target_domain IN (?, ?) ORDER BY target_domain"
+        )
+            .bind("url-cache-a.example.com", "url-cache-b.example.com")
+            .all()) as { results: { target_domain: string; fetch_strategy: string | null }[] };
+        // 抓取只发生在 A 上，B 命中缓存；但 B 也必须落库，否则下一轮它仍从空策略起试
+        expect(rows.results.map((r) => r.fetch_strategy)).toEqual(["jina_reader", "jina_reader"]);
+    });
+
+    it("parse_mode 为 NULL 与 auto 视为同一抓取配置，只抓一次", async () => {
+        const domainA = await insertUrlDomain({ target: "url-null-mode-a.example.com", parse_mode: null });
+        const domainB = await insertUrlDomain({ target: "url-null-mode-b.example.com", parse_mode: "auto" });
+        let sourceHits = 0;
+        stubCfAndSource(() => {
+            sourceHits++;
+            return new Response("1.1.1.1", { status: 200 });
+        });
+        const syncContext = {};
+
+        const recordsA = await resolveRecordsForDomain(domainA, env.WUYA, () => {}, syncContext);
+        const recordsB = await resolveRecordsForDomain(domainB, env.WUYA, () => {}, syncContext);
+
+        expect(sourceHits).toBe(1);
+        expect(recordsB).toEqual(recordsA);
+    });
+
+    it("集成：URL 目标手动同步写入记录，二次同步内容一致时不产生任何写操作（§15.2）", async () => {
+        const domain = await insertUrlDomain({ target: "url-e2e.example.com" });
+        const remote: { id: string; type: string; content: string; proxied: boolean; ttl: number }[] = [];
+        const calls: { url: string; method: string; body?: string }[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string, init?: RequestInit) => {
+                const method = init?.method ?? "GET";
+                if (url.includes("api.cloudflare.com")) {
+                    calls.push({ url, method, body: typeof init?.body === "string" ? init.body : undefined });
+                    if (method === "GET") {
+                        return new Response(JSON.stringify({ success: true, result: remote }), { status: 200 });
+                    }
+                    if (method === "POST") {
+                        const body = JSON.parse(init?.body as string) as { type: string; content: string };
+                        remote.push({
+                            id: `rec-${remote.length + 1}`,
+                            type: body.type,
+                            content: body.content,
+                            proxied: false,
+                            ttl: 60,
+                        });
+                        return new Response(JSON.stringify({ success: true, result: {} }), { status: 200 });
+                    }
+                    return new Response(JSON.stringify({ success: true, result: {} }), { status: 200 });
+                }
+                calls.push({ url, method });
+                return new Response("2.2.2.2\n1.1.1.1", { status: 200 });
+            })
+        );
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const first = (await env.WUYA.prepare("SELECT last_sync_status, last_synced_records FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_synced_records: string };
+        expect(first.last_sync_status).toBe("success");
+        expect(JSON.parse(first.last_synced_records)).toEqual([
+            { type: "A", content: "1.1.1.1" },
+            { type: "A", content: "2.2.2.2" },
+        ]);
+
+        // 二次同步：正文与远端记录都不变
+        const fresh = (await env.WUYA.prepare("SELECT * FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as DomainRow;
+        calls.length = 0;
+        await syncDomainLogic(fresh, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const second = (await env.WUYA.prepare("SELECT last_sync_status, last_synced_records FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_synced_records: string };
+        expect(second.last_sync_status).toBe("no_change");
+        expect(JSON.parse(second.last_synced_records)).toEqual(JSON.parse(first.last_synced_records));
+        const writes = calls.filter((c) => c.url.includes("api.cloudflare.com") && c.method !== "GET");
+        expect(writes).toEqual([]);
+    });
+});
+
+describe("DNS 全来源截断与变更时间备注 (issue #53)", () => {
+    /** 造一个 updateCloudflareDns 需要的 domain 字段集 */
+    function dnsDomain(overrides: { target: string; ttl?: number }) {
+        return makeDomainRow({ target_domain: overrides.target, ttl: overrides.ttl ?? 60 });
+    }
+
+    /** 记录发往 CF 的调用；GET 返回 existing，其余按 responder 决定 */
+    function stubCf(
+        existing: unknown[],
+        responder?: (method: string, url: string, body?: string) => Response | undefined
+    ) {
+        const calls: { url: string; method: string; body?: string }[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string, init?: RequestInit) => {
+                const method = init?.method ?? "GET";
+                calls.push({ url, method, body: typeof init?.body === "string" ? init.body : undefined });
+                if (method === "GET") {
+                    return new Response(JSON.stringify({ success: true, result: existing }), { status: 200 });
+                }
+                return (
+                    responder?.(method, url, typeof init?.body === "string" ? init.body : undefined) ??
+                    new Response(JSON.stringify({ success: true, result: {} }), { status: 200 })
+                );
+            })
+        );
+        return calls;
+    }
+
+    it("备注格式为北京时间、精确到分钟", () => {
+        // UTC 03:04 → 北京时间 11:04，同一天
+        expect(formatChangeComment(new Date("2026-01-02T03:04:05Z"))).toBe("DNS Clone 变更于 2026-01-02 11:04");
+        // UTC 前一日 16:30 → 北京时间次日 00:30，跨日进位必须正确
+        expect(formatChangeComment(new Date("2026-01-01T16:30:00Z"))).toBe("DNS Clone 变更于 2026-01-02 00:30");
+    });
+
+    it("按类型各自截断，CNAME 不参与截断且顺序不变", () => {
+        const records = [
+            { type: "A", content: "1.1.1.1" },
+            { type: "AAAA", content: "2001:db8::1" },
+            { type: "A", content: "2.2.2.2" },
+            { type: "A", content: "3.3.3.3" },
+            { type: "AAAA", content: "2001:db8::2" },
+        ];
+        expect(limitIpRecords(records, 2)).toEqual([
+            { type: "A", content: "1.1.1.1" },
+            { type: "AAAA", content: "2001:db8::1" },
+            { type: "A", content: "2.2.2.2" },
+            { type: "AAAA", content: "2001:db8::2" },
+        ]);
+        // CNAME 原样穿过，不受上限影响
+        const cnameRecords = [{ type: "CNAME", content: "cname-target.example.com" }];
+        expect(limitIpRecords(cnameRecords, 1)).toEqual(cnameRecords);
+        // 上限钳到至少 1，避免 0 或负数把记录集合清空
+        expect(limitIpRecords(records, 0)).toHaveLength(2);
+    });
+
+    it("新增 A/AAAA 记录随创建请求写入备注，CNAME 不写", async () => {
+        const calls = stubCf([]);
+        await updateCloudflareDns(
+            "token",
+            "zone-id",
+            dnsDomain({ target: "comment-post.example.com" }),
+            [
+                { type: "A", content: "1.1.1.1" },
+                { type: "AAAA", content: "2001:db8::1" },
+            ],
+            () => {}
+        );
+
+        const posts = calls.filter((c) => c.method === "POST");
+        expect(posts).toHaveLength(2);
+        const expected = expectedChangeComment();
+        expect(JSON.parse(posts[0].body as string)).toMatchObject({ type: "A", comment: expected });
+        expect(JSON.parse(posts[1].body as string)).toMatchObject({ type: "AAAA", comment: expected });
+
+        // CNAME 目标：创建请求不带 comment 字段
+        const cnameCalls = stubCf([]);
+        await updateCloudflareDns(
+            "token",
+            "zone-id",
+            dnsDomain({ target: "comment-cname.example.com" }),
+            [{ type: "CNAME", content: "cname-target.example.com" }],
+            () => {}
+        );
+        const cnamePosts = cnameCalls.filter((c) => c.method === "POST");
+        expect(cnamePosts).toHaveLength(1);
+        expect(JSON.parse(cnamePosts[0].body as string)).not.toHaveProperty("comment");
+    });
+
+    it("本次有增删时刷新保留的 A/AAAA 记录备注（PATCH 早于 DELETE 与 POST）", async () => {
+        const calls = stubCf([
+            { id: "keep-a", type: "A", content: "1.1.1.1", proxied: false, ttl: 60, comment: "旧备注" },
+            { id: "drop-a", type: "A", content: "9.9.9.9", proxied: false, ttl: 60 },
+        ]);
+        const result = await updateCloudflareDns(
+            "token",
+            "zone-id",
+            dnsDomain({ target: "refresh.example.com" }),
+            [
+                { type: "A", content: "1.1.1.1" },
+                { type: "A", content: "2.2.2.2" },
+            ],
+            () => {}
+        );
+        expect(result).toBe("success");
+
+        const expected = expectedChangeComment();
+        const patch = calls.filter((c) => c.method === "PATCH");
+        expect(patch).toHaveLength(1);
+        expect(patch[0].url).toContain("keep-a");
+        expect(JSON.parse(patch[0].body as string)).toEqual({ comment: expected });
+
+        // 顺序：备注先于集合变更，保证 PATCH 失败时记录集合不变（方案 §13.1）
+        const order = calls.filter((c) => c.method !== "GET").map((c) => c.method);
+        expect(order).toEqual(["PATCH", "DELETE", "POST"]);
+    });
+
+    it("记录集合未变时不产生任何 PATCH，既有备注保持不变", async () => {
+        const calls = stubCf([
+            {
+                id: "keep-a",
+                type: "A",
+                content: "1.1.1.1",
+                proxied: false,
+                ttl: 60,
+                comment: "DNS Clone 变更于 2020-01-01 00:00",
+            },
+        ]);
+        const result = await updateCloudflareDns(
+            "token",
+            "zone-id",
+            dnsDomain({ target: "nochange.example.com" }),
+            [{ type: "A", content: "1.1.1.1" }],
+            () => {}
+        );
+        expect(result).toBe("no_change");
+        expect(calls.filter((c) => c.method !== "GET")).toEqual([]);
+    });
+
+    it("同一分钟内已有同一备注时不重复 PATCH", async () => {
+        const current = expectedChangeComment();
+        const calls = stubCf([
+            { id: "keep-a", type: "A", content: "1.1.1.1", proxied: false, ttl: 60, comment: current },
+            { id: "drop-a", type: "A", content: "9.9.9.9", proxied: false, ttl: 60 },
+        ]);
+        await updateCloudflareDns(
+            "token",
+            "zone-id",
+            dnsDomain({ target: "same-minute.example.com" }),
+            [
+                { type: "A", content: "1.1.1.1" },
+                { type: "A", content: "2.2.2.2" },
+            ],
+            () => {}
+        );
+        expect(calls.filter((c) => c.method === "PATCH")).toEqual([]);
+    });
+
+    it("备注 PATCH 失败时本次同步失败，且记录集合保持不变", async () => {
+        const calls = stubCf(
+            [
+                { id: "keep-a", type: "A", content: "1.1.1.1", proxied: false, ttl: 60, comment: "旧备注" },
+                { id: "drop-a", type: "A", content: "9.9.9.9", proxied: false, ttl: 60 },
+            ],
+            (method) =>
+                method === "PATCH" ? new Response(JSON.stringify({ success: false }), { status: 500 }) : undefined
+        );
+
+        await expect(
+            updateCloudflareDns(
+                "token",
+                "zone-id",
+                dnsDomain({ target: "patch-fail.example.com" }),
+                [
+                    { type: "A", content: "1.1.1.1" },
+                    { type: "A", content: "2.2.2.2" },
+                ],
+                () => {}
+            )
+        ).rejects.toThrow();
+
+        // 关键：备注没写成之前不许动集合，DELETE/POST 一个都不能发出
+        const mutations = calls.filter((c) => c.method === "DELETE" || c.method === "POST");
+        expect(mutations).toEqual([]);
+    });
+
+    it("端到端：MAX_IPS_PER_TYPE 生效于 URL 来源的 A/AAAA", async () => {
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('MAX_IPS_PER_TYPE', '2') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run();
+        await env.WUYA.batch([
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('CF_API_TOKEN', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).bind("test-cf-token"),
+            env.WUYA.prepare(
+                "INSERT INTO settings (key, value) VALUES ('CF_ZONE_ID', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).bind("test-zone-id"),
+        ]);
+        await env.WUYA.prepare(
+            "INSERT INTO domains (source_domain, source_type, source_url, parse_mode, target_domain, zone_id, is_deep_resolve, ttl, is_system, is_enabled) VALUES (?, 'url', ?, 'auto', ?, ?, 0, 60, 0, 1)"
+        )
+            .bind("example.com", "https://example.com/ips.txt", "limit-e2e.example.com", "test-zone-id")
+            .run();
+        const domain = (await env.WUYA.prepare("SELECT * FROM domains WHERE target_domain = ?")
+            .bind("limit-e2e.example.com")
+            .first()) as DomainRow;
+
+        // 源按数值升序解析：超出 2 条的 3.3.3.3 / 4.4.4.4 必须被截断
+        const calls = stubCf([]);
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string, init?: RequestInit) => {
+                if (url.includes("api.cloudflare.com")) {
+                    calls.push({ url, method: init?.method ?? "GET" });
+                    return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
+                }
+                return new Response("4.4.4.4\n1.1.1.1\n3.3.3.3\n2.2.2.2", { status: 200 });
+            })
+        );
+
+        await syncDomainLogic(domain, "test-cf-token", "test-zone-id", env.WUYA, () => {}, {});
+
+        const row = (await env.WUYA.prepare("SELECT last_sync_status, last_synced_records FROM domains WHERE id = ?")
+            .bind(domain.id)
+            .first()) as { last_sync_status: string; last_synced_records: string };
+        expect(row.last_sync_status).toBe("success");
+        expect(JSON.parse(row.last_synced_records)).toEqual([
+            { type: "A", content: "1.1.1.1" },
+            { type: "A", content: "2.2.2.2" },
+        ]);
+        expect(calls.filter((c) => c.method === "POST")).toHaveLength(2);
+
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").run();
+        await env.WUYA.prepare("DELETE FROM domains WHERE id = ?").bind(domain.id).run();
+    });
+
+    it("批内上限复用：上下文已有值时不再回落到库里的设置", async () => {
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('MAX_IPS_PER_TYPE', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run();
+        const domain = makeDomainRow({
+            id: 777,
+            source_domain: "internal:hostmonit:yd",
+            target_domain: "reuse-context.example.com",
+            zone_id: "test-zone",
+            last_synced_records: "[]",
+            is_system: 1,
+        });
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => {
+                throw new Error("上下文已命中，不应发起 fetch");
+            })
+        );
+
+        // 上下文上限 3 > 库里 1：结果保留 3 条，证明没有重复读库（§11.2）
+        const syncContext = {
+            threeNetworkIps: { yd: ["1.1.1.1", "2.2.2.2", "3.3.3.3"], dx: [], lt: [], source: "CloudFlareYes" },
+            maxIpsPerType: 3,
+        };
+        const records = await resolveRecordsForDomain(domain, env.WUYA, () => {}, syncContext);
+        expect(records).toHaveLength(3);
+
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").run();
+    });
+
+    it("上下文未带上限时按库里的设置读取，不静默回退默认值", async () => {
+        await env.WUYA.prepare(
+            "INSERT INTO settings (key, value) VALUES ('MAX_IPS_PER_TYPE', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run();
+        const domain = makeDomainRow({
+            id: 778,
+            source_domain: "internal:hostmonit:yd",
+            target_domain: "db-limit.example.com",
+            zone_id: "test-zone",
+            last_synced_records: "[]",
+            is_system: 1,
+        });
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => {
+                throw new Error("三网缓存已命中，不应发起 fetch");
+            })
+        );
+
+        // 库上限 1 远小于默认 20：若出口静默用默认值，这里会拿到 3 条
+        const syncContext = {
+            threeNetworkIps: { yd: ["1.1.1.1", "2.2.2.2", "3.3.3.3"], dx: [], lt: [], source: "CloudFlareYes" },
+        };
+        const records = await resolveRecordsForDomain(domain, env.WUYA, () => {}, syncContext);
+        expect(records).toEqual([{ type: "A", content: "1.1.1.1" }]);
+
+        await env.WUYA.prepare("DELETE FROM settings WHERE key = 'MAX_IPS_PER_TYPE'").run();
+    });
+});
+
+describe("resolveRecursively 深度解析分支 (issue #54 判据 5)", () => {
+    type DohTable = Record<string, { CNAME?: string[]; A?: string[]; AAAA?: string[] }>;
+
+    /** 桩掉 Cloudflare DoH，返回实际查询过的 name/type 序列 */
+    function stubDoh(table: DohTable): string[] {
+        const queried: string[] = [];
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                const u = new URL(url);
+                const name = u.searchParams.get("name") ?? "";
+                const type = u.searchParams.get("type") ?? "";
+                queried.push(`${name}|${type}`);
+                const answers = table[name]?.[type as "CNAME" | "A" | "AAAA"] ?? [];
+                return new Response(JSON.stringify({ Answer: answers.map((data) => ({ data })) }), { status: 200 });
+            })
+        );
+        return queried;
+    }
+
+    function collectLogs(): { logs: string[]; log: (msg: string) => void } {
+        const logs: string[] = [];
+        return { logs, log: (msg: string) => void logs.push(msg) };
+    }
+
+    it("沿 CNAME 链逐层追踪到最终 A/AAAA，并去掉目标末尾的点", async () => {
+        const queried = stubDoh({
+            "a.example.com": { CNAME: ["b.example.com."] },
+            "b.example.com": { CNAME: ["c.example.com."] },
+            "c.example.com": { A: ["1.2.3.4"], AAAA: ["2400:3200::1"] },
+        });
+        const { logs, log } = collectLogs();
+
+        const records = await resolveRecursively("a.example.com", log);
+
+        expect(records).toEqual([
+            { type: "A", content: "1.2.3.4" },
+            { type: "AAAA", content: "2400:3200::1" },
+        ]);
+        expect(queried).toEqual([
+            "a.example.com|CNAME",
+            "b.example.com|CNAME",
+            "c.example.com|CNAME",
+            "c.example.com|A",
+            "c.example.com|AAAA",
+        ]);
+        // 深度逐层递增，且 CNAME 目标已剥离末尾点
+        expect(logs).toContain("(深度 0) 发现CNAME -> b.example.com");
+        expect(logs).toContain("(深度 1) 发现CNAME -> c.example.com");
+        expect(logs).toContain("(深度 2) 未发现CNAME，查询最终IP for c.example.com");
+    });
+
+    it("子层无 CNAME 也无 IP 时回退克隆该 CNAME", async () => {
+        stubDoh({ "a.example.com": { CNAME: ["b.example.com."] } });
+        const { logs, log } = collectLogs();
+
+        const records = await resolveRecursively("a.example.com", log);
+
+        expect(records).toEqual([{ type: "CNAME", content: "b.example.com" }]);
+        expect(logs).toContain("(深度 1) CNAME b.example.com 未解析到最终IP，将直接克隆此CNAME记录。");
+    });
+
+    it("CNAME 链超过 10 层时中止并记错误日志，不再继续查询", async () => {
+        const table: DohTable = {};
+        for (let i = 0; i < 11; i++) {
+            table[`d${i}.example.com`] = { CNAME: [`d${i + 1}.example.com.`] };
+        }
+        const queried = stubDoh(table);
+        const { logs, log } = collectLogs();
+
+        const records = await resolveRecursively("d0.example.com", log);
+
+        // 第 11 层（depth 11 > MAX_DEPTH）直接中止，未发起 DoH 查询
+        expect(queried).toEqual(Array.from({ length: 11 }, (_, i) => `d${i}.example.com|CNAME`));
+        expect(logs).toContain("错误：解析深度超过 10 层，可能存在CNAME循环。中止解析 d11.example.com。");
+        // 中止信号为空 → 第 10 层回退克隆该 CNAME 并向上冒泡
+        expect(records).toEqual([{ type: "CNAME", content: "d11.example.com" }]);
+    });
+
+    it("无 CNAME 时过滤掉非 IP 应答，A 与 AAAA 分类型返回", async () => {
+        stubDoh({
+            "plain.example.com": {
+                A: ["2.2.2.2", "not-an-ip"],
+                AAAA: ["2400:3200::1", "also-not-an-ip"],
+            },
+        });
+        const { log } = collectLogs();
+
+        const records = await resolveRecursively("plain.example.com", log);
+
+        expect(records).toEqual([
+            { type: "A", content: "2.2.2.2" },
+            { type: "AAAA", content: "2400:3200::1" },
+        ]);
+    });
+});
+
+describe("三网与深度解析统一走 IP 内核 (issue #59)", () => {
+    type DohTable = Record<string, { CNAME?: string[]; A?: string[]; AAAA?: string[] }>;
+
+    /** 桩掉 Cloudflare DoH：每条应答恰为一个地址文本，与真实 DoH 形态一致 */
+    function stubDoh(table: DohTable): void {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: string) => {
+                const u = new URL(url);
+                const name = u.searchParams.get("name") ?? "";
+                const type = u.searchParams.get("type") ?? "";
+                const answers = table[name]?.[type as "CNAME" | "A" | "AAAA"] ?? [];
+                return new Response(JSON.stringify({ Answer: answers.map((data) => ({ data })) }), { status: 200 });
+            })
+        );
+    }
+
+    /** 三网分支命中 syncContext 缓存时不应再抓取：抓取即失败 */
+    const stubNoFetch = () => {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => {
+                throw new Error("上下文命中缓存时不应抓取");
+            })
+        );
+    };
+
+    // 三网分支只读 id / source_domain / target_domain / is_system，其余列走工厂默认值
+    const threeNetworkDomain = makeDomainRow({
+        id: 999,
+        source_domain: "internal:hostmonit:yd",
+        target_domain: "x.example.com",
+        is_system: 1,
+    });
+
+    it("三网分支乱序输入按数值升序后截断，「前 N」是数值最小的 N 条", async () => {
+        stubNoFetch();
+        const syncContext = {
+            threeNetworkIps: {
+                yd: ["10.0.0.1", "2.0.0.2", "9.255.255.255", "2.0.0.1"],
+                dx: [],
+                lt: [],
+                source: "CloudFlareYes",
+            },
+            maxIpsPerType: 2,
+        };
+
+        const records = await resolveRecordsForDomain(threeNetworkDomain, env.WUYA, () => {}, syncContext);
+
+        // 排序若发生在截断之后，前 2 条会是 10.0.0.1 / 2.0.0.2
+        expect(records).toEqual([
+            { type: "A", content: "2.0.0.1" },
+            { type: "A", content: "2.0.0.2" },
+        ]);
+    });
+
+    it("三网分支过滤非法 IPv4 并去重（上游只按形态提取，可能带越界值）", async () => {
+        stubNoFetch();
+        const syncContext = {
+            threeNetworkIps: {
+                yd: ["1.1.1.1", "999.1.1.1", "1.1.1.1", "not-an-ip"],
+                dx: [],
+                lt: [],
+                source: "CloudFlareYes",
+            },
+            maxIpsPerType: 20,
+        };
+
+        const records = await resolveRecordsForDomain(threeNetworkDomain, env.WUYA, () => {}, syncContext);
+
+        expect(records).toEqual([{ type: "A", content: "1.1.1.1" }]);
+    });
+
+    it("三网分支的 IPv4 按规范化值去重：前导零写法不产出第二条 A 记录", async () => {
+        stubNoFetch();
+        const records = await resolveRecordsForDomain(threeNetworkDomain, env.WUYA, () => {}, {
+            threeNetworkIps: {
+                yd: ["01.2.3.4", "1.2.3.4", "9.9.9.9"],
+                dx: [],
+                lt: [],
+                source: "CloudFlareYes",
+            },
+            maxIpsPerType: 20,
+        });
+
+        // 按字面串去重会留下 {"01.2.3.4","1.2.3.4"}：比较器对两者都算出 1.2.3.4，稳定排序原样保留两条
+        expect(records).toEqual([
+            { type: "A", content: "1.2.3.4" },
+            { type: "A", content: "9.9.9.9" },
+        ]);
+    });
+
+    it("深度解析 IPv4 与 IPv6 走内核：校验、去重、规范化、排序，:: 与 IPv4-mapped 不产出", async () => {
+        stubDoh({
+            "plain.example.com": {
+                A: ["10.0.0.1", "2.0.0.2", "2.0.0.2", "bad"],
+                AAAA: ["::", "0:0:0:0:0:0:0:0", "::ffff:192.0.2.1", "2400:3200:0::1", "2400:3200::1", "FE80::1"],
+            },
+        });
+
+        const records = await resolveRecursively("plain.example.com", () => {});
+
+        expect(records).toEqual([
+            { type: "A", content: "2.0.0.2" },
+            { type: "A", content: "10.0.0.1" },
+            { type: "AAAA", content: "2400:3200::1" },
+            { type: "AAAA", content: "fe80::1" },
+        ]);
+    });
+
+    it("深度解析的排序先于出口截断，「前 N」同样是数值最小的 N 条", async () => {
+        stubDoh({
+            "plain.example.com": {
+                A: ["10.0.0.1", "2.0.0.2"],
+                AAAA: ["fe80::1", "2001:db8::1", "::1"],
+            },
+        });
+
+        const records = await resolveRecordsForDomain(
+            {
+                id: 999,
+                source_domain: "plain.example.com",
+                target_domain: "x.example.com",
+                zone_id: "test-zone",
+                is_deep_resolve: 1,
+                ttl: 60,
+                is_enabled: 1,
+                is_system: 0,
+            },
+            env.WUYA,
+            () => {},
+            { maxIpsPerType: 1 }
+        );
+
+        // 未排序就截断时这里会是 10.0.0.1 / fe80::1
+        expect(records).toEqual([
+            { type: "A", content: "2.0.0.2" },
+            { type: "AAAA", content: "2001:db8::1" },
+        ]);
     });
 });

@@ -1,6 +1,7 @@
 // auth.ts — 认证与密码哈希工具
 // 从 index.legacy.js 提取（原 1844-1846 行）
 
+import type { SessionRow } from "../db/client.ts";
 import { getCookie } from "./http.ts";
 
 /** 恒定时间十六进制字符串比对（先比较长度，再对每字符做 XOR 累积差异） */
@@ -112,9 +113,10 @@ export async function verifyPassword(
 export async function isAuthenticated(request: Request, db: D1Database): Promise<boolean> {
     const token = getCookie(request, "session");
     if (!token) return false;
-    const session = (await db.prepare("SELECT expires_at FROM sessions WHERE token = ?").bind(token).first()) as {
-        expires_at: string;
-    } | null;
+    const session = (await db.prepare("SELECT expires_at FROM sessions WHERE token = ?").bind(token).first()) as Pick<
+        SessionRow,
+        "expires_at"
+    > | null;
     if (!session || new Date(session.expires_at) < new Date()) {
         if (session) await db.prepare("DELETE FROM sessions WHERE token = ?").bind(token).run();
         return false;

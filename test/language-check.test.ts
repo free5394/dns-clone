@@ -470,8 +470,8 @@ describe("语言门禁解析", () => {
     });
 
     it("首次推送多个提交时从最早提交前开始检查", () => {
-        const calls = [];
-        const base = resolveLanguageCheckBase("0".repeat(40), "最早提交", (commit) => {
+        const calls: string[] = [];
+        const base = resolveLanguageCheckBase("0".repeat(40), "最早提交", (commit: string) => {
             calls.push(commit);
             return "最早提交 父提交";
         });

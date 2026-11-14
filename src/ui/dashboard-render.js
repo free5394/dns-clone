@@ -3,6 +3,14 @@
 // 约束：createDashboardRenderers 的函数体会被 toString() 注入浏览器脚本，
 // 因此它必须完全自包含——不 import、不引用模块作用域变量，所有依赖都从参数注入。
 export function createDashboardRenderers({ escapeHtml, getZoneName, formatBeijingTime, origin }) {
+    // 解析模式展示名（issue #50 / #52）：白名单映射，未知值与存量 NULL 一律显示「自动」，原始值不进入 HTML。
+    // 定义在工厂体内才能随 toString() 一起注入浏览器脚本（模块作用域变量会被序列化切断）。
+    function renderParseModeLabel(raw) {
+        const labels = { auto: "自动", lines: "按行", json_path: "JSON 路径", custom_regex: "自定义正则" };
+        const value = typeof raw === "string" ? raw.trim() : "";
+        return Object.prototype.hasOwnProperty.call(labels, value) ? labels[value] : "自动";
+    }
+
     function renderLiveRecords(records) {
         if (!records || records.length === 0) return "无记录";
         const first = records[0];
@@ -36,11 +44,18 @@ export function createDashboardRenderers({ escapeHtml, getZoneName, formatBeijin
             : `<span class="domain-cell" title="${escapeHtml(domain.target_domain)}">${escapeHtml(prefix)}</span>`;
         const isSystem = domain.is_system;
         const systemClass = isSystem ? "system-domain" : "";
-        const sourceDisplay = isSystem ? "系统内置" : domain.source_domain;
+        // IP 输入类型（issue #52）：系统内置 > URL 来源（展示完整 URL + 解析模式）> 域名
+        const isUrlSource = !isSystem && domain.source_type === "url";
+        const rawSourceUrl = typeof domain.source_url === "string" ? domain.source_url : "";
+        const sourceDisplay = isSystem ? "系统内置" : isUrlSource ? rawSourceUrl : domain.source_domain;
+        const sourceTitle = isUrlSource ? rawSourceUrl : domain.source_domain;
+        const sourceHint = isUrlSource
+            ? `<small class="domain-cell">解析: ${escapeHtml(renderParseModeLabel(domain.parse_mode))}</small>`
+            : "";
 
         return `
       <div class="domain-card row-grid ${systemClass}" id="domain-card-${domain.id}">
-          <div class="card-col"><span class="col-label">克隆目标</span><span class="domain-cell" title="${escapeHtml(domain.target_domain)}" data-target="${escapeHtml(domain.target_domain)}" onclick="window.copyToClipboard(this.dataset.target)">${displayContent}</span><small class="domain-cell" title="${escapeHtml(domain.source_domain)}">${escapeHtml(sourceDisplay)}</small></div>
+          <div class="card-col"><span class="col-label">克隆目标</span><span class="domain-cell" title="${escapeHtml(domain.target_domain)}" data-target="${escapeHtml(domain.target_domain)}" onclick="window.copyToClipboard(this.dataset.target)">${displayContent}</span><small class="domain-cell" title="${escapeHtml(sourceTitle)}">${escapeHtml(sourceDisplay)}</small>${sourceHint}</div>
           <div class="card-col"><span class="col-label">当前解析</span><div class="records-placeholder" data-domain-id="${domain.id}"><i class="fa-solid fa-spinner fa-spin"></i> 正在查询...</div></div>
           <div class="card-col"><span class="col-label">上次同步</span><div>${renderStatus(domain)}</div><small>${formatBeijingTime(domain.last_synced_time)}</small></div>
           <div class="card-actions"><button class="outline" onclick="window.individualSync(${domain.id})">同步</button><button class="secondary outline" onclick="window.openModal('domainModal', ${domain.id})" ${isSystem ? "disabled" : ""}>编辑</button><button class="contrast outline" onclick="window.deleteDomain(${domain.id})" ${isSystem ? "disabled" : ""}>删除</button></div>
@@ -53,7 +68,7 @@ export function createDashboardRenderers({ escapeHtml, getZoneName, formatBeijin
         return `
       <div class="domain-card row-grid" id="ip-source-card-${source.id}">
            <div class="card-col"><span class="col-label">GitHub 文件路径</span><a href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener" class="domain-cell" onclick="event.stopPropagation();">${escapeHtml(source.github_path)}</a><small class="domain-cell" title="${escapeHtml(source.url)}">源: ${escapeHtml(source.url)}</small></div>
-           <div class="card-col"><span class="col-label">抓取策略</span><span>${escapeHtml(source.fetch_strategy || "尚未探测")}</span></div>
+           <div class="card-col"><span class="col-label">抓取策略</span><span>${escapeHtml(source.fetch_strategy || "尚未探测")}</span><small class="domain-cell">解析: ${escapeHtml(renderParseModeLabel(source.parse_mode))}</small></div>
           <div class="card-col"><span class="col-label">上次同步</span><div>${renderStatus(source)}</div><small>${formatBeijingTime(source.last_synced_time)}</small></div>
           <div class="card-actions"><button class="outline" onclick="window.syncSingleIpSource(${source.id})">同步</button><button class="secondary outline" onclick="window.openModal('ipSourceModal', ${source.id})">编辑</button><button class="contrast outline" onclick="window.deleteIpSource(${source.id})">删除</button></div>
       </div>`;

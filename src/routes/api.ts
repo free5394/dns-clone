@@ -16,19 +16,28 @@ import { jsonResponse, getCookie } from "../util/http.ts";
 import type { WaitUntil } from "../util/http.ts";
 import { hashPassword, isAuthenticated, verifyPassword } from "../util/auth.ts";
 import { getZoneName } from "../util/cf.ts";
-import { FETCH_STRATEGIES, resolveHostmonitKey } from "../sync/ip-sources.ts";
-import { normalizeGithubPath } from "../sync/github.ts";
-import { syncAllDomains, syncSystemDomains, syncSingleDomain } from "../sync/domains.ts";
-import { syncSingleIpSource, syncAllIpSources } from "../sync/ip-sources.ts";
+import {
+    FETCH_STRATEGIES,
+    isStrategyApplicable,
+    resolveHostmonitKey,
+    resolvePersistedFetchStrategy,
+    type StrategyCacheSnapshot,
+} from "../sync/ip-sources.ts";
+import { deriveCompanionPath, normalizeGithubPath } from "../sync/github.ts";
+import { parseContent, validateParseConfig, type ParseMode } from "../sync/ip-parse.ts";
+import { syncAllDomains, syncSystemDomains, syncSingleDomain, type DomainRow } from "../sync/domains.ts";
+import { syncSingleIpSource, syncAllIpSources, type IpSourceRow } from "../sync/ip-sources.ts";
 import { assertSafeHttpUrl } from "../util/url-safety.ts";
 import { fetchWithTimeout } from "../util/fetch.ts";
 import {
     CONFIG_SETTING_KEYS,
     HOSTMONIT_API_KEY,
+    MAX_IPS_PER_TYPE_KEY,
     isHostmonitKeyConfigured,
     normalizeSettingsInput,
     validateEffectiveSettings,
 } from "../db/settings.ts";
+import { normalizeMaxIpsPerType } from "../util/max-ips-per-type.ts";
 
 /** 检测 D1/SQLite UNIQUE 约束违例（D1 同时支持 message 与 code 两种错误呈现方式） */
 const isUniqueViolation = (e: unknown): boolean =>
@@ -224,6 +233,8 @@ async function apiGetSettings(request: Request, db: D1Database): Promise<Respons
     ]);
     return jsonResponse({
         ...settings,
+        // issue #49：读取归一——缺失或损坏的存量值回退默认 20（与 normalizeBatchSize 同风格）
+        [MAX_IPS_PER_TYPE_KEY]: normalizeMaxIpsPerType(settings[MAX_IPS_PER_TYPE_KEY]),
         zoneName: zoneName || "",
         CF_CONFIGURED: Boolean(token && zoneId),
         GITHUB_CONFIGURED: Boolean(github.token && github.owner && github.repo),
@@ -302,15 +313,122 @@ async function resolveZoneName(
         const detail = e instanceof Error ? `：${e.message}` : "";
         return {
             ok: false,
-            error: `无法获取 Cloudflare 区域名称，请先在「系统设置」重新保存 Cloudflare 配置${detail}`,
+            error: `无法获取 Cloudflare 区域名称，请先在「设置」重新保存 Cloudflare 配置${detail}`,
         };
     }
     if (!zoneName) {
-        return { ok: false, error: "无法获取 Cloudflare 区域名称，请先在「系统设置」重新保存 Cloudflare 配置。" };
+        return { ok: false, error: "无法获取 Cloudflare 区域名称，请先在「设置」重新保存 Cloudflare 配置。" };
     }
     await setSetting(db, "CF_ZONE_NAME", zoneName);
     return { ok: true, zoneName };
 }
+
+/** URL 类型目标的 URL 长度上限（方案 §6.2 / §9.1） */
+const MAX_SOURCE_URL_LENGTH = 2048;
+
+/** 域名/URL 两种来源共同接受的 hostname 形态（DNS label 拼接，最长 253） */
+const HOSTNAME_PATTERN =
+    /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+/** 目标前缀：单个 DNS label 或 @（@ 单独判定） */
+const DOMAIN_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+/** 系统内置源白名单（三网优选 IP） */
+const INTERNAL_SOURCE_PATTERN = /^internal:hostmonit:(yd|dx|lt)$/;
+
+/** IP 输入类型的归一结果：与 domains 表的五个来源列 + 强制深度解析覆盖值一一对应 */
+interface NormalizedDomainSource {
+    sourceDomain: string;
+    sourceType: "domain" | "url";
+    sourceUrl: string | null;
+    parseMode: string | null;
+    parseParam: string | null;
+    fetchStrategy: string | null;
+    /** URL 类型固定为 0；域名类型为 null（沿用请求里的 is_deep_resolve） */
+    forcedDeepResolve: number | null;
+}
+
+export type DomainSourceNormalization = { ok: true; value: NormalizedDomainSource } | { ok: false; error: string };
+
+/**
+ * 按 IP 输入类型归一化源配置（方案 §9.1 / §9.5 校验矩阵）。
+ * 纯函数：不读库、不依赖请求上下文，便于单独验证校验矩阵；落库与 CF 凭据解析留在调用方。
+ * - URL 类型：必填、≤2048、过 SSRF 校验、解析配置归一；由 URL 派生 hostname 作为 source_domain，
+ *   再对该派生值做 hostname 形态校验（§9.5：派生值同样受限，避免把方括号 IPv6 字面量落库）；
+ *   同时强制关闭深度解析（§9.1）。
+ * - 域名类型：既有 hostname / 内置源校验不变；URL 相关列与历史策略一律清空（§8.1）。
+ * - URL 改变时丢弃历史策略：旧策略是给旧 URL 缓存的结果，沿用会让新 URL 首轮用错策略。
+ */
+export function normalizeDomainSourceInput(input: {
+    requestedType: "domain" | "url";
+    sourceDomain: string;
+    sourceUrl: unknown;
+    parseMode: unknown;
+    parseParam: unknown;
+    previousUrl: string | null;
+    previousFetchStrategy: string | null;
+}): DomainSourceNormalization {
+    if (input.requestedType === "url") {
+        const rawUrl = String(input.sourceUrl ?? "").trim();
+        if (!rawUrl) return { ok: false, error: "URL 类型必须填写 source_url。" };
+        if (rawUrl.length > MAX_SOURCE_URL_LENGTH) {
+            return { ok: false, error: `URL 长度不能超过 ${MAX_SOURCE_URL_LENGTH} 个字符。` };
+        }
+        let parsedUrl: URL;
+        try {
+            parsedUrl = assertSafeHttpUrl(rawUrl);
+        } catch (e) {
+            return { ok: false, error: e instanceof Error ? e.message : "URL 校验失败。" };
+        }
+        const parseConfig = validateParseConfig(input.parseMode, input.parseParam);
+        if (!parseConfig.ok) return { ok: false, error: parseConfig.error };
+        // 派生 hostname 后同样过形态校验（§9.5）：派生值不受信任，不能只判非空
+        const derivedHost = parsedUrl.hostname;
+        if (!derivedHost || !HOSTNAME_PATTERN.test(derivedHost)) {
+            return { ok: false, error: "URL 主机名格式无效，请使用常见的域名形式。" };
+        }
+        return {
+            ok: true,
+            value: {
+                sourceDomain: derivedHost,
+                sourceType: "url",
+                sourceUrl: rawUrl,
+                parseMode: parseConfig.mode,
+                parseParam: parseConfig.param,
+                fetchStrategy: rawUrl === input.previousUrl ? input.previousFetchStrategy : null,
+                forcedDeepResolve: 0,
+            },
+        };
+    }
+    const source = input.sourceDomain;
+    if (!source || (!source.startsWith("internal:") && !HOSTNAME_PATTERN.test(source))) {
+        return { ok: false, error: "源域名格式无效。" };
+    }
+    if (source.startsWith("internal:") && !INTERNAL_SOURCE_PATTERN.test(source)) {
+        return { ok: false, error: "内置源域名格式无效。" };
+    }
+    return {
+        ok: true,
+        value: {
+            sourceDomain: source,
+            sourceType: "domain",
+            sourceUrl: null,
+            parseMode: null,
+            parseParam: null,
+            fetchStrategy: null,
+            forcedDeepResolve: null,
+        },
+    };
+}
+
+/**
+ * 更新分支读取的既有行投影（issue #63）。
+ *
+ * 形状从 DomainRow 派生，不再逐字段手写；Required 只去掉 DomainRow 里可空列的
+ * 可选标记，让「可空列键在、值可为 null」与整行读出对齐。
+ * 列清单仍由下面的 SELECT 保证：as 断言不做结构校验，改 SQL 时要同步核对该类型。
+ */
+type ExistingDomainRow = Required<
+    Pick<DomainRow, "source_domain" | "source_type" | "source_url" | "fetch_strategy" | "is_system">
+>;
 
 async function handleDomainMutation(
     request: Request,
@@ -320,38 +438,81 @@ async function handleDomainMutation(
 ): Promise<Response> {
     const body = await readJsonBody<{
         source_domain?: string;
+        source_type?: unknown;
+        source_url?: unknown;
+        parse_mode?: unknown;
+        parse_param?: unknown;
         target_domain_prefix?: string;
         is_deep_resolve?: unknown;
         ttl?: number;
         notes?: string;
     }>(request);
     if (body === null) return BAD_JSON();
-    const { source_domain, target_domain_prefix, is_deep_resolve, ttl, notes } = body;
-    const source = String(source_domain ?? "").trim();
+    const {
+        source_domain,
+        source_type,
+        source_url,
+        parse_mode,
+        parse_param,
+        target_domain_prefix,
+        is_deep_resolve,
+        ttl,
+        notes,
+    } = body;
+    const rawSource = String(source_domain ?? "").trim();
+    // IP 输入类型：只接受 domain / url（方案 §9.1）；更新时缺省沿用该行已有类型
+    const declaredType = String(source_type ?? "").trim();
+    if (declaredType !== "" && declaredType !== "domain" && declaredType !== "url") {
+        return jsonResponse({ error: "source_type 必须为 domain 或 url。" }, 400);
+    }
 
-    let existing: { source_domain: string; is_system: number } | null = null;
+    let existing: ExistingDomainRow | null = null;
     if (isUpdate && id) {
-        existing = (await db.prepare("SELECT source_domain, is_system FROM domains WHERE id = ?").bind(id).first()) as {
-            source_domain: string;
-            is_system: number;
-        } | null;
+        existing = (await db
+            .prepare(
+                "SELECT source_domain, source_type, source_url, fetch_strategy, is_system FROM domains WHERE id = ?"
+            )
+            .bind(id)
+            .first()) as ExistingDomainRow | null;
         if (!existing) return jsonResponse({ error: "目标不存在。" }, 404);
-        if (existing.is_system === 1 && existing.source_domain !== source) {
+    }
+    // 未显式声明时：新建按域名，更新沿用该行已有类型
+    const requestedType: "domain" | "url" =
+        declaredType === "url" || (declaredType === "" && existing?.source_type === "url") ? "url" : "domain";
+    // 系统预设域名固定为域名输入，不允许切换输入类型（方案 §8.1）
+    if (existing && existing.is_system === 1) {
+        const existingType = existing.source_type === "url" ? "url" : "domain";
+        if (existingType !== requestedType) {
+            return jsonResponse({ error: "系统预设域名不允许切换输入类型。" }, 403);
+        }
+        if (requestedType === "domain" && existing.source_domain !== rawSource) {
             return jsonResponse({ error: "系统预设域名的源域名不可修改。" }, 403);
         }
     }
     const prefix = String(target_domain_prefix ?? "").trim() || "@";
     const effectiveTtl = ttl === undefined ? 60 : ttl;
-    const hostnamePattern =
-        /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
-    const labelPattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
-    if (!source || (!source.startsWith("internal:") && !hostnamePattern.test(source))) {
-        return jsonResponse({ error: "源域名格式无效。" }, 400);
-    }
-    if (source.startsWith("internal:") && !/^internal:hostmonit:(yd|dx|lt)$/.test(source)) {
-        return jsonResponse({ error: "内置源域名格式无效。" }, 400);
-    }
-    if (prefix !== "@" && !labelPattern.test(prefix)) {
+
+    // 按 IP 输入类型归一化源配置（方案 §9.1 / §9.5）；校验矩阵抽成纯函数由单测直接驱动
+    const normalized = normalizeDomainSourceInput({
+        requestedType,
+        sourceDomain: rawSource,
+        sourceUrl: source_url,
+        parseMode: parse_mode,
+        parseParam: parse_param,
+        previousUrl: existing?.source_url ?? null,
+        previousFetchStrategy: existing?.fetch_strategy ?? null,
+    });
+    if (!normalized.ok) return jsonResponse({ error: normalized.error }, 400);
+    const {
+        sourceDomain: source,
+        sourceType: sourceTypeValue,
+        sourceUrl: sourceUrlValue,
+        parseMode: parseModeValue,
+        parseParam: parseParamValue,
+        fetchStrategy: nextFetchStrategy,
+        forcedDeepResolve,
+    } = normalized.value;
+    if (prefix !== "@" && !DOMAIN_LABEL_PATTERN.test(prefix)) {
         return jsonResponse({ error: "目标前缀必须是单个 DNS label 或 @。" }, 400);
     }
     if (
@@ -365,30 +526,54 @@ async function handleDomainMutation(
     }
     const deepResolve = normalizeDeepResolve(is_deep_resolve);
     if (!deepResolve.ok) return jsonResponse({ error: "is_deep_resolve 必须为 0 或 1。" }, 400);
+    const deepResolveValue = forcedDeepResolve ?? deepResolve.value ?? 1;
     try {
         const { zoneId, token } = await getCfApiSettings(db);
         if (!token || !zoneId) {
-            return jsonResponse({ error: "Cloudflare API 未配置，请先在「系统设置」填写 API 令牌与区域 ID。" }, 400);
+            return jsonResponse({ error: "Cloudflare API 未配置，请先在「设置」填写 API 令牌与区域 ID。" }, 400);
         }
         const resolved = await resolveZoneName(db, token, zoneId);
         if (!resolved.ok) return jsonResponse({ error: resolved.error }, 400);
         const zoneName = resolved.zoneName;
         const target_domain = prefix === "@" ? zoneName : `${prefix}.${zoneName}`;
 
+        // 两条 SQL 共用同一份列清单与绑定顺序（列清单即真相源），避免 11 个参数在 UPDATE/INSERT 间漂移
+        const sourceColumns = [
+            "source_domain",
+            "source_type",
+            "source_url",
+            "parse_mode",
+            "parse_param",
+            "fetch_strategy",
+        ];
+        const targetColumns = ["target_domain", "zone_id", "is_deep_resolve", "ttl", "notes"];
+        const bindings = [
+            source,
+            sourceTypeValue,
+            sourceUrlValue,
+            parseModeValue,
+            parseParamValue,
+            nextFetchStrategy,
+            target_domain,
+            zoneId,
+            deepResolveValue,
+            effectiveTtl,
+            notes || null,
+        ];
+
         if (isUpdate && id) {
+            const assignments = [...sourceColumns, ...targetColumns].map((column) => `${column}=?`).join(", ");
             await db
-                .prepare(
-                    "UPDATE domains SET source_domain=?, target_domain=?, zone_id=?, is_deep_resolve=?, ttl=?, notes=? WHERE id=?"
-                )
-                .bind(source, target_domain, zoneId, deepResolve.value ?? 1, effectiveTtl, notes || null, id)
+                .prepare(`UPDATE domains SET ${assignments} WHERE id=?`)
+                .bind(...bindings, id)
                 .run();
             return jsonResponse({ success: true, message: "目标更新成功。" });
         }
         await db
             .prepare(
-                "INSERT INTO domains (source_domain, target_domain, zone_id, is_deep_resolve, ttl, notes) VALUES (?, ?, ?, ?, ?, ?)"
+                `INSERT INTO domains (${[...sourceColumns, ...targetColumns].join(", ")}) VALUES (${bindings.map(() => "?").join(", ")})`
             )
-            .bind(source, target_domain, zoneId, deepResolve.value ?? 1, effectiveTtl, notes || null)
+            .bind(...bindings)
             .run();
         return jsonResponse({ success: true, message: "目标添加成功。" });
     } catch (e) {
@@ -442,9 +627,11 @@ async function fetchZoneRecords(token: string, zoneId: string, name: string): Pr
 async function apiGetDomainRecords(id: string, db: D1Database): Promise<Response> {
     const { token, zoneId } = await getCfApiSettings(db);
     if (!token || !zoneId) return jsonResponse({ error: "Cloudflare API 未配置。" }, 400);
-    const domain = (await db.prepare("SELECT target_domain FROM domains WHERE id = ?").bind(id).first()) as {
-        target_domain: string;
-    } | null;
+    // 投影形状从 DomainRow 派生（issue #63）；列清单以 SELECT 为准，改 SQL 时同步核对该类型
+    const domain = (await db.prepare("SELECT target_domain FROM domains WHERE id = ?").bind(id).first()) as Pick<
+        DomainRow,
+        "target_domain"
+    > | null;
     if (!domain) return jsonResponse({ error: "目标不存在。" }, 404);
     const result = await fetchZoneRecords(token, zoneId, domain.target_domain);
     if (!result.ok) return jsonResponse({ error: result.error }, 500);
@@ -460,7 +647,7 @@ async function apiGetDomainsRecords(db: D1Database): Promise<Response> {
     const { token, zoneId } = await getCfApiSettings(db);
     if (!token || !zoneId) return jsonResponse({ error: "Cloudflare API 未配置。" }, 400);
     const { results } = await db.prepare("SELECT id, target_domain FROM domains ORDER BY id").all();
-    const rows = results as Array<{ id: number; target_domain: string }>;
+    const rows = results as Array<Pick<DomainRow, "id" | "target_domain">>;
     const payload: Record<string, { records: unknown[] } | { error: string }> = {};
     for (let i = 0; i < rows.length; i += RECORDS_FETCH_CONCURRENCY) {
         const slice = rows.slice(i, i + RECORDS_FETCH_CONCURRENCY);
@@ -479,12 +666,18 @@ async function apiGetIpSources(db: D1Database): Promise<Response> {
     return jsonResponse(results);
 }
 
-/** IP 源输入（新增与更新共用），所有字段通过结构校验后才允许落库 */
+/**
+ * IP 源输入（新增与更新共用），所有字段通过结构校验后才允许落库。
+ * fetch_strategy 不在此列（issue #69）：该列是 URL 的抓取方式缓存，除内置源初始化（migrations 里的种子
+ * 插入）外，唯一写入方是同步链的实测结果；客户端只读不写 —— 与 domains 侧
+ * 「API 不接收该字段，仅回退写入与 GET 投影展示」同一契约。
+ */
 interface IpSourceInput {
     url: string;
     github_path: string;
     commit_message: string;
-    fetch_strategy: string;
+    parse_mode: ParseMode;
+    parse_param: string | null;
 }
 
 type IpSourceValidation = { ok: true; input: IpSourceInput } | { ok: false; error: string };
@@ -506,12 +699,25 @@ function validateGithubPath(path: string): { ok: true; value: string } | { ok: f
     }
     if (normalized.length > 512) return { ok: false, error: "GitHub 文件路径总长必须在 1–512 个字符之间。" };
     if (normalized.trim() !== normalized) return { ok: false, error: "GitHub 文件路径首尾不能包含空白。" };
+    // 派生的 IPv6 伴生路径必须和主路径过同一套形态校验（issue #51 / 方案 §9.2）：
+    // 只查总长会放过「末段 253–255 字符」的路径，保存放行后同步期才抛单段超限，
+    // 该源每轮 failed 且永不收敛。
+    const companionPath = deriveCompanionPath(normalized);
+    if (companionPath.length > 512) {
+        return { ok: false, error: "派生出的 IPv6 伴生文件路径超过 512 个字符，请缩短 GitHub 文件路径。" };
+    }
+    try {
+        normalizeGithubPath(companionPath);
+    } catch (e) {
+        const reason = e instanceof Error ? e.message : "请在末段留出余量。";
+        return { ok: false, error: `派生出的 IPv6 伴生文件路径非法：${reason}` };
+    }
     return { ok: true, value: normalized };
 }
 
 /** 信任边界校验：URL 先走 SSRF 防护再限长；路径、提交信息与策略逐一约束 */
 function validateIpSourceInput(body: IpSourceInputBody): IpSourceValidation {
-    const { url, github_path, commit_message, fetch_strategy } = body;
+    const { url, github_path, commit_message } = body;
 
     if (typeof url !== "string" || url.length === 0) return { ok: false, error: "URL 不能为空。" };
     try {
@@ -530,16 +736,84 @@ function validateIpSourceInput(body: IpSourceInputBody): IpSourceValidation {
     if (trimmedMessage.length < 1 || trimmedMessage.length > 200)
         return { ok: false, error: "提交信息长度必须在 1–200 个字符之间。" };
 
-    const strategyNames = Object.keys(FETCH_STRATEGIES);
-    if (typeof fetch_strategy !== "string" || !strategyNames.includes(fetch_strategy))
-        return { ok: false, error: `抓取策略非法：仅支持 ${strategyNames.join("、")}。` };
+    // 解析配置与保存/探测共用同一套校验（§9.5）：NULL / 空串按 auto，非法值直接 400
+    const parseValidation = validateParseConfig(body.parse_mode, body.parse_param);
+    if (!parseValidation.ok) return { ok: false, error: parseValidation.error };
 
-    return { ok: true, input: { url, github_path: pathValidation.value, commit_message, fetch_strategy } };
+    return {
+        ok: true,
+        input: {
+            url,
+            github_path: pathValidation.value,
+            commit_message,
+            parse_mode: parseValidation.mode,
+            parse_param: parseValidation.param,
+        },
+    };
+}
+
+type CompanionCheck =
+    | {
+          status: "ok";
+          /**
+           * 目标行在被覆盖前的快照；新增时为 null。
+           * URL 决定策略缓存是否随旧地址失效（issue #68），策略决定未变更时保留什么（issue #69），
+           * 两者恒同生同灭，合成一份而不是两个平行字段。
+           */
+          previous: StrategyCacheSnapshot | null;
+      }
+    | { status: "conflict"; conflictPath: string }
+    | { status: "missing" };
+
+/**
+ * 主文件与 IPv6 伴生文件共用同一份 Git 路径命名空间（issue #51）：
+ * A 的主文件不能等于 B 的伴生文件，A 的伴生文件也不能等于 B 的主文件。
+ * 只比较派生后的路径，不比较前缀 —— 这里按字符串全等判定双向冲突。
+ * 更新路径顺带在这一趟扫描里确认目标行是否存在（不存在→missing），
+ * 免得为「判存在」再多打一次 D1 往返。
+ */
+async function checkCompanionConflict(
+    db: D1Database,
+    githubPath: string,
+    excludeId: number | undefined
+): Promise<CompanionCheck> {
+    // 投影形状从 IpSourceRow 派生（issue #64）；列清单以 SELECT 为准，改 SQL 时同步核对该类型
+    const rows = await db
+        .prepare("SELECT id, github_path, url, fetch_strategy FROM ip_sources")
+        .all<Pick<IpSourceRow, "id" | "github_path" | "url" | "fetch_strategy">>();
+    const companion = deriveCompanionPath(githubPath);
+    let targetSeen = false;
+    let targetUrl: string | null = null;
+    let targetFetchStrategy: string | null = null;
+    let conflictPath: string | null = null;
+    for (const row of rows.results ?? []) {
+        if (excludeId !== undefined && row.id === excludeId) {
+            targetSeen = true;
+            // 顺带取回旧 URL 与旧策略缓存：写库时据它决定保留还是清空，不再多打一次 D1 往返
+            targetUrl = row.url;
+            targetFetchStrategy = row.fetch_strategy;
+            continue;
+        }
+        // 新主文件撞了别人的伴生文件，或新伴生文件撞了别人的主文件
+        if (
+            conflictPath === null &&
+            (row.github_path === companion || deriveCompanionPath(row.github_path) === githubPath)
+        ) {
+            conflictPath = row.github_path;
+        }
+    }
+    // 「目标不存在」优先于「路径冲突」：更新一个已被删掉的 id 时，报 404 才是使用者能据以行动的信息
+    if (excludeId !== undefined && !targetSeen) return { status: "missing" };
+    if (conflictPath !== null) return { status: "conflict", conflictPath };
+    return {
+        status: "ok",
+        previous: targetUrl === null ? null : { url: targetUrl, fetchStrategy: targetFetchStrategy },
+    };
 }
 
 /**
  * 新增与更新的写库路径只在 SQL、附加绑定与成功文案上不同，
- * 解析、结构校验与唯一键冲突处理保持同一条流水线，避免两处规则各自漂移。
+ * 解析、结构校验、伴生路径冲突与唯一键冲突处理保持同一条流水线，避免两处规则各自漂移。
  */
 async function writeIpSource(
     request: Request,
@@ -550,17 +824,30 @@ async function writeIpSource(
         successMessage: string;
         /** 更新路径专用：id 不存在时 UPDATE 影响 0 行，此时不能报成功 */
         notFoundWhenNoRows?: boolean;
+        /** 更新路径专用：冲突自检需要排除自身 */
+        excludeId?: number;
     }
 ): Promise<Response> {
     const body = await readJsonBody<IpSourceInputBody>(request);
     if (body === null) return BAD_JSON();
     const validation = validateIpSourceInput(body);
     if (!validation.ok) return jsonResponse({ error: validation.error }, 400);
-    const { url, github_path, commit_message, fetch_strategy } = validation.input;
+    const { url, github_path, commit_message, parse_mode, parse_param } = validation.input;
+    const check = await checkCompanionConflict(db, github_path, options.excludeId);
+    if (check.status === "missing") return jsonResponse({ error: "目标不存在。" }, 404);
+    if (check.status === "conflict") {
+        return jsonResponse(
+            { error: `该 GitHub 文件路径与已有IP源 ${check.conflictPath} 的 IPv6 伴生文件路径互相冲突。` },
+            409
+        );
+    }
+    // fetch_strategy 的保留/清空规则（issue #68 / #69）已下沉到同步领域：
+    // 裁决细则见 sync/ip-sources.ts 的 resolvePersistedFetchStrategy。
+    const nextFetchStrategy = resolvePersistedFetchStrategy(check.previous, url);
     try {
         const result = await db
             .prepare(options.sql)
-            .bind(url, github_path, commit_message, fetch_strategy, ...options.bindings)
+            .bind(url, github_path, commit_message, nextFetchStrategy, parse_mode, parse_param, ...options.bindings)
             .run();
         // UPDATE 命中 0 行说明 id 不存在：返回 404，避免把失败包装成「更新成功」
         if (options.notFoundWhenNoRows && (result.meta?.changes ?? 0) === 0) {
@@ -575,7 +862,7 @@ async function writeIpSource(
 
 function apiAddIpSource(request: Request, db: D1Database): Promise<Response> {
     return writeIpSource(request, db, {
-        sql: "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy) VALUES (?, ?, ?, ?)",
+        sql: "INSERT INTO ip_sources (url, github_path, commit_message, fetch_strategy, parse_mode, parse_param) VALUES (?, ?, ?, ?, ?, ?)",
         bindings: [],
         successMessage: "IP源添加成功。",
     });
@@ -583,10 +870,11 @@ function apiAddIpSource(request: Request, db: D1Database): Promise<Response> {
 
 function apiUpdateIpSource(request: Request, db: D1Database, id: number): Promise<Response> {
     return writeIpSource(request, db, {
-        sql: "UPDATE ip_sources SET url=?, github_path=?, commit_message=?, fetch_strategy=? WHERE id=?",
+        sql: "UPDATE ip_sources SET url=?, github_path=?, commit_message=?, fetch_strategy=?, parse_mode=?, parse_param=? WHERE id=?",
         bindings: [id],
         successMessage: "IP源更新成功。",
         notFoundWhenNoRows: true,
+        excludeId: id,
     });
 }
 
@@ -619,10 +907,13 @@ async function withProbeTimeout<T>(promise: Promise<T>, ms: number): Promise<T> 
 }
 
 async function apiProbeIpSource(request: Request, db: D1Database): Promise<Response> {
-    const body = await readJsonBody<{ url?: string }>(request);
+    const body = await readJsonBody<{ url?: unknown; parse_mode?: unknown; parse_param?: unknown }>(request);
     if (body === null) return BAD_JSON();
     const { url } = body;
-    if (!url) return jsonResponse({ error: "缺少用于探测的 URL 参数。" }, 400);
+    // 解析配置非法时直接 400，不进入抓取（§9.3）
+    const parseValidation = validateParseConfig(body.parse_mode, body.parse_param);
+    if (!parseValidation.ok) return jsonResponse({ error: parseValidation.error }, 400);
+    if (typeof url !== "string" || url.length === 0) return jsonResponse({ error: "缺少用于探测的 URL 参数。" }, 400);
     try {
         assertSafeHttpUrl(url);
     } catch (e) {
@@ -635,7 +926,10 @@ async function apiProbeIpSource(request: Request, db: D1Database): Promise<Respo
     let attempts = 0;
     let budgetExhausted = false;
 
-    for (const [strategyName, strategyFn] of Object.entries(FETCH_STRATEGIES)) {
+    // 候选集合同步链共用适用性判据（issue #68）：探测是写入 fetch_strategy 的上游，
+    // 不门控等于给「hostmonit_api 抓到别人列表」这条错配开正门；声明顺序与总预算不变。
+    const candidates = Object.entries(FETCH_STRATEGIES).filter(([name]) => isStrategyApplicable(name, url));
+    for (const [strategyName, strategyFn] of candidates) {
         const remaining = deadlineAt - Date.now();
         if (remaining <= 0) {
             budgetExhausted = true;
@@ -643,13 +937,17 @@ async function apiProbeIpSource(request: Request, db: D1Database): Promise<Respo
         }
         attempts += 1;
         try {
-            const ips = await withProbeTimeout(strategyFn(url, { hostmonitKey }), remaining);
-            if (ips && ips.length > 0) {
+            // 与同步链路同一条解析路径：策略只取正文，解析配置在入口已校验
+            const text = await withProbeTimeout(strategyFn(url, { hostmonitKey }), remaining);
+            const { ipv4, ipv6 } = parseContent(text, parseValidation.mode, parseValidation.param);
+            if (ipv4.length > 0 || ipv6.length > 0) {
                 return jsonResponse({
                     success: true,
                     strategy: strategyName,
-                    ipCount: ips.length,
-                    sampleIps: ips.slice(0, 5),
+                    ipv4Count: ipv4.length,
+                    ipv6Count: ipv6.length,
+                    sampleIps: ipv4.slice(0, 5),
+                    sampleIpv6: ipv6.slice(0, 5),
                 });
             }
         } catch (e) {

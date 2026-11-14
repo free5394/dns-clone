@@ -220,7 +220,7 @@ describe("CF 已配置但区域名称未缓存 (issue #21)", () => {
         expect(res.status).toBe(400);
         const body = (await res.json()) as { error?: string };
         expect(body.error).toContain("区域名称");
-        expect(body.error).toContain("系统设置");
+        expect(body.error).toContain("设置");
         const created = await env.WUYA.prepare("SELECT COUNT(*) as n FROM domains WHERE target_domain = ?")
             .bind("auto21.lazy.example.com")
             .first();

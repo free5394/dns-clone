@@ -7,26 +7,24 @@ import {
     queryAll,
     releaseManualSyncLock,
     createManualSyncLockRenewer,
+    type DomainRow,
 } from "../db/client.ts";
-import { fetchThreeNetworkIps } from "./ip-sources.ts";
+import { fetchIpsForTarget, fetchThreeNetworkIps } from "./ip-sources.ts";
+import { normalizeParseMode } from "./ip-parse.ts";
 import { beijingTimeLog } from "../util/log.ts";
 import { runWithOptionalLog } from "../util/run-with-log.ts";
 import type { WaitUntil } from "../util/http.ts";
 import { fetchWithTimeout, fetchWithRetry } from "../util/fetch.ts";
 import { normalizeBatchSize } from "../util/batch-size.ts";
 import { forEachIsolated } from "../util/batch-sync.ts";
+import { normalizeMaxIpsPerType } from "../util/max-ips-per-type.ts";
+import { dedupeSortedIps } from "../util/ip.ts";
+import { MAX_IPS_PER_TYPE_KEY } from "../db/settings.ts";
 
-interface DomainRow {
-    id: number;
-    source_domain: string;
-    target_domain: string;
-    zone_id: string;
-    is_deep_resolve: number;
-    ttl: number;
-    last_synced_records?: string | null;
-    is_enabled: number;
-    is_system: number;
-}
+// issue #66：DomainRow 的定义已下沉到 db 层（与 domains 表定义、DOMAIN_COLUMNS 同处），
+// 这里只做转出口，`api.ts` / `test/domain-row.ts` 的既有 import 源保持不变；
+// 要改字段请去 src/db/client.ts，别在 sync 层重新定义。
+export type { DomainRow };
 
 interface DnsRecord {
     type: string;
@@ -44,6 +42,96 @@ interface ThreeNetworkIpsCache {
 /** 域名同步共享上下文：跨多个域名同步时复用的派生状态 */
 interface SyncContext {
     threeNetworkIps?: ThreeNetworkIpsCache;
+    /**
+     * URL 类型目标的同批抓取结果缓存（方案 §6.3）。
+     * 键 = url + 归一后的 parse_mode + parse_param，同批内相同配置只抓一次；
+     * 只缓存成功结果（取得正文且解析到 ≥1 个 IP），失败不缓存——与三网 FIX-15/FIX-16 语义一致。
+     * 缓存同时记住实际生效策略：命中方同样要落库，否则第二个目标下轮仍从空策略起试（验收 #6）。
+     */
+    urlRecords?: Map<string, CachedUrlRecords>;
+    /**
+     * 本批生效的 DNS 单类型记录上限（issue #53 / 方案 §11.2）。
+     * 批入口读一次 settings 后填入，后续每个域名复用，避免逐域名重复读库。
+     */
+    maxIpsPerType?: number;
+}
+
+/** 变更备注前缀（方案 §12.4）：comment 表示记录集最近一次变更时间，不是最近一次同步时间 */
+const CHANGE_COMMENT_PREFIX = "DNS Clone 变更于 ";
+
+/**
+ * 是否携带变更备注的记录类型（方案 §12.4：仅 A / AAAA 写入，CNAME 不写）。
+ * 创建请求与保留记录刷新共用这一处判据，避免将来扩展类型时两处口径分叉。
+ */
+function carriesChangeComment(type: string): boolean {
+    return type === "A" || type === "AAAA";
+}
+
+/**
+ * 生成变更备注：北京时间 YYYY-MM-DD HH:mm，精确到分钟（方案 §12.4）。
+ * 北京时间固定为 UTC+8 且无夏令时，直接平移时间戳后用 UTC 取值，
+ * 避免依赖运行时 Intl 时区数据库（workerd 与 Node 的差异会污染测试）。
+ */
+export function formatChangeComment(now: Date = new Date()): string {
+    const shifted = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+    const date = [
+        shifted.getUTCFullYear(),
+        String(shifted.getUTCMonth() + 1).padStart(2, "0"),
+        String(shifted.getUTCDate()).padStart(2, "0"),
+    ].join("-");
+    const time = [
+        String(shifted.getUTCHours()).padStart(2, "0"),
+        String(shifted.getUTCMinutes()).padStart(2, "0"),
+    ].join(":");
+    return `${CHANGE_COMMENT_PREFIX}${date} ${time}`;
+}
+
+/**
+ * 按类型截断记录集合（issue #53 / 方案 §12.3）：A 与 AAAA 各保留前 N 条。
+ * CNAME 分支不参与截断，原样保留；其余顺序不变，便于与解析结果逐项比对。
+ */
+export function limitIpRecords(records: DnsRecord[], maxPerType: number): DnsRecord[] {
+    const limit = Math.max(1, maxPerType);
+    let ipv4Count = 0;
+    let ipv6Count = 0;
+    const limited: DnsRecord[] = [];
+    for (const record of records) {
+        if (record.type === "A") {
+            if (ipv4Count >= limit) continue;
+            ipv4Count++;
+        } else if (record.type === "AAAA") {
+            if (ipv6Count >= limit) continue;
+            ipv6Count++;
+        }
+        limited.push(record);
+    }
+    return limited;
+}
+
+/**
+ * 惰性读取本批的 MAX_IPS_PER_TYPE 并写回上下文（issue #53 / 方案 §11.2）。
+ * 批入口显式调用一次；syncDomainLogic 再调一次也只是命中已填值，不会重复读库。
+ */
+async function ensureMaxIpsPerType(db: D1Database, syncContext: SyncContext): Promise<number> {
+    if (syncContext.maxIpsPerType === undefined) {
+        syncContext.maxIpsPerType = normalizeMaxIpsPerType(await getSetting(db, MAX_IPS_PER_TYPE_KEY));
+    }
+    return syncContext.maxIpsPerType;
+}
+
+/** 同批 URL 抓取缓存值：记录集合 + 本次实际生效的抓取策略 */
+interface CachedUrlRecords {
+    records: DnsRecord[];
+    strategy: string;
+}
+
+/**
+ * URL 类型目标的缓存键：三个字段共同决定解析结果，任一不同即视为不同请求。
+ * parse_mode 先归一再入键：存量行可能是 NULL、新行是 "auto"，两者语义相同，不归一就会重复抓取。
+ */
+function urlRecordsCacheKey(domain: DomainRow): string {
+    const url = (domain.source_url ?? "").trim();
+    return `${url}\u0000${normalizeParseMode(domain.parse_mode)}\u0000${domain.parse_param ?? ""}`;
 }
 
 type LogFn = (msg: string) => void;
@@ -95,6 +183,8 @@ export async function syncScheduledDomains(env: { WUYA: D1Database }): Promise<v
 
     log(`本轮按失败优先选取 ${domainsToSync.length} 个域名。`);
     const syncContext: SyncContext = {};
+    // issue #53 / 方案 §11.2：批次内只读一次单类型上限，整批域名复用
+    await ensureMaxIpsPerType(db, syncContext);
     await forEachIsolated(
         domainsToSync,
         (domain) => syncDomainLogic(domain, token, zoneId, db, log, syncContext),
@@ -150,6 +240,7 @@ export async function syncAllDomains(
             }
             log(`发现 ${domains.length} 个已启用的目标需要同步。`);
             const syncContext: SyncContext = {};
+            await ensureMaxIpsPerType(db, syncContext);
             await renewLock();
             await forEachIsolated(
                 domains,
@@ -199,6 +290,7 @@ export async function syncSystemDomains(
             }
             log(`发现 ${domains.length} 个已启用的系统域名需要同步。`);
             const syncContext: SyncContext = {};
+            await ensureMaxIpsPerType(db, syncContext);
             await renewLock();
             await forEachIsolated(
                 domains,
@@ -223,10 +315,14 @@ export async function syncSystemDomains(
 }
 
 /**
- * 根据域名配置解析需更新的 DNS 记录（三分支策略）
+ * 根据域名配置解析需更新的 DNS 记录（四分支策略）
+ * - source_type=url：抓取 URL 正文并经统一解析层得 IPv4/IPv6（issue #52）
  * - internal:hostmonit:*：系统内置三网优选 IP
  * - is_deep_resolve=1：递归解析 CNAME 链
  * - 否则：浅层克隆（源域名必须是 CNAME）
+ *
+ * 四条分支统一在出口按 MAX_IPS_PER_TYPE 截断（issue #53 / 方案 §11.1、§12.3）：
+ * 截断放在出口而不是各分支内，才能保证「全来源」口径一致、不因新增分支漏截。
  */
 export async function resolveRecordsForDomain(
     domain: DomainRow,
@@ -234,6 +330,45 @@ export async function resolveRecordsForDomain(
     log: LogFn,
     syncContext: SyncContext
 ): Promise<DnsRecord[]> {
+    const records = await resolveRawRecordsForDomain(domain, db, log, syncContext);
+    // 兜底：批入口已读过时这里命中已填值，不重复读库；若将来新增入口漏调，
+    // 也只是退化为逐域名读一次设置，不会静默回退默认值而绕过用户配置（方案 §11.2）。
+    const maxPerType = await ensureMaxIpsPerType(db, syncContext);
+    const limited = limitIpRecords(records, maxPerType);
+    if (limited.length !== records.length) {
+        log(`按单类型上限 ${maxPerType} 截断记录: ${records.length} → ${limited.length} 条`);
+    }
+    return limited;
+}
+
+/**
+ * 把原始 IP 字符串收敛成 A / AAAA 记录（issue #59 / 方案 §7.3）：
+ * 逐项严格校验 → 同类型去重 → 排序。
+ * - 去重与排序交给 `dedupeSortedIps`（与 URL 分支共用同一份 §7.3 流水线）：
+ *   IPv4 去前导零后去重 + 数值升序，IPv6 按 RFC 5952 归一后去重 + 字典序，
+ *   并排除不可发布的 `::`、全零展开与 IPv4-mapped；
+ * - CNAME 不经过这里，仍由调用方原样返回。
+ *
+ * 截断由 resolveRecordsForDomain 在出口统一执行，所以顺序必须在这里定下来：
+ * limitIpRecords 按输入顺序取前 N，排序晚于截断就会取到错的那 N 条（验收 #1）。
+ */
+function buildIpRecords(ipv4s: string[], ipv6s: string[]): DnsRecord[] {
+    const { ipv4, ipv6 } = dedupeSortedIps(ipv4s, ipv6s);
+    return [...ipv4.map((ip) => ({ type: "A", content: ip })), ...ipv6.map((ip) => ({ type: "AAAA", content: ip }))];
+}
+
+/**
+ * 四分支解析的原始结果（未截断），截断由 resolveRecordsForDomain 统一执行。
+ */
+async function resolveRawRecordsForDomain(
+    domain: DomainRow,
+    db: D1Database,
+    log: LogFn,
+    syncContext: SyncContext
+): Promise<DnsRecord[]> {
+    if (domain.source_type === "url") {
+        return await resolveUrlRecordsForDomain(domain, db, log, syncContext);
+    }
     if (domain.source_domain.startsWith("internal:hostmonit:")) {
         const type = domain.source_domain.split(":")[2];
         const sourceName = (await getSetting(db, "THREE_NETWORK_SOURCE")) || "CloudFlareYes";
@@ -266,7 +401,9 @@ export async function resolveRecordsForDomain(
         // 返回空数组交给 syncDomainLogic 走 "无记录" 分支判定 no_change / 抛错。
         if (!syncContext.threeNetworkIps) return [];
         const ips = syncContext.threeNetworkIps[type as "yd" | "dx" | "lt"] || [];
-        return ips.map((ip) => ({ type: "A", content: ip }));
+        // issue #59：上游 HTML 只按形态匹配 `\d{1,3}.` 四段，越界值也会被带进来；
+        // 与深度解析同口径过内核（校验 → 去重 → 数值升序），排序必须先于出口截断。
+        return buildIpRecords(ips, []);
     }
     if (domain.is_deep_resolve) {
         log(`模式: 深度解析 (追踪CNAME)`);
@@ -276,6 +413,81 @@ export async function resolveRecordsForDomain(
     const cnames = await getDnsFromDoh(domain.source_domain, "CNAME");
     if (cnames.length > 0) return [{ type: "CNAME", content: cnames[0].replace(/\.$/, "") }];
     throw new Error(`在浅层克隆模式下，源域名 ${domain.source_domain} 必须是一个CNAME记录。`);
+}
+
+/**
+ * 把本次实际生效的抓取策略写回 domains（验收 #6）。
+ * 只落库，不做去重判断：调用方知道自己是否已经写过同一策略，避免这里靠猜 target 的当前值。
+ */
+async function persistFetchStrategy(db: D1Database, strategy: string, target: { id: number }): Promise<void> {
+    if (!strategy) return;
+    await db.prepare("UPDATE domains SET fetch_strategy = ? WHERE id = ?").bind(strategy, target.id).run();
+}
+
+/**
+ * URL 类型目标：复用 IP 源的策略链取正文，经统一解析层得 IPv4/IPv6 并映射成 A/AAAA（方案 §6.2 / §6.3）。
+ * - 同批缓存：键 = url + parse_mode + parse_param，只缓存成功结果；同批同配置只抓一次。
+ * - 取得正文但解析 0 条：不写缓存，返回空集合交由 syncDomainLogic 的 0 条分支判定。
+ * - 抓取抛错：不写缓存、向上抛，由 syncDomainLogic 标 failed 且不改动现有 DNS。
+ */
+async function resolveUrlRecordsForDomain(
+    domain: DomainRow,
+    db: D1Database,
+    log: LogFn,
+    syncContext: SyncContext
+): Promise<DnsRecord[]> {
+    const cacheKey = urlRecordsCacheKey(domain);
+    const cached = syncContext.urlRecords?.get(cacheKey);
+    if (cached) {
+        log(`模式: URL 抓取 (同批缓存命中，${cached.records.length} 条记录)`);
+        // 命中缓存也要落库：抓取只发生在第一个目标上，策略也只写进了它那一行；
+        // 后续目标若跳过落库，下一轮仍从空策略起试，验收 #6「下一轮优先尝试」就不成立。
+        if ((domain.fetch_strategy ?? "") !== cached.strategy) {
+            await persistFetchStrategy(db, cached.strategy, domain);
+        }
+        domain.fetch_strategy = cached.strategy;
+        return cached.records;
+    }
+    const url = (domain.source_url ?? "").trim();
+    if (!url) throw new Error(`URL 类型目标 ${domain.target_domain} 缺少 URL，请重新编辑该目标。`);
+    log(`模式: URL 抓取 (${url})`);
+    const result = await fetchIpsForTarget(
+        {
+            id: domain.id,
+            url,
+            fetch_strategy: domain.fetch_strategy ?? null,
+            parse_mode: domain.parse_mode ?? null,
+            parse_param: domain.parse_param ?? null,
+        },
+        db,
+        {
+            // 回退命中后把实际生效策略持久化到 domains，下一轮优先尝试（验收 #6）
+            persistStrategy: async (strategy, target) => {
+                await persistFetchStrategy(db, strategy, target);
+            },
+            // 取得正文但 0 条不抛错：交给 syncDomainLogic 走「上次有无记录」两分支（验收 #8）
+            emptyWhenNoIps: true,
+        }
+    );
+    // 回退命中时同步内存对象，同一 DomainRow 后续复用可感知（与 ip_sources 侧就地改写口径一致）
+    if (result.strategy !== "" && result.strategy !== result.configuredStrategy) {
+        domain.fetch_strategy = result.strategy;
+    }
+    const records: DnsRecord[] = [
+        ...result.ipv4.map((ip) => ({ type: "A", content: ip })),
+        ...result.ipv6.map((ip) => ({ type: "AAAA", content: ip })),
+    ];
+    log(
+        `取得 ${result.ipv4.length} 个 IPv4 / ${result.ipv6.length} 个 IPv6（策略: ${result.strategy || "全部未命中"}）`
+    );
+    if (records.length === 0) {
+        // §6.3：全链取得正文但解析 0 条时不写缓存（避免空结果污染同批其它目标）
+        log("未解析到任何 IP，交由同步逻辑按上次记录判定。");
+        return [];
+    }
+    if (!syncContext.urlRecords) syncContext.urlRecords = new Map<string, CachedUrlRecords>();
+    syncContext.urlRecords.set(cacheKey, { records, strategy: result.strategy });
+    return records;
 }
 
 /** 核心同步逻辑：解析 → 比对 → 写回 Cloudflare DNS → 状态更新 */
@@ -289,6 +501,7 @@ export async function syncDomainLogic(
 ): Promise<void> {
     log(`======== 开始同步: ${domain.target_domain} ========`);
     try {
+        // 单类型上限由 resolveRecordsForDomain 出口兜底读取，这里不再单独读库
         let recordsToUpdate: DnsRecord[] | undefined;
         recordsToUpdate = await resolveRecordsForDomain(domain, db, log, syncContext);
 
@@ -366,18 +579,9 @@ export async function resolveRecursively(domain: string, log: LogFn, depth = 0):
     log(`(深度 ${depth}) 未发现CNAME，查询最终IP for ${domain}`);
     const ipv4s = await getDnsFromDoh(domain, "A");
     const ipv6s = await getDnsFromDoh(domain, "AAAA");
-    const validIPv4s = ipv4s.filter((ip) =>
-        /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(ip)
-    );
-    const validIPv6s = ipv6s.filter((ip) =>
-        /(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))/.test(
-            ip
-        )
-    );
-    return [
-        ...validIPv4s.map((ip) => ({ type: "A", content: ip })),
-        ...validIPv6s.map((ip) => ({ type: "AAAA", content: ip })),
-    ];
+    // issue #59：与三网分支共用内核（校验 → 去重 → 规范化 → 排序），
+    // 不再各自维护一份正则——旧 IPv6 正则无锚定且放行 %zone，已由 isValidIpv6 取代。
+    return buildIpRecords(ipv4s, ipv6s);
 }
 
 /**
@@ -423,7 +627,18 @@ export async function processInChunks<T, R extends Response>(
     return allResponses;
 }
 
-/** 将解析结果写回 Cloudflare DNS（比对差异后增删） */
+/**
+ * 将解析结果写回 Cloudflare DNS（比对差异后增删）。
+ *
+ * 变更时间备注（issue #53 / 方案 §12.4）：
+ * - 只有本次记录集合发生增删时，才写入/刷新 `comment`；`no_change` 不产生任何 PATCH。
+ * - 新增记录随创建请求带 `comment`；保留下来的既有 A/AAAA 记录用 PATCH 刷新 `comment`。
+ * - CNAME 不参与备注，也不参与截断。
+ *
+ * 顺序说明：方案 §11.1 画的是「POST → DELETE → PATCH」，但 §13.1 要求备注 PATCH 失败时
+ * 记录集合保持不变。POST/DELETE 之后再 PATCH 无法回滚，只有把幂等且不改记录集合的注释刷新
+ * 提到集合变更之前，两条约束才能同时成立，故这里按「PATCH 备注 → DELETE → POST」执行。
+ */
 export async function updateCloudflareDns(
     token: string,
     zoneId: string,
@@ -442,6 +657,7 @@ export async function updateCloudflareDns(
         content: string;
         proxied?: boolean;
         ttl?: number;
+        comment?: string | null;
     }
     const existingRecords: ExistingRecord[] = [];
     for (let page = 1; ; page++) {
@@ -464,6 +680,8 @@ export async function updateCloudflareDns(
     const recordsToDelete: typeof existingRecords = [];
     const recordsToAdd = newRecords.map((r) => ({ ...r, content: r.content.replace(/\.$/, "") }));
     const newRecordIsCname = recordsToAdd.some((r) => r.type === "CNAME");
+    // 保留下来的 A/AAAA 既有记录：本次有增删时要刷新 comment（方案 §12.4）
+    const recordsToRefresh: ExistingRecord[] = [];
 
     for (const existing of existingRecords) {
         const normalizedExistingContent = existing.content.replace(/\.$/, "");
@@ -479,6 +697,7 @@ export async function updateCloudflareDns(
             if (recordsToAdd[i].type === existing.type && recordsToAdd[i].content === normalizedExistingContent) {
                 if (existing.proxied === false && existing.ttl === ttl) {
                     recordsToAdd.splice(i, 1);
+                    recordsToRefresh.push(existing);
                     foundMatch = true;
                     break;
                 }
@@ -495,6 +714,30 @@ export async function updateCloudflareDns(
     }
 
     log(`计划删除 ${recordsToDelete.length} 条记录, 添加 ${recordsToAdd.length} 条记录。`);
+
+    // 变更时间备注：本次确有增删才产生注释写操作（方案 §12.4）
+    const changeComment = formatChangeComment();
+
+    // 两个过滤条件（方案 §12.4）：
+    // 1) 只有 A/AAAA 写备注，匹配上的 CNAME 一律跳过；
+    // 2) 保留记录的 comment 已是本次同分钟时间戳时跳过——同一分钟内多次变更不对同一记录重复 PATCH。
+    const recordsToPatchComment = recordsToRefresh.filter(
+        (record) => carriesChangeComment(record.type) && record.comment !== changeComment
+    );
+
+    const patchCommentFn = (record: ExistingRecord) => {
+        log(`~ 准备刷新备注: [${record.type}] ${record.content} -> ${changeComment}`);
+        return fetchWithRetry(
+            `${API_ENDPOINT}/${record.id}`,
+            {
+                method: "PATCH",
+                headers,
+                body: JSON.stringify({ comment: changeComment }),
+            },
+            1,
+            15000
+        );
+    };
 
     const deleteFn = (record: { id: string; type: string; content: string }) => {
         log(`- 准备删除旧记录: [${record.type}] ${record.content}`);
@@ -514,6 +757,8 @@ export async function updateCloudflareDns(
                     content: record.content,
                     ttl,
                     proxied: false,
+                    // 备注仅 A/AAAA 携带；CNAME 分支不参与备注（方案 §12.4）
+                    ...(carriesChangeComment(record.type) ? { comment: changeComment } : {}),
                 }),
             },
             1,
@@ -521,6 +766,12 @@ export async function updateCloudflareDns(
         );
     };
 
+    // 顺序：先刷新保留记录的备注，再删除多余、再新增最后执行。
+    // 原因见函数头注释：备注 PATCH 失败要落在记录集合未变的位置，必须早于 DELETE/POST。
+    if (recordsToPatchComment.length > 0) {
+        log(`刷新 ${recordsToPatchComment.length} 条保留记录的变更备注。`);
+        await processInChunks(recordsToPatchComment, API_CHUNK_SIZE, patchCommentFn, log);
+    }
     await processInChunks(recordsToDelete, API_CHUNK_SIZE, deleteFn, log);
     await processInChunks(recordsToAdd, API_CHUNK_SIZE, addFn, log);
 

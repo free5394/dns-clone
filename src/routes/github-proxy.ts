@@ -2,9 +2,31 @@
 // C4：GitHub 访问与边缘缓存统一归入 sync/github.ts，本文件不再自建请求头或缓存
 
 import { getGitHubSettings } from "../db/client.ts";
-import { readFileForSubscriber } from "../sync/github.ts";
+import { companionSourceCandidate, deriveCompanionPath, readFileForSubscriber } from "../sync/github.ts";
+import type { IpSourceRow } from "../sync/ip-sources.ts";
 
-/** 订阅器友好代理：命中 github_path 白名单后由 GitHub module 读穿边缘缓存 */
+/**
+ * 白名单查询：先按请求路径精确匹配主文件，未命中再按派生规则反查伴生文件所属的源。
+ * 主文件与候选主文件一趟 IN 查回来，省掉第二次 D1 往返。
+ */
+async function findWhitelistedSource(db: D1Database, path: string): Promise<Pick<IpSourceRow, "github_path"> | null> {
+    const candidate = companionSourceCandidate(path);
+    const keys = candidate === null ? [path] : [path, candidate];
+    const rows = await db
+        .prepare(`SELECT github_path FROM ip_sources WHERE github_path IN (${keys.map(() => "?").join(", ")})`)
+        .bind(...keys)
+        .all<Pick<IpSourceRow, "github_path">>();
+    const found = rows.results ?? [];
+
+    const exact = found.find((row) => row.github_path === path);
+    if (exact) return exact;
+
+    // 反查只给候选，必须用 deriveCompanionPath 正推一次确认 —— 否则任何 `x-v6` 形态都能借白名单读出去。
+    if (candidate === null) return null;
+    return found.find((row) => deriveCompanionPath(row.github_path) === path) ?? null;
+}
+
+/** 订阅器友好代理：命中白名单（主文件或已登记源的伴生文件）后由 GitHub module 读穿边缘缓存 */
 export async function handleGitHubFileProxy(
     fileName: string,
     env: { WUYA: D1Database },
@@ -16,9 +38,7 @@ export async function handleGitHubFileProxy(
     } catch {
         return new Response("请求的文件不存在或不在本服务管理范围内。", { status: 404 });
     }
-    const source = await env.WUYA.prepare("SELECT * FROM ip_sources WHERE github_path = ?")
-        .bind(decodedFileName)
-        .first();
+    const source = await findWhitelistedSource(env.WUYA, decodedFileName);
 
     if (!source) {
         return new Response("请求的文件不存在或不在本服务管理范围内。", { status: 404 });

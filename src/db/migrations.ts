@@ -3,11 +3,11 @@
 // 修订 R2：不引入 schema_version 表，旧幂等逻辑完整保留（已部署实例不受影响）
 // schema 演进留到阶段 F 测试体系就绪后
 
-import { getSetting, setSetting, getCfApiSettings, queryAll } from "./client.ts";
+import { getSetting, setSetting, getCfApiSettings, queryAll, type DomainRow } from "./client.ts";
 import { getZoneName } from "../util/cf.ts";
 
 // 迁移版本：改动 DDL（新增表 / 列 / 索引）时必须一起加一，否则已部署实例会因 24h 时间门控推迟生效。
-export const MIGRATION_VERSION = "2026-11-07-index-guard";
+export const MIGRATION_VERSION = "2026-11-10-ip-fetch-unification";
 
 /** 初始化/迁移数据库：幂等，可重复执行 */
 export async function initializeAndMigrateDatabase(env: { WUYA: D1Database }): Promise<void> {
@@ -50,6 +50,12 @@ export async function initializeAndMigrateDatabase(env: { WUYA: D1Database }): P
             "last_sync_error TEXT",
             "is_enabled INTEGER DEFAULT 1 NOT NULL",
             "is_system INTEGER NOT NULL DEFAULT 0",
+            // issue #49 / 方案 §8.1：IP 抓取统一化新增列，全部可空，旧数据保持 NULL（NULL 即默认语义）
+            "source_type TEXT",
+            "source_url TEXT",
+            "parse_mode TEXT",
+            "parse_param TEXT",
+            "fetch_strategy TEXT",
             "UNIQUE(target_domain)",
         ],
         sessions: ["token TEXT PRIMARY KEY NOT NULL", "expires_at TIMESTAMP NOT NULL"],
@@ -68,6 +74,9 @@ export async function initializeAndMigrateDatabase(env: { WUYA: D1Database }): P
             "last_sync_status TEXT DEFAULT 'pending'",
             "last_sync_error TEXT",
             "is_enabled INTEGER DEFAULT 1 NOT NULL",
+            // issue #49 / 方案 §8.2：解析模式与参数，全部可空，旧数据保持 NULL
+            "parse_mode TEXT",
+            "parse_param TEXT",
         ],
     };
 
@@ -114,7 +123,8 @@ export async function initializeAndMigrateDatabase(env: { WUYA: D1Database }): P
     const { token, zoneId } = await getCfApiSettings(db);
     if (!token || !zoneId) return;
 
-    const invalidDomains = await queryAll<{ id: number; target_domain: string }>(
+    // 形状从 DomainRow 派生（issue #66）；键集合与 SELECT 列一一对应，改 SQL 时同步核对该类型
+    const invalidDomains = await queryAll<Pick<DomainRow, "id" | "target_domain">>(
         db,
         "SELECT id, target_domain FROM domains WHERE target_domain LIKE '%.'"
     );

@@ -1,7 +1,21 @@
 // templates.js — UI 模板函数（阶段 E 从 index.legacy.js 拆出）
-import { escapeHtmlClient, canAddDomains, planSyncCompletionActions } from "./dashboard-helpers.js";
+import {
+    escapeHtmlClient,
+    canAddDomains,
+    planSyncCompletionActions,
+    buildDomainSavePayload,
+    buildIpSourceSavePayload,
+    buildIpSourceProbePayload,
+} from "./dashboard-helpers.js";
 import { createDashboardRenderers } from "./dashboard-render.js";
 import { createApiFetch } from "./dashboard-api.js";
+// 单类型记录上限的唯一归一实现（issue #49）：模板层不重复定义默认值
+import {
+    DEFAULT_MAX_IPS_PER_TYPE,
+    MAX_MAX_IPS_PER_TYPE,
+    MIN_MAX_IPS_PER_TYPE,
+    normalizeMaxIpsPerType,
+} from "../util/max-ips-per-type.ts";
 // 纯 JS 文件（tsc 不参与）：内含大量浏览器端 JS 模板字符串
 
 // HTML 实体转义：所有插值到模板字符串的用户控制字段必须经过 escapeHtml
@@ -534,10 +548,10 @@ export function getPublicHomepage(requestUrl, domains, ipSources, threeNetworkSo
 export function getDashboardPage(domains, ipSources, settings) {
     const githubSettingsComplete = settings.GITHUB_CONFIGURED === true;
     const cfSettingsComplete = canAddDomains(settings);
-    return `<aside class="sidebar"><div class="sidebar-header"><h3>DNS Clone</h3><button id="theme-toggle" type="button" aria-label="切换到深色主题"><i class="fa-solid fa-moon" aria-hidden="true"></i></button></div><nav class="sidebar-nav"><a href="#page-dns-clone" class="nav-link active" data-target="page-dns-clone"><i class="fa-solid fa-clone fa-fw"></i> 域名克隆</a><a href="#page-github-upload" class="nav-link" data-target="page-github-upload"><i class="fa-brands fa-github fa-fw"></i> GitHub 上传</a><a href="#page-settings" class="nav-link" data-target="page-settings"><i class="fa-solid fa-gear fa-fw"></i> 系统设置</a></nav></aside>
+    return `<aside class="sidebar"><div class="sidebar-header"><h3>DNS Clone</h3><button id="theme-toggle" type="button" aria-label="切换到深色主题"><i class="fa-solid fa-moon" aria-hidden="true"></i></button></div><nav class="sidebar-nav"><a href="#page-dns-clone" class="nav-link active" data-target="page-dns-clone"><i class="fa-solid fa-clone fa-fw"></i> 域名</a><a href="#page-github-upload" class="nav-link" data-target="page-github-upload"><i class="fa-brands fa-github fa-fw"></i> GitHub</a><a href="#page-settings" class="nav-link" data-target="page-settings"><i class="fa-solid fa-gear fa-fw"></i> 设置</a></nav></aside>
     <div class="main-content">
         <div id="page-dns-clone" class="page active">
-            <div class="page-header"><h2>域名克隆列表</h2><button id="addDomainBtn" ${cfSettingsComplete ? "" : "disabled"}>＋ 添加克隆目标</button></div>
+            <div class="page-header"><h2>域名列表</h2><button id="addDomainBtn" ${cfSettingsComplete ? "" : "disabled"}>＋ 添加克隆目标</button></div>
             <div id="domain-list-container"></div>
             <article><h3>手动操作</h3><p>点击下方按钮，可以立即为所有已启用的目标执行一次同步任务。</p><button id="manualSyncBtn">手动同步所有目标</button><pre id="logOutput" class="sync-log" style="display:none;"></pre></article>
         </div>
@@ -547,14 +561,16 @@ export function getDashboardPage(domains, ipSources, settings) {
             <article><h3>手动操作</h3><p>点击下方按钮，可以立即为所有已启用的IP源执行一次同步并上传到GitHub。</p><button id="manualSyncIpSourcesBtn">同步所有IP源</button><pre id="ipLogOutput" class="sync-log" style="display:none;"></pre></article>
         </div>
         <div id="page-settings" class="page">
-            <div class="page-header"><h2>系统设置</h2></div>
+            <div class="page-header"><h2>设置</h2></div>
             <form id="settingsForm">
                 <fieldset><legend><i class="fa-brands fa-cloudflare"></i> Cloudflare API 设置</legend><label for="cfToken">API 令牌 (Token)</label><input type="password" id="cfToken" value="" placeholder="${settings.CF_CONFIGURED ? "已配置，留空保持不变" : "输入 Cloudflare API 令牌"}"><label><input type="checkbox" id="cfClear"> 清除已保存的 Cloudflare 配置</label><label for="cfZoneId">区域 (Zone) ID</label><input type="text" id="cfZoneId" value="${escapeHtml(settings.CF_ZONE_ID || "")}">
                     <details class="tutorial-details"><summary>如何获取 API 令牌和区域 ID？</summary><div class="tutorial-content"><ol><li><strong>获取 API 令牌 (Token):</strong><ol type="a"><li>登录 <a href="https://dash.cloudflare.com/" target="_blank">Cloudflare</a>，进入 <strong>“我的个人资料”</strong> &rarr; <strong>“API 令牌”</strong>。</li><li>点击 <strong>“创建令牌”</strong>，然后选择 <strong>“编辑区域 DNS”</strong> 模板并点击“使用模板”。</li><li>在 <strong>“区域资源”</strong> 部分，选择您需要操作的具体域名区域。</li><li>点击“继续以显示摘要”和“创建令牌”，复制生成的令牌。<strong>注意：令牌仅显示一次，请妥善保管。</strong></li></ol></li><li><strong>获取区域 ID (Zone ID):</strong><ol type="a"><li>在 Cloudflare 仪表板主页，点击您需要操作的域名。</li><li>在域名的“概述”页面，您可以在右下角找到 <strong>“区域 ID”</strong>，点击即可复制。</li></ol></li></ol></div></details>
                 </fieldset>
                  <fieldset><legend><i class="fa-solid fa-network-wired"></i> 三网优选IP源设置</legend><label for="threeNetworkSource">三网采集源</label><select id="threeNetworkSource"><option value="CloudFlareYes" ${settings.THREE_NETWORK_SOURCE === "CloudFlareYes" ? "selected" : ""}>CloudFlareYes</option><option value="api.uouin.com" ${settings.THREE_NETWORK_SOURCE === "api.uouin.com" ? "selected" : ""}>api.uouin.com</option><option value="wetest.vip" ${settings.THREE_NETWORK_SOURCE === "wetest.vip" ? "selected" : ""}>wetest.vip</option></select><small>为系统预设的电信/移动/联通域名选择IP来源。更改后保存设置将自动同步一次系统域名。</small>
                 </fieldset>
-                <fieldset><legend><i class="fa-solid fa-key"></i> IP 源抓取设置</legend><label for="hostmonitKey">hostmonit 接口 Key</label><input type="password" id="hostmonitKey" value="" placeholder="留空沿用内置默认 Key（已自定义时留空保持不变）"><label><input type="checkbox" id="hostmonitClear"> 清除自定义 Key（恢复内置默认）</label><small>hostmonit 三网优选 IP 接口的公开 key，对方轮换或限流后在此更新，保存后下一次同步即生效。</small>
+                <fieldset><legend><i class="fa-solid fa-list-ol"></i> DNS 记录设置</legend><label for="maxIpsPerType">单类型记录上限 (MAX_IPS_PER_TYPE)</label><input type="number" id="maxIpsPerType" min="${MIN_MAX_IPS_PER_TYPE}" max="${MAX_MAX_IPS_PER_TYPE}" step="1" value="${normalizeMaxIpsPerType(settings.MAX_IPS_PER_TYPE)}"><small>每个 DNS 类型（A / AAAA）最多保留的记录条数，范围 ${MIN_MAX_IPS_PER_TYPE}–${MAX_MAX_IPS_PER_TYPE}。留空并保存表示恢复默认 ${DEFAULT_MAX_IPS_PER_TYPE}。</small>
+                 </fieldset>
+                 <fieldset><legend><i class="fa-solid fa-key"></i> IP 源抓取设置</legend><label for="hostmonitKey">hostmonit 接口 Key</label><input type="password" id="hostmonitKey" value="" placeholder="留空沿用内置默认 Key（已自定义时留空保持不变）"><label><input type="checkbox" id="hostmonitClear"> 清除自定义 Key（恢复内置默认）</label><small>hostmonit 三网优选 IP 接口的公开 key，对方轮换或限流后在此更新，保存后下一次同步即生效。</small>
                 </fieldset>
                 <fieldset><legend><i class="fa-brands fa-github"></i> GitHub API 设置</legend><label for="githubToken">GitHub Token</label><input type="password" id="githubToken" value="" placeholder="${settings.GITHUB_CONFIGURED ? "已配置，留空保持不变" : "具有 repo 权限的 Personal Access Token"}"><label><input type="checkbox" id="githubClear"> 清除已保存的 GitHub 配置</label><label for="githubOwner">GitHub 用户名/组织名</label><input type="text" id="githubOwner" value="${escapeHtml(settings.GITHUB_OWNER || "")}" placeholder="例如: my-username"><label for="githubRepo">仓库名称</label><input type="text" id="githubRepo" value="${escapeHtml(settings.GITHUB_REPO || "")}" placeholder="例如: my-dns-records">
                     <details class="tutorial-details"><summary>如何获取 GitHub API 信息？</summary><div class="tutorial-content"><ol><li><strong>获取 GitHub Token:</strong><ol type="a"><li>登录 <a href="https://github.com/" target="_blank">GitHub</a>，点击右上角头像，进入 <strong>“Settings”</strong>。</li><li>在左侧菜单中，选择 <strong>“Developer settings”</strong> &rarr; <strong>“Personal access tokens”</strong> &rarr; <strong>“Tokens (classic)”</strong>。</li><li>点击 <strong>“Generate new token”</strong>，并选择 <strong>“Generate new token (classic)”</strong>。</li><li>为令牌添加描述（Note），设置合适的过期时间（Expiration）。</li><li>在 <strong>“Select scopes”</strong> 部分，勾选 <code>repo</code> 权限。</li><li>点击页面底部的 <strong>“Generate token”</strong>，并复制生成的令牌。<strong>注意：令牌仅显示一次，请妥善保管。</strong></li></ol></li><li><strong>获取用户名/组织名 和 仓库名称:</strong><ol type="a"><li><strong>用户名/组织名</strong> 就是您的GitHub个人主页URL中，github.com后面的那部分，或者您组织的主页URL。</li><li><strong>仓库名称</strong> 是您在GitHub上创建的，用来存储IP文件的仓库的名字。如果仓库不存在，系统将在第一次同步时自动为您创建为私有仓库。</li></ol></li></ol></div></details>
@@ -563,8 +579,8 @@ export function getDashboardPage(domains, ipSources, settings) {
             </form>
         </div>
     </div>
-    <dialog id="domainModal"><article><header><a href="#close" aria-label="Close" class="close" onclick="window.closeModal('domainModal')"></a><h3 id="modalTitle"></h3></header><form id="domainForm"><input type="hidden" id="domainId"><label for="source_domain">克隆域名</label><input type="text" id="source_domain" placeholder="example-source.com" required><label for="target_domain_prefix">我的域名前缀</label><div class="grid"><input type="text" id="target_domain_prefix" placeholder="subdomain or @" required><span id="zoneNameSuffix" style="line-height:var(--pico-form-element-height);font-weight:700">.your-zone.com</span></div><div class="grid"><div><label for="is_deep_resolve">深度 <span class="tooltip">(?)<span class="tooltip-text">开启后，如果克隆域名是CNAME，系统将递归查找最终的IP地址进行解析。关闭则直接克隆CNAME记录本身。</span></span></label><input type="checkbox" id="is_deep_resolve" role="switch" checked></div><div><label for="ttl">TTL (秒)</label><input type="number" id="ttl" min="60" max="86400" value="60" required></div></div><label for="notes">备注 (可选)</label><textarea id="notes" rows="2" placeholder="例如：主力CDN"></textarea><footer><button type="button" class="secondary" onclick="window.closeModal('domainModal')">取消</button><button type="submit" id="saveBtn">保存</button></footer></form></article></dialog>
-    <dialog id="ipSourceModal"><article><header><a href="#close" aria-label="Close" class="close" onclick="window.closeModal('ipSourceModal')"></a><h3 id="ipSourceModalTitle"></h3></header><form id="ipSourceForm"><input type="hidden" id="ipSourceId"><div class="grid"><label for="ip_source_url">IP源地址</label><button type="button" class="outline" id="probeBtn" style="width:auto;padding:0 1rem;">探测方案</button></div><input type="text" id="ip_source_url" placeholder="https://example.com/ip_list.txt" required><progress id="probeProgress" style="display:none;"></progress><p id="probeResult" style="font-size:0.9em;"></p><label for="github_path">GitHub 文件路径</label><input type="text" id="github_path" placeholder="IP/Cloudflare.txt" required><label for="commit_message">Commit 信息</label><input type="text" id="commit_message" placeholder="Update Cloudflare IPs" required><footer><button type="button" class="secondary" onclick="window.closeModal('ipSourceModal')">取消</button><button type="submit" id="saveIpSourceBtn">保存</button></footer></form></article></dialog>
+    <dialog id="domainModal"><article><header><a href="#close" aria-label="Close" class="close" onclick="window.closeModal('domainModal')"></a><h3 id="modalTitle"></h3></header><form id="domainForm"><input type="hidden" id="domainId"><label for="source_type">IP 输入类型</label><select id="source_type" onchange="window.onDomainSourceTypeChange()"><option value="domain">域名</option><option value="url">URL</option></select><div id="domainSourceDomainGroup"><label for="source_domain">克隆域名</label><input type="text" id="source_domain" placeholder="example-source.com"></div><div id="domainSourceUrlGroup" hidden><label for="source_url">URL</label><input type="text" id="source_url" placeholder="https://example.com/ip_list.json" maxlength="2048"><div class="grid"><div><label for="domain_parse_mode">解析模式</label><select id="domain_parse_mode"><option value="auto">自动（全文提取）</option><option value="lines">按行提取</option><option value="json_path">JSON 路径</option><option value="custom_regex">自定义正则</option></select></div><div><label for="domain_parse_param">解析参数</label><input type="text" id="domain_parse_param" maxlength="512" placeholder="json_path: data.list.ips；custom_regex: 正则"></div></div><small>自动 / 按行不需要参数；JSON 路径最长 512 字符，自定义正则最长 200 字符。URL 类型固定为深度关闭。</small></div><label for="target_domain_prefix">我的域名前缀</label><div class="grid"><input type="text" id="target_domain_prefix" placeholder="subdomain or @" required><span id="zoneNameSuffix" style="line-height:var(--pico-form-element-height);font-weight:700">.your-zone.com</span></div><div class="grid"><div><label for="is_deep_resolve">深度 <span class="tooltip">(?)<span class="tooltip-text">开启后，如果克隆域名是CNAME，系统将递归查找最终的IP地址进行解析。关闭则直接克隆CNAME记录本身。</span></span></label><input type="checkbox" id="is_deep_resolve" role="switch" checked></div><div><label for="ttl">TTL (秒)</label><input type="number" id="ttl" min="60" max="86400" value="60" required></div></div><label for="notes">备注 (可选)</label><textarea id="notes" rows="2" placeholder="例如：主力CDN"></textarea><footer><button type="button" class="secondary" onclick="window.closeModal('domainModal')">取消</button><button type="submit" id="saveBtn">保存</button></footer></form></article></dialog>
+    <dialog id="ipSourceModal"><article><header><a href="#close" aria-label="Close" class="close" onclick="window.closeModal('ipSourceModal')"></a><h3 id="ipSourceModalTitle"></h3></header><form id="ipSourceForm"><input type="hidden" id="ipSourceId"><div class="grid"><label for="ip_source_url">IP源地址</label><button type="button" class="outline" id="probeBtn" style="width:auto;padding:0 1rem;">探测方案</button></div><input type="text" id="ip_source_url" placeholder="https://example.com/ip_list.txt" required><progress id="probeProgress" style="display:none;"></progress><p id="probeResult" style="font-size:0.9em;"></p><small>抓取策略是 URL 的抓取方式缓存：修改 IP 源地址后抓取策略会随 URL 变更重置，请重新探测后再保存。</small><div class="grid"><div><label for="parse_mode">解析模式</label><select id="parse_mode"><option value="auto">自动（全文提取）</option><option value="lines">按行提取</option><option value="json_path">JSON 路径</option><option value="custom_regex">自定义正则</option></select></div><div><label for="parse_param">解析参数</label><input type="text" id="parse_param" maxlength="512" placeholder="json_path: data.list.ips；custom_regex: 正则"></div></div><small>自动 / 按行不需要参数；JSON 路径最长 512 字符，自定义正则最长 200 字符。</small><label for="github_path">GitHub 文件路径</label><input type="text" id="github_path" placeholder="IP/Cloudflare.txt" required><label for="commit_message">Commit 信息</label><input type="text" id="commit_message" placeholder="Update Cloudflare IPs" required><footer><button type="button" class="secondary" onclick="window.closeModal('ipSourceModal')">取消</button><button type="submit" id="saveIpSourceBtn">保存</button></footer></form></article></dialog>
     <script>${getDashboardScript(domains, ipSources, settings)}</script>`;
 }
 
@@ -632,13 +648,17 @@ function getDashboardScript(domains, ipSources, settings) {
   let currentIpSources = ${safeJsonForScript(ipSources)};
   let currentSettings = ${safeJsonForScript(settings)};
   let zoneName = currentSettings.zoneName || '';
-  let successfulProbeStrategy = null;
 
   // I2: 客户端渲染统一转义助手（与服务器端 escapeHtml 同语义）
   // 客户端转义助手来自 ./dashboard-helpers.js，注入后可直接被行为测试覆盖。
   const esc = ${escapeHtmlClient.toString()};
   // 按钮可用性判定与服务器端渲染共用同一份实现（issue #21）
   const canAddDomains = ${canAddDomains.toString()};
+  // 保存体组装来自 ./dashboard-helpers.js（issue #52）：URL/域名两种来源的字段互斥规则只有一处实现
+  const buildDomainSavePayload = ${buildDomainSavePayload.toString()};
+  // IP 源提交体同样来自 ./dashboard-helpers.js（issue #57）：保存与探测的解析参数归一只有一处实现
+  const buildIpSourceSavePayload = ${buildIpSourceSavePayload.toString()};
+  const buildIpSourceProbePayload = ${buildIpSourceProbePayload.toString()};
 
   const formatBeijingTime = (isoStr) => { if (!isoStr) return '从未'; const d = new Date(isoStr); return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(d).replace(/\\//g, '-'); };
 ` +
@@ -676,7 +696,7 @@ function getDashboardRenderScript() {
       if (currentIpSources.length > 0) {
         container.innerHTML = '<div class="domain-list-head row-grid"><span>GitHub 文件路径</span><span>抓取策略</span><span>上次同步</span><span></span></div>' + currentIpSources.map(renderIpSourceCard).join('');
       } else {
-        container.innerHTML = '<div class="empty-state"><p>暂无 IP 源，点右上角「添加IP源」新建一条（需先在「系统设置」填好 GitHub Token / 用户名 / 仓库）。</p></div>';
+        container.innerHTML = '<div class="empty-state"><p>暂无 IP 源，点右上角「添加IP源」新建一条（需先在「设置」填好 GitHub Token / 用户名 / 仓库）。</p></div>';
       }
   }
 `;
@@ -694,6 +714,8 @@ function getDashboardInteractionScript() {
           document.getElementById('modalTitle').textContent = id ? '编辑克隆目标' : '添加新克隆目标';
           document.getElementById('zoneNameSuffix').textContent = zoneName ? '.' + zoneName : '（保存时自动获取）';
           document.getElementById('is_deep_resolve').checked = true;
+          // 新增默认按域名输入；存量行 source_type 可能为 NULL，按 domain 处理（issue #52）
+          window.setDomainSourceType('domain');
           if (id) {
               const domain = currentDomains.find(d => d.id === id);
               document.getElementById('domainId').value = domain.id;
@@ -707,14 +729,18 @@ function getDashboardInteractionScript() {
                   }
               }
               document.getElementById('target_domain_prefix').value = prefix;
+              window.setDomainSourceType(domain.source_type === 'url' ? 'url' : 'domain');
               document.getElementById('source_domain').value = domain.source_domain;
+              document.getElementById('source_url').value = domain.source_url || '';
+              // 存量数据 parse_mode 可能为 NULL：按 auto 回填，避免编辑时把解析配置清成空
+              document.getElementById('domain_parse_mode').value = domain.parse_mode || 'auto';
+              document.getElementById('domain_parse_param').value = domain.parse_param || '';
               document.getElementById('is_deep_resolve').checked = !!domain.is_deep_resolve;
               document.getElementById('ttl').value = domain.ttl;
               document.getElementById('notes').value = domain.notes;
           } else { document.getElementById('domainId').value = ''; }
       } else if (modalId === 'ipSourceModal') {
           const form = document.getElementById('ipSourceForm'); form.reset();
-          successfulProbeStrategy = null;
           document.getElementById('probeProgress').style.display = 'none';
           document.getElementById('probeResult').textContent = '';
           document.getElementById('saveIpSourceBtn').disabled = true;
@@ -726,9 +752,12 @@ function getDashboardInteractionScript() {
               document.getElementById('ip_source_url').value = source.url;
               document.getElementById('github_path').value = source.github_path;
               document.getElementById('commit_message').value = source.commit_message;
+              // 存量数据 parse_mode 可能为 NULL：按 auto 回填，避免编辑时把解析配置清成空
+              document.getElementById('parse_mode').value = source.parse_mode || 'auto';
+              document.getElementById('parse_param').value = source.parse_param || '';
               if (source.fetch_strategy) {
-                  successfulProbeStrategy = source.fetch_strategy;
-                  document.getElementById('probeResult').textContent = \`已缓存策略: \${successfulProbeStrategy}\`;
+                  // 缓存策略只用于展示与「能不能点保存」，不进保存体（issue #69）
+                  document.getElementById('probeResult').textContent = \`已缓存策略: \${source.fetch_strategy}\`;
                   document.getElementById('saveIpSourceBtn').disabled = false;
               }
           } else {
@@ -738,10 +767,39 @@ function getDashboardInteractionScript() {
       modal.showModal();
   };
   window.closeModal = (modalId) => { document.getElementById(modalId).close(); };
+  // IP 输入类型切换（issue #52）：域名走 DoH，URL 走抓取；URL 类型强制关闭深度解析
+  window.setDomainSourceType = (type) => {
+      const isUrl = type === 'url';
+      document.getElementById('source_type').value = isUrl ? 'url' : 'domain';
+      document.getElementById('domainSourceDomainGroup').hidden = isUrl;
+      document.getElementById('domainSourceUrlGroup').hidden = !isUrl;
+      document.getElementById('source_domain').required = !isUrl;
+      document.getElementById('source_url').required = isUrl;
+      const deepSwitch = document.getElementById('is_deep_resolve');
+      deepSwitch.disabled = isUrl;
+      // URL 固定深度关闭；从 URL 切回域名时恢复默认开启，否则会静默保存成深度关闭的目标
+      deepSwitch.checked = !isUrl;
+  };
+  window.onDomainSourceTypeChange = () => {
+      window.setDomainSourceType(document.getElementById('source_type').value);
+  };
 
   async function saveDomain() {
       const id = document.getElementById('domainId').value;
-      const payload = { source_domain: document.getElementById('source_domain').value, target_domain_prefix: document.getElementById('target_domain_prefix').value.trim(), is_deep_resolve: document.getElementById('is_deep_resolve').checked, ttl: parseInt(document.getElementById('ttl').value), notes: document.getElementById('notes').value };
+      const sourceType = document.getElementById('source_type').value;
+      const parseMode = document.getElementById('domain_parse_mode').value;
+      const parseParam = document.getElementById('domain_parse_param').value.trim();
+      const payload = buildDomainSavePayload({
+          sourceType: sourceType,
+          sourceDomain: document.getElementById('source_domain').value,
+          sourceUrl: document.getElementById('source_url').value,
+          parseMode: parseMode,
+          parseParam: parseParam,
+          targetDomainPrefix: document.getElementById('target_domain_prefix').value,
+          isDeepResolve: document.getElementById('is_deep_resolve').checked,
+          ttl: document.getElementById('ttl').value,
+          notes: document.getElementById('notes').value,
+      });
       const url = id ? '/api/domains/' + id : '/api/domains'; const method = id ? 'PUT' : 'POST';
       try { const result = await apiFetch(url, { method, body: JSON.stringify(payload) }); showNotification(result.message, 'success'); closeModal('domainModal'); await refreshDomains(); } catch (e) { showNotification(\`保存失败: \${e.message}\`, 'error'); }
   }
@@ -779,7 +837,13 @@ function getDashboardInteractionScript() {
 
   async function saveIpSource() {
       const id = document.getElementById('ipSourceId').value;
-      const payload = { url: document.getElementById('ip_source_url').value, github_path: document.getElementById('github_path').value, commit_message: document.getElementById('commit_message').value, fetch_strategy: successfulProbeStrategy };
+      const payload = buildIpSourceSavePayload({
+          url: document.getElementById('ip_source_url').value,
+          githubPath: document.getElementById('github_path').value,
+          commitMessage: document.getElementById('commit_message').value,
+          parseMode: document.getElementById('parse_mode').value,
+          parseParam: document.getElementById('parse_param').value,
+      });
       const apiUrl = id ? \`/api/ip_sources/\${id}\` : '/api/ip_sources';
       const method = id ? 'PUT' : 'POST';
       try { const result = await apiFetch(apiUrl, { method, body: JSON.stringify(payload) }); showNotification(result.message, 'success'); closeModal('ipSourceModal'); await refreshIpSources(); } catch (e) { showNotification(\`保存失败: \${e.message}\`, 'error'); }
@@ -860,6 +924,8 @@ function getDashboardSyncScript() {
       const newThreeNetworkSource = document.getElementById('threeNetworkSource').value;
 
       const settingsToSave = { THREE_NETWORK_SOURCE: newThreeNetworkSource };
+      // issue #49：单类型记录上限；留空即清除，服务端读取时回退默认 20
+      settingsToSave.MAX_IPS_PER_TYPE = document.getElementById('maxIpsPerType').value.trim();
       if (document.getElementById('cfClear').checked) {
           Object.assign(settingsToSave, { CF_API_TOKEN: null, CF_ZONE_ID: null });
       } else {
@@ -903,6 +969,7 @@ function getDashboardSyncScript() {
           document.getElementById('githubClear').checked = false;
           document.getElementById('cfToken').value = '';
           document.getElementById('cfZoneId').value = currentSettings.CF_ZONE_ID || '';
+          document.getElementById('maxIpsPerType').value = currentSettings.MAX_IPS_PER_TYPE;
           document.getElementById('githubToken').value = '';
           document.getElementById('githubOwner').value = currentSettings.GITHUB_OWNER || '';
           document.getElementById('githubRepo').value = currentSettings.GITHUB_REPO || '';
@@ -965,13 +1032,20 @@ function getDashboardBootstrapScript() {
           progress.style.display = 'block';
           progress.removeAttribute('value');
           resultElem.textContent = '正在探测...';
-          successfulProbeStrategy = null;
 
           try {
-              const result = await apiFetch('/api/ip_sources/probe', { method: 'POST', body: JSON.stringify({ url }) });
+              // 探测体与保存体同源（issue #57）：解析参数归一不再各写一遍
+              const probePayload = buildIpSourceProbePayload({
+                  url: url,
+                  parseMode: document.getElementById('parse_mode').value,
+                  parseParam: document.getElementById('parse_param').value,
+              });
+              const result = await apiFetch('/api/ip_sources/probe', { method: 'POST', body: JSON.stringify(probePayload) });
               progress.setAttribute('value', '100');
-              resultElem.textContent = \`探测成功！策略: \${result.strategy} | 发现 \${result.ipCount} 个IP\`;
-              successfulProbeStrategy = result.strategy;
+              const samples = [];
+              if (result.sampleIps && result.sampleIps.length) samples.push(\`IPv4 样例: \${result.sampleIps.join(', ')}\`);
+              if (result.sampleIpv6 && result.sampleIpv6.length) samples.push(\`IPv6 样例: \${result.sampleIpv6.join(', ')}\`);
+              resultElem.textContent = \`探测成功！策略: \${result.strategy} | 发现 \${result.ipv4Count} 个IPv4、\${result.ipv6Count} 个IPv6\` + (samples.length ? \` | \${samples.join(' | ')}\` : '');
               saveBtn.disabled = false;
           } catch (error) {
               progress.style.display = 'none';

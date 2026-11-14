@@ -4,6 +4,7 @@
 // 因为它们依赖具体路由的响应形状，搬进来反而更难读。
 
 import { MAX_BATCH_SIZE } from "../util/batch-size.ts";
+import { MAX_MAX_IPS_PER_TYPE, MIN_MAX_IPS_PER_TYPE } from "../util/max-ips-per-type.ts";
 
 /** Cloudflare 侧配置键：令牌与区域 ID 必须成对存在 */
 export const CF_CONFIG_KEYS = ["CF_API_TOKEN", "CF_ZONE_ID"] as const;
@@ -30,6 +31,33 @@ export function isHostmonitKeyConfigured(stored: string | null | undefined): boo
     return normalizeHostmonitKey(stored) !== "";
 }
 
+/**
+ * DNS 单类型记录上限的设置键（issue #49 / 方案 §8.4）。
+ * 默认 20，范围 1–200 整数；数值常量与读取归一放在 util/max-ips-per-type.ts
+ * （与 batch-size.ts 同形），这里只留键名与写入白名单。
+ */
+export const MAX_IPS_PER_TYPE_KEY = "MAX_IPS_PER_TYPE";
+
+/**
+ * 整数范围判据：把折叠后的文本按 Number 解析为整数且落在 [min, max] 才通过。
+ * folded 为 null 表示该键已被判为显式清除（清除语义由调用方的 isExplicitClear 决定），
+ * 单看本函数不合法，避免「清除」被同时当成一个可落库的数值。
+ */
+function isIntInRange(folded: string | null, min: number, max: number): boolean {
+    if (folded === null) return false;
+    const n = Number(folded);
+    return Number.isInteger(n) && n >= min && n <= max;
+}
+
+/**
+ * 请求体里的这个值是否表达「显式清除」：null / undefined，或字符串 trim 后为空。
+ * 不能用折叠后的 settings[key] === null 判断——非字符串值 String([]) 也会折叠成空串，
+ * 那种「类型不对却折叠成空」的输入必须按非法值拒绝（方案 §9.5：1–200 整数，否则 400）。
+ */
+function isExplicitClear(value: unknown): boolean {
+    return value === null || value === undefined || (typeof value === "string" && value.trim() === "");
+}
+
 /** 用户可在设置页写入的全部配置键（配对校验与合并有效配置时使用） */
 export const CONFIG_SETTING_KEYS = [...CF_CONFIG_KEYS, ...GITHUB_CONFIG_KEYS] as const;
 
@@ -39,6 +67,7 @@ export const WRITABLE_SETTING_KEYS: ReadonlySet<string> = new Set<string>([
     HOSTMONIT_API_KEY,
     "THREE_NETWORK_SOURCE",
     "BATCH_SIZE",
+    MAX_IPS_PER_TYPE_KEY,
 ]);
 
 /** 密钥类键：空字符串表示「保持不变」，不能被当成清除指令 */
@@ -55,7 +84,7 @@ export const SENSITIVE_SETTINGS_KEYS: ReadonlySet<string> = new Set<string>([
     "PASSWORD_SALT",
 ]);
 
-/** 清洗结果：白名单过滤 + 空值语义 + BATCH_SIZE 范围，任一失败即整批拒绝 */
+/** 清洗结果：白名单过滤 + 空值语义 + BATCH_SIZE / MAX_IPS_PER_TYPE 范围，任一失败即整批拒绝 */
 export type SettingsInputResult = { ok: true; settings: Record<string, string | null> } | { ok: false; error: string };
 
 /**
@@ -64,6 +93,9 @@ export type SettingsInputResult = { ok: true; settings: Record<string, string | 
  * - null / undefined 表示显式清除
  * - 空字符串：Secret 类键表示「保持不变」，其它键表示清除
  * - BATCH_SIZE 必须是 1..MAX 的整数，负数在 SQLite LIMIT 中等于无上限
+ * - MAX_IPS_PER_TYPE 必须是 1..200 的整数（判据与 BATCH_SIZE 同风格，Number 可解析的
+ *   十六进制/科学计数写法一视同仁）；null 与「字符串空串」是显式清除（读取时回退默认 20），
+ *   非清除语义的非法值一律整批拒绝
  */
 export function normalizeSettingsInput(raw: Record<string, unknown>): SettingsInputResult {
     const settings: Record<string, string | null> = {};
@@ -80,11 +112,18 @@ export function normalizeSettingsInput(raw: Record<string, unknown>): SettingsIn
                 settings[key] = text;
             }
         }
-        if (key === "BATCH_SIZE") {
-            const n = Number(settings[key]);
-            if (settings[key] === null || !Number.isInteger(n) || n < 1 || n > MAX_BATCH_SIZE) {
-                return { ok: false, error: `BATCH_SIZE 必须为 1 到 ${MAX_BATCH_SIZE} 之间的整数。` };
-            }
+        if (key === "BATCH_SIZE" && !isIntInRange(settings[key], 1, MAX_BATCH_SIZE)) {
+            return { ok: false, error: `BATCH_SIZE 必须为 1 到 ${MAX_BATCH_SIZE} 之间的整数。` };
+        }
+        if (
+            key === MAX_IPS_PER_TYPE_KEY &&
+            !isExplicitClear(value) &&
+            !isIntInRange(settings[key], MIN_MAX_IPS_PER_TYPE, MAX_MAX_IPS_PER_TYPE)
+        ) {
+            return {
+                ok: false,
+                error: `MAX_IPS_PER_TYPE 必须为 ${MIN_MAX_IPS_PER_TYPE} 到 ${MAX_MAX_IPS_PER_TYPE} 之间的整数。`,
+            };
         }
     }
     return { ok: true, settings };

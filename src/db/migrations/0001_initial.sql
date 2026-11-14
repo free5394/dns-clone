@@ -21,6 +21,12 @@ CREATE TABLE IF NOT EXISTS domains (
     last_sync_error TEXT,
     is_enabled INTEGER DEFAULT 1 NOT NULL,
     is_system INTEGER NOT NULL DEFAULT 0,
+    -- issue #49 / 方案 §8.1：与 expectedSchemas 保持一致（全部可空）
+    source_type TEXT,
+    source_url TEXT,
+    parse_mode TEXT,
+    parse_param TEXT,
+    fetch_strategy TEXT,
     UNIQUE(target_domain)
 );
 
@@ -45,5 +51,8 @@ CREATE TABLE IF NOT EXISTS ip_sources (
     last_synced_time TIMESTAMP,
     last_sync_status TEXT DEFAULT 'pending',
     last_sync_error TEXT,
-    is_enabled INTEGER DEFAULT 1 NOT NULL
+    is_enabled INTEGER DEFAULT 1 NOT NULL,
+    -- issue #49 / 方案 §8.2：与 expectedSchemas 保持一致（全部可空）
+    parse_mode TEXT,
+    parse_param TEXT
 );

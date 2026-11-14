@@ -5,6 +5,8 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { env } from "cloudflare:test";
 import {
     DEFAULT_HOSTMONIT_API_KEY,
+    FETCH_STRATEGIES,
+    fetchIpsForTarget,
     fetchIpsFromSource,
     fetchIpsWithStrategy,
     fetchThreeNetworkIps,
@@ -12,19 +14,31 @@ import {
     describeFetchError,
 } from "../src/sync/ip-sources.ts";
 import { HttpError, TimeoutError } from "../src/util/http-error.ts";
+import { makeIpSourceRow, type IpSourceRow } from "./ip-source-row.ts";
+import { stubHostmonitOnlyFetch } from "./hostmonit-stub.ts";
 
 afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
 });
 
-const makeSource = (fetch_strategy = "direct_regex") => ({
-    id: 1,
-    url: "https://example.com/ips.txt",
-    github_path: "ips.txt",
-    commit_message: "update",
-    fetch_strategy,
-});
+/** 用例侧的简写：只关心抓取策略，其余字段取工厂默认值。 */
+const makeSource = (fetch_strategy: IpSourceRow["fetch_strategy"] = "direct_regex") =>
+    makeIpSourceRow({ fetch_strategy });
+
+/**
+ * 断言 promise 一定拒绝，并把拒绝值收窄成 Error。
+ * 用 then 而非 catch：成功分支显式抛错后返回类型只剩 Error；catch 会保留成功值分支，
+ * err.message 取不到。非 Error 拒绝值用 String() 兜底，避免 err.message 为 undefined 误导断言。
+ */
+function rejectionAsError(promise: Promise<unknown>): Promise<Error> {
+    return promise.then(
+        () => {
+            throw new Error("应当失败");
+        },
+        (e: unknown) => (e instanceof Error ? e : new Error(String(e)))
+    );
+}
 
 describe("策略层错误路径（D3 类别化）", () => {
     it("源返回 502 时，聚合文案带 HTTP 类别与各策略摘要", async () => {
@@ -32,12 +46,7 @@ describe("策略层错误路径（D3 类别化）", () => {
             "fetch",
             vi.fn(async () => new Response("boom", { status: 502 }))
         );
-        const err = await fetchIpsFromSource(makeSource()).then(
-            () => {
-                throw new Error("应当失败");
-            },
-            (e: unknown) => e as Error
-        );
+        const err = await rejectionAsError(fetchIpsFromSource(makeSource()));
         expect(err.message).toContain("所有抓取策略均未能从该URL获取到IP");
         expect(err.message).toContain("HTTP 502");
         expect(err.message).toContain("direct_regex");
@@ -65,17 +74,24 @@ describe("策略层错误路径（D3 类别化）", () => {
         await assertion;
     });
 
-    it("源返回 200 但页面无 IP 时，聚合文案逐条标注未匹配，类别为无可用IP", async () => {
+    // issue #55：源站返回 200 但正文里没有 IP 属于「成功但 0 条」，IP 源链路（fetchIpsWithStrategy /
+    // fetchIpsFromSource）据此返回空结果，交由同步层把主文件写成空内容并记 success，不再抛错。
+    it("源返回 200 但页面无 IP 时返回空结果，不再抛 [无可用IP]（issue #55）", async () => {
         vi.stubGlobal(
             "fetch",
             vi.fn(async () => new Response("<table><tbody></tbody></table>", { status: 200 }))
         );
-        const err = await fetchIpsFromSource(makeSource()).then(
-            () => {
-                throw new Error("应当失败");
-            },
-            (e: unknown) => e as Error
+        await expect(fetchIpsFromSource(makeSource())).resolves.toEqual([]);
+    });
+
+    // 同样的空正文，在「未显式要求 0 条当成功」的调用方（不传 emptyWhenNoIps）仍是错误：
+    // 该分支保留诊断价值，逐策略标注谁没匹配到 IP，便于换源/换解析配置。
+    it("不传 emptyWhenNoIps 时仍抛 [无可用IP] 并逐条标注未匹配", async () => {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response("<table><tbody></tbody></table>", { status: 200 }))
         );
+        const err = await rejectionAsError(fetchIpsForTarget(makeSource()));
         expect(err.message).toContain("[无可用IP]");
         expect(err.message).toContain("direct_regex: 未匹配到 IP");
         expect(err.message).toContain("phantomjs_cloud: 未匹配到 IP");
@@ -95,8 +111,8 @@ describe("策略层错误路径（D3 类别化）", () => {
                 return Promise.resolve(new Response("<table><tbody></tbody></table>", { status: 200 }));
             })
         );
-        const pending = fetchIpsFromSource(makeSource());
-        const settled = pending.catch((e: unknown) => e as Error);
+        // 未传 emptyWhenNoIps（直调 target 层）时：空正文与抛错混合按真实错误类别收口
+        const settled = rejectionAsError(fetchIpsForTarget(makeSource()));
         for (let i = 0; i < 4; i++) {
             await vi.advanceTimersByTimeAsync(20000);
         }
@@ -144,27 +160,12 @@ describe("回退顺序与策略字段", () => {
 
 describe("新增抓取策略（直连被拦 / SPA 渲染）", () => {
     it("hostmonit 源命中专用 API 策略，不依赖 phantomjs 配额", async () => {
-        const calls: string[] = [];
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async (url: string) => {
-                calls.push(url);
-                if (url.includes("api.hostmonit.com/get_optimization_ip")) {
-                    return new Response(
-                        JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }, { ip: "198.41.208.168" }] }),
-                        {
-                            status: 200,
-                        }
-                    );
-                }
-                return new Response("forbidden", { status: 403 });
-            })
-        );
+        const stub = stubHostmonitOnlyFetch({ ips: ["172.67.172.3", "198.41.208.168"] });
         const source = { ...makeSource("direct_regex"), url: "https://stock.hostmonit.com/CloudFlareYes" };
         const ips = await fetchIpsFromSource(source);
         expect(ips).toEqual(["172.67.172.3", "198.41.208.168"]);
         expect(source.fetch_strategy).toBe("hostmonit_api");
-        expect(calls.some((u) => u.includes("api.hostmonit.com"))).toBe(true);
+        expect(stub.calls.some((u) => u.includes("api.hostmonit.com"))).toBe(true);
     });
 
     it("直连被 403 时 jina_reader 回退可读，并写回策略", async () => {
@@ -194,6 +195,26 @@ describe("新增抓取策略（直连被拦 / SPA 渲染）", () => {
         );
         await expect(fetchIpsFromSource(makeSource())).rejects.toThrow("所有抓取策略均未能从该URL获取到IP");
         expect(calls.some((u) => u.includes("api.hostmonit.com"))).toBe(false);
+    });
+
+    // issue #68：缓存策略原先不过适用性门控，hostmonit_api 会忽略传入 url 直接返回自己的列表，
+    // 于是「别的站点 + 历史 hostmonit 策略」会把 A 站写成 B 站订阅内容且日志显示成功。
+    it("已缓存的 hostmonit 策略遇到非 hostmonit URL 时不入链（issue #68）", async () => {
+        const stub = stubHostmonitOnlyFetch();
+        const source = makeSource("hostmonit_api");
+        await expect(fetchIpsFromSource(source)).rejects.toThrow("所有抓取策略均未能从该URL获取到IP");
+        expect(stub.calls.some((u) => u.includes("api.hostmonit.com"))).toBe(false);
+        // 未命中就没有「回退成功」可写入，缓存策略保持原样，交由下一次写入或探测清理
+        expect(source.fetch_strategy).toBe("hostmonit_api");
+    });
+
+    it("已缓存的 hostmonit 策略在 hostmonit URL 上仍然优先命中（回归不破）", async () => {
+        const stub = stubHostmonitOnlyFetch();
+        const source = { ...makeSource("hostmonit_api"), url: "https://stock.hostmonit.com/CloudFlareYes" };
+        const ips = await fetchIpsFromSource(source);
+        expect(ips).toEqual(["172.67.172.3"]);
+        expect(stub.calls[0]).toContain("api.hostmonit.com");
+        expect(source.fetch_strategy).toBe("hostmonit_api");
     });
 });
 
@@ -244,18 +265,8 @@ async function writeHostmonitKey(value: string | null): Promise<void> {
 
 /** 只让 hostmonit 专用接口成功，并记录请求体里的 key */
 function stubHostmonitFetch(): { bodies: string[] } {
-    const bodies: string[] = [];
-    vi.stubGlobal(
-        "fetch",
-        vi.fn(async (url: string, init?: RequestInit) => {
-            if (url.includes("api.hostmonit.com/get_optimization_ip")) {
-                bodies.push(String(init?.body ?? ""));
-                return new Response(JSON.stringify({ code: 200, info: [{ ip: "172.67.172.3" }] }), { status: 200 });
-            }
-            return new Response("forbidden", { status: 403 });
-        })
-    );
-    return { bodies };
+    const stub = stubHostmonitOnlyFetch();
+    return { bodies: stub.bodies };
 }
 
 describe("hostmonit 抓取 key 配置化 (issue #25)", () => {
@@ -305,5 +316,104 @@ describe("hostmonit 抓取 key 配置化 (issue #25)", () => {
         await fetchIpsWithStrategy(hostmonitSource(), env.WUYA);
 
         expect(JSON.parse(bodies[0])).toEqual({ key: DEFAULT_HOSTMONIT_API_KEY });
+    });
+});
+
+// issue #50：抓取策略只返回正文，IPv4 / IPv6 由统一解析层按配置提取
+describe("统一解析层接入 (issue #50)", () => {
+    const parseSource = (mode: string | null, param: string | null = null) =>
+        makeIpSourceRow({ parse_mode: mode, parse_param: param });
+
+    it("策略层返回原始正文，不自行提取 IP", async () => {
+        const body = "<html><body>1.1.1.1\n2606:4700:4700::1111</body></html>";
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response(body, { status: 200 }))
+        );
+
+        const text = await FETCH_STRATEGIES.direct_regex("https://example.com/ips.txt");
+
+        expect(text).toBe(body);
+    });
+
+    it("auto 模式同时解析出 IPv4 与 IPv6，各自排序去重", async () => {
+        const body = ["3.3.3.3", "2606:4700:4700::1111", "1.1.1.1", "2001:db8::1", "3.3.3.3"].join("\n");
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response(body, { status: 200 }))
+        );
+
+        const result = await fetchIpsWithStrategy(parseSource("auto"));
+
+        expect(result.ipv4).toEqual(["1.1.1.1", "3.3.3.3"]);
+        expect(result.ipv6).toEqual(["2001:db8::1", "2606:4700:4700::1111"]);
+        expect(result.strategy).toBe("direct_regex");
+    });
+
+    it("json_path 模式只取配置路径下的地址", async () => {
+        const body = JSON.stringify({
+            data: { ips: ["9.9.9.9", "2001:db8::1"] },
+            other: ["8.8.4.4"],
+        });
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response(body, { status: 200 }))
+        );
+
+        const result = await fetchIpsWithStrategy(parseSource("json_path", "data.ips"));
+
+        expect(result.ipv4).toEqual(["9.9.9.9"]);
+        expect(result.ipv6).toEqual(["2001:db8::1"]);
+    });
+
+    it("custom_regex 模式按捕获组提取", async () => {
+        const body = ["IP=5.5.5.5", "IP=6.6.6.6", "TXT=7.7.7.7"].join("\n");
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response(body, { status: 200 }))
+        );
+
+        const result = await fetchIpsWithStrategy(parseSource("custom_regex", "IP=(\\d+\\.\\d+\\.\\d+\\.\\d+)"));
+
+        expect(result.ipv4).toEqual(["5.5.5.5", "6.6.6.6"]);
+        expect(result.ipv6).toEqual([]);
+    });
+
+    it("lines 模式按行严格校验，忽略夹杂文本", async () => {
+        const body = ["9.9.9.9", "ip=1.2.3.4", "1.1.1.1"].join("\n");
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response(body, { status: 200 }))
+        );
+
+        const result = await fetchIpsWithStrategy(parseSource("lines"));
+
+        expect(result.ipv4).toEqual(["1.1.1.1", "9.9.9.9"]);
+        expect(result.ipv6).toEqual([]);
+    });
+
+    it("只有 IPv6 也算策略命中，不再回退到下一个策略", async () => {
+        const fetchMock = vi.fn(async () => new Response("2606:4700:4700::1111", { status: 200 }));
+        vi.stubGlobal("fetch", fetchMock);
+
+        const result = await fetchIpsWithStrategy(parseSource("auto"));
+
+        expect(result.ipv4).toEqual([]);
+        expect(result.ipv6).toEqual(["2606:4700:4700::1111"]);
+        expect(result.strategy).toBe("direct_regex");
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("存量数据 parse_mode 为 NULL 时按 auto 解析", async () => {
+        const body = ["1.1.1.1", "2606:4700:4700::1111"].join("\n");
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response(body, { status: 200 }))
+        );
+
+        const result = await fetchIpsWithStrategy(parseSource(null, null));
+
+        expect(result.ipv4).toEqual(["1.1.1.1"]);
+        expect(result.ipv6).toEqual(["2606:4700:4700::1111"]);
     });
 });

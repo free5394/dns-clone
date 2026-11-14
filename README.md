@@ -5,13 +5,14 @@
 - [🚀 项目是干嘛的？](#-项目是干嘛的)
 - [✨ 主要功能](#-主要功能)
 - [🧠 工作原理](#-工作原理)
-- [🛠️ 网页部署指南（纯小白教程）](#️-网页部署指南纯小白教程)
-- [🧑‍💻 开发者模式（CLI 本地调试 / 部署）](#-开发者模式cli-本地调试--部署)
+- [🛠️ 网页部署指南（纯小白教程）](#️-网页部署指南-纯小白教程)
+- [🧑‍💻 开发者模式（CLI 本地调试 / 部署）](#‍-开发者模式cli-本地调试--部署)
 - [📡 API 接口文档](#-api-接口文档)
 - [🗄️ 数据表结构](#️-数据表结构)
 - [🔒 安全机制](#-安全机制)
 - [❓ 常见问题（FAQ）](#-常见问题faq)
 - [🩺 故障排查](#-故障排查)
+- [⬆️ 升级须知](#️-升级须知)
 - [⚠️ 重要声明](#️-重要声明)
 
 ---
@@ -71,26 +72,79 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 三种同步模式
+### 四种同步模式
 
-`sync/domains.ts` 中 `resolveRecordsForDomain` 按源域名前缀分流：
+`sync/domains.ts` 中 `resolveRecordsForDomain` 按「IP 输入类型 → 内置源前缀 → 深度开关」的顺序分流：
 
 | 模式             | 触发条件                                      | 行为                                                                    |
 | ---------------- | --------------------------------------------- | ----------------------------------------------------------------------- |
+| **URL 输入**     | `source_type = 'url'`                         | 抓取 `source_url`，按解析模式取出 IP，写 A/AAAA 记录（单类型上限见下）  |
 | **系统内置三网** | `source_domain` 以 `internal:hostmonit:` 开头 | 从 hostmonit 等 HTML 表格源抓取移动/电信/联通 IP，直接写 A 记录         |
 | **深度解析**     | `is_deep_resolve = 1`                         | 递归追踪 CNAME 链（最多 10 层），直到取出最终 IPv4/IPv6，写 A/AAAA 记录 |
 | **浅层克隆**     | `is_deep_resolve = 0`                         | 直接克隆源域名的 CNAME 记录（源必须是 CNAME）                           |
 
+### IP 输入类型与解析模式
+
+克隆目标有两种 IP 输入类型，由 `domains.source_type` 决定（NULL 按 `domain` 处理，存量数据无需回填）：
+
+- **`domain`（域名，默认）**：原来的行为，深度开关可自由切换。
+- **`url`（URL）**：填一个 `http(s)` 地址，系统抓取后解析出 IP 写 A/AAAA。URL 的 hostname 会派生为 `source_domain`，用于在 Cloudflare 上定位同名记录。**URL 类型固定关闭深度解析**——深度解析追踪的是 CNAME 链，对「抓一个 IP 列表接口」没有意义，所以保存时 `is_deep_resolve` 被强制置 0。
+
+`url` 类型由 `domains.parse_mode` 与 `domains.parse_param` 描述怎么从响应正文里取 IP（`ip_sources` 用同名两列，语义一致）：
+
+| 解析模式       | `parse_param`              | 行为                                                       |
+| -------------- | -------------------------- | ---------------------------------------------------------- |
+| `auto`（默认） | 不需要                     | 全文提取，兼容 HTML 表格、JSON 与纯文本                    |
+| `lines`        | 不需要                     | 按行与逗号 / 空白切分 token，逐 token 严格校验             |
+| `json_path`    | JSON 点路径，最长 512 字符 | 支持数组索引，取出字符串或字符串数组，例如 `data.list.ips` |
+| `custom_regex` | 正则，最长 200 字符        | 取命名组 `ip`，没有则取捕获组 1（不拿整段匹配兜底）        |
+
+几条运行期约定：
+
+- 解析模式写 `NULL`、空串或未知值一律按 `auto` 读取，因此旧数据与新数据走同一条路径。
+- `custom_regex` 在保存 / 探测时做静态拦截（嵌套量词、分支重叠等高风险形态），作为 ReDoS 兜底。
+- 解析前统一把正文截断到 512 KB（四种模式都生效，是入口处的兜底），避免超大响应拖垮 worker。
+- 抓取失败时保留上次成功写入的记录，本轮记 `failed`；抓取成功但解析出 0 条时，如果目标原本有记录则记 `failed`，原本就没有记录则记 `no_change`。
+- 同一批同步里同一个 URL + 解析配置只抓一次，多个目标共享结果。
+
+### 单类型记录上限（`MAX_IPS_PER_TYPE`）
+
+不管 IP 来自哪种模式，写入 DNS 前都会按记录类型分别截断：**A 最多 N 条、AAAA 最多 N 条，CNAME 不截断**。
+
+| 项       | 取值                                                                        |
+| -------- | --------------------------------------------------------------------------- |
+| 默认值   | 20                                                                          |
+| 可设范围 | 1–200 的整数                                                                |
+| 配置入口 | 后台 **系统设置 → DNS 记录设置 → 单类型记录上限 (MAX_IPS_PER_TYPE)**        |
+| 留空含义 | 显式清除自定义值，回落默认 20（与「清除自定义 hostmonit key」同属清除语义） |
+
+> ⚠️ 上限对**存量域名同样生效**：某个目标的源站单类型原本超过 20 条时，下一次同步会把超出部分的记录删掉。这是统一上限的既定行为，升级前请确认可以接受（见 [⬆️ 升级须知](#️-升级须知)）。
+
+### IPv6 伴生文件
+
+IP 源同步到 GitHub 时，**主文件恒为 IPv4 列表**（每行一个，保持存量格式不变），IPv6 写到由主文件路径派生出的**伴生文件**：
+
+| 主文件 `github_path` | 伴生文件路径           | 派生规则                                   |
+| -------------------- | ---------------------- | ------------------------------------------ |
+| `IP/Cloudflare.txt`  | `IP/Cloudflare-v6.txt` | 以 `.txt` 结尾：去掉 `.txt` 再加 `-v6.txt` |
+| `IP/list`            | `IP/list-v6`           | 其他情况：直接追加 `-v6`                   |
+
+- IPv6 列表**非空** → 写入 / 更新伴生文件；**为空** → 删除远端伴生文件（远端本来就没有则静默跳过）。
+- 内容比对按 `trim` 后的结果进行：主文件内容与远端一致时不发 PUT，所以「没有解析出 IPv6」的存量源主文件**逐字节不变**。
+- 主文件与伴生文件共用同一份 Git 路径命名空间，两者不得互相占用；保存 IP 源时双向校验，冲突返回 409。
+
 ### 定时任务调度
 
-Cron `* * * * *`（每分钟）触发 `scheduled` handler，通过 `settings.next_sync_task` 在两种批任务间**轮转**：
+Cron `0,30 * * * *`（每 30 分钟）触发 `scheduled` handler，通过 `settings.next_sync_task` 在两种批任务间**轮转**：
 
 ```text
-第 N 分钟：next_sync_task = 'domains'    → 同步 BATCH_SIZE=10 条域名（失败优先）
-            执行完毕后翻转：next_sync_task = 'ip_sources'
-第 N+1 分钟：next_sync_task = 'ip_sources' → 同步 BATCH_SIZE=10 条 IP 源（失败优先）
-            执行完毕后翻转：next_sync_task = 'domains'
+第 N 次触发：next_sync_task = 'domains'    → 同步 BATCH_SIZE=10 条域名（失败优先）
+             执行完毕后翻转：next_sync_task = 'ip_sources'
+第 N+1 次触发：next_sync_task = 'ip_sources' → 同步 BATCH_SIZE=10 条 IP 源（失败优先）
+             执行完毕后翻转：next_sync_task = 'domains'
 ```
+
+> 触发频率由部署配置决定，与轮转逻辑无关：仓库内 `wrangler.toml` 的 `[triggers] crons = ["0,30 * * * *"]` 即每 30 分钟一次。改频率只需改这一处，`scheduled` handler 照旧每轮只跑一个批任务。
 
 > **关键设计：** 无论本轮任务成功或失败，状态都会翻转，避免单点失败永久卡死。每批按 `last_sync_status='failed'` 优先、`last_synced_time` 升序选择目标。
 
@@ -190,14 +244,14 @@ Cron `* * * * *`（每分钟）触发 `scheduled` handler，通过 `settings.nex
 >
 > 1.  返回到你的 Worker，进入 **设置 (Settings)** > **触发器 (Triggers)**。
 > 2.  在 **Cron 触发器 (Cron Triggers)** 部分，点击 **添加 Cron 触发器 (Add Cron Trigger)**。
-> 3.  **Cron 表达式** 选择 **每分钟 (`* * * * *`)**，以确保同步的及时性。
+> 3.  **Cron 表达式** 选择 **每 30 分钟 (`0,30 * * * *`)**，可直接粘贴到自定义表达式输入框。
 > 4.  点击 **添加触发器 (Add trigger)** 保存。
 
 <p align="center">
   <img src="./img/2.png" width="800" alt="Cron 触发器设置示例">
 </p>
 
-> 💡 **每分钟一次会不会触发限流？** 不会。每分钟只跑一个批任务（域名 ↔ IP 源轮转），每批最多 `BATCH_SIZE=10` 条，且 `BATCH_SIZE` 可在后台 settings 表里调整。Cloudflare Workers 免费版每天 10 万次请求额度足够。
+> 💡 **每 30 分钟一次够不够及时、会不会触发限流？** 够。每次只跑一个批任务（域名 ↔ IP 源轮转），每批最多 `BATCH_SIZE=10` 条，且 `BATCH_SIZE` 可在后台 settings 表里调整；一天 48 次触发，远低于 Cloudflare Workers 免费版每天 10 万次请求额度。想更快可把表达式改小（例如 `*/5 * * * *` 每 5 分钟），代价是提前消耗额度。
 
 ---
 
@@ -249,10 +303,11 @@ pnpm dev
 | `pnpm dev`             | 启动本地 workerd 调试环境（默认 8787 端口）                                                                           |
 | `pnpm test`            | 运行 `@cloudflare/vitest-plugin` 测试套件（workerd 内执行）                                                           |
 | `pnpm test:coverage`   | 运行测试并生成覆盖率报告（istanbul 插桩）                                                                             |
-| `pnpm check`           | 静态门禁：typecheck、语言、UTF-8、lint、格式（pre-commit 跑的这条）                                                   |
+| `pnpm check`           | 静态门禁：typecheck、测试类型检查、语言、UTF-8、lint、格式（pre-commit 跑的这条）                                     |
 | `pnpm verify`          | `pnpm check` + 全量测试，想一次跑完时用                                                                               |
 | `pnpm check:dashboard` | 渲染仪表盘并解析注入的客户端脚本（Node 侧语法闸门，不进 CI）                                                          |
 | `pnpm typecheck`       | TypeScript 严格模式检查（`tsc --noEmit`）                                                                             |
+| `pnpm typecheck:test`  | 测试目录类型检查（`tsc --noEmit -p tsconfig.test.json`）                                                              |
 | `pnpm build:single`    | 用 esbuild 打包 `src/index.ts` → `dist/worker.bundle.js`                                                              |
 | `pnpm run deploy`      | CLI 部署（自动注入 `.env` 中的 `CLOUDFLARE_API_TOKEN`；`--env <name>` 可切换 `.env.<name>` + `wrangler.<name>.toml`） |
 | `pnpm run deploy:prod` | 生产部署：等价 `deploy --env prod`，需本机 `.env.prod` 与 `wrangler.prod.toml`（均不入库）                            |
@@ -262,7 +317,7 @@ pnpm dev
 
 > 先用 `wrangler d1 create` 创建生产 D1 数据库，拿到真实 UUID。
 
-> **仓库配置与线上配置故意不同**：提交态的 `wrangler.toml` 是模板（`database_id` 为哨兵值），维护者的线上部署走本机 `wrangler.prod.toml` + `.env.prod`（`pnpm run deploy:prod`）。原因、路径与可执行命令见 [docs/deployment.md](docs/deployment.md)。
+> **仓库配置与线上配置故意不同**：提交态的 `wrangler.toml` 是模板（`database_id` 为哨兵值），维护者的线上部署走本机 `wrangler.prod.toml` + `.env.prod`（`pnpm run deploy:prod`）。两条路径的分工见 [🧑‍💻 开发者模式](#‍-开发者模式cli-本地调试--部署) 的部署脚本说明。
 
 ```bash
 # 1. 创建生产 D1 数据库（记下输出的 database_id）
@@ -295,7 +350,7 @@ pnpm run deploy
 ├── scripts/
 │   ├── build-single-file.mjs  # esbuild 打包 → dist/worker.bundle.js
 │   └── load-deploy-env.cjs    # pnpm run deploy 前置：解析 --env、注入 .env / .env.<env> 并选择 wrangler 配置
-├── docs/                # 文档（deployment.md：部署例外与「生产为唯一真相源」）
+├── docs/                # 文档（ip-fetch-unification-plan.md：IP 抓取统一化方案；agents/：协作约定）
 ├── src/
 │   ├── index.ts         # Worker 入口（fetch + scheduled 组装，约 80 行）
 │   ├── db/              # client.ts（D1 封装）+ migrations.ts（幂等建表）+ migrations/*.sql（测试用）
@@ -303,7 +358,7 @@ pnpm run deploy
 │   ├── sync/            # domains.ts / ip-sources.ts / github.ts
 │   ├── ui/              # templates.js（UI 模板，纯 JS，tsc 不参与）
 │   └── util/            # auth / http / log / sse / fetch / cf / url-safety / http-error / run-with-log
-├── test/                # @cloudflare/vitest-plugin 测试（25 文件，workerd 内跑）
+├── test/                # @cloudflare/vitest-plugin 测试（29 文件，workerd 内跑）
 └── img/                 # README 截图
 ```
 
@@ -323,46 +378,55 @@ pnpm run deploy
 
 ### 鉴权端点
 
-| 方法   | 路径            | 说明                                                                                                                                                          |
-| ------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST` | `/api/logout`   | 注销当前会话                                                                                                                                                  |
-| `GET`  | `/api/settings` | 读取安全设置（已剔除 Token/密码哈希等敏感字段）                                                                                                               |
-| `POST` | `/api/settings` | 保存设置（白名单：`CF_API_TOKEN` / `CF_ZONE_ID` / `GITHUB_TOKEN` / `GITHUB_OWNER` / `GITHUB_REPO` / `THREE_NETWORK_SOURCE`；CF 与 GitHub 凭据均强制配对校验） |
+| 方法   | 路径            | 说明                                                                            |
+| ------ | --------------- | ------------------------------------------------------------------------------- |
+| `POST` | `/api/logout`   | 注销当前会话                                                                    |
+| `GET`  | `/api/settings` | 读取安全设置（已剔除 Token/密码哈希等敏感字段）                                 |
+| `POST` | `/api/settings` | 保存设置（白名单见下方；CF 与 GitHub 凭据均强制配对校验，非白名单字段一律忽略） |
+
+> `POST /api/settings` 的写入白名单（9 个 key）：`CF_API_TOKEN` / `CF_ZONE_ID` / `GITHUB_TOKEN` / `GITHUB_OWNER` / `GITHUB_REPO` / `HOSTMONIT_API_KEY` / `THREE_NETWORK_SOURCE` / `BATCH_SIZE` / `MAX_IPS_PER_TYPE`。传 `null` 表示显式清除；空字符串对 Secret 键表示「保持不变」、对其它键表示清除。`MAX_IPS_PER_TYPE` 与 `BATCH_SIZE` 走同一套整数校验：写入侧越界或非整数会让整批写入被拒绝（返回 400），不会只丢这一个键；读取侧缺失或存了脏值时才回落默认（`MAX_IPS_PER_TYPE` 20、`BATCH_SIZE` 10）。
 
 ### 域名管理
 
-| 方法     | 路径                        | 说明                                      |
-| -------- | --------------------------- | ----------------------------------------- |
-| `GET`    | `/api/domains`              | 列出所有域名（系统域名排前）              |
-| `POST`   | `/api/domains`              | 添加克隆目标                              |
-| `PUT`    | `/api/domains/{id}`         | 更新目标（系统域名的 source 不可改）      |
-| `DELETE` | `/api/domains/{id}`         | 删除目标（系统预设禁止删除）              |
-| `GET`    | `/api/domains/{id}/records` | 查询该目标在 Cloudflare 上的当前 DNS 记录 |
-| `POST`   | `/api/domains/{id}/sync`    | 立即同步单个目标（返回 SSE 日志流）       |
-| `POST`   | `/api/sync`                 | 批量同步所有已启用目标（返回 SSE 日志流） |
-| `POST`   | `/api/domains/sync_system`  | 仅同步系统预设域名（返回 SSE 日志流）     |
+| 方法     | 路径                        | 说明                                       |
+| -------- | --------------------------- | ------------------------------------------ |
+| `GET`    | `/api/domains`              | 列出所有域名（系统域名排前）               |
+| `POST`   | `/api/domains`              | 添加克隆目标（`domain` 或 `url` 输入类型） |
+| `PUT`    | `/api/domains/{id}`         | 更新目标（系统域名的 source 不可改）       |
+| `DELETE` | `/api/domains/{id}`         | 删除目标（系统预设禁止删除）               |
+| `GET`    | `/api/domains/{id}/records` | 查询该目标在 Cloudflare 上的当前 DNS 记录  |
+| `POST`   | `/api/domains/{id}/sync`    | 立即同步单个目标（返回 SSE 日志流）        |
+| `POST`   | `/api/sync`                 | 批量同步所有已启用目标（返回 SSE 日志流）  |
+| `POST`   | `/api/domains/sync_system`  | 仅同步系统预设域名（返回 SSE 日志流）      |
+
+> 目标对象里的这几个字段与 URL 输入相关：`source_type`（`domain` / `url`，NULL 按 `domain`）、`source_url`（`url` 类型必填，`http(s)`，≤2048 字符）、`parse_mode` / `parse_param`（见 [IP 输入类型与解析模式](#ip-输入类型与解析模式)）、`fetch_strategy`（`url` 类型的历史抓取策略，URL 变化时自动丢弃）。系统预设域名不允许切换输入类型，`source` 也不可改。
 
 ### IP 源管理
 
-| 方法     | 路径                        | 说明                                           |
-| -------- | --------------------------- | ---------------------------------------------- |
-| `GET`    | `/api/ip_sources`           | 列出所有 IP 源                                 |
-| `POST`   | `/api/ip_sources`           | 添加 IP 源（URL 会先经 SSRF 校验）             |
-| `PUT`    | `/api/ip_sources/{id}`      | 更新 IP 源                                     |
-| `DELETE` | `/api/ip_sources/{id}`      | 删除 IP 源                                     |
-| `POST`   | `/api/ip_sources/probe`     | 探测 URL，自动选择可用的抓取策略               |
-| `POST`   | `/api/ip_sources/{id}/sync` | 立即同步单个 IP 源到 GitHub（返回 SSE 日志流） |
-| `POST`   | `/api/ip_sources/sync_all`  | 批量同步所有已启用 IP 源（返回 SSE 日志流）    |
+| 方法     | 路径                        | 说明                                                    |
+| -------- | --------------------------- | ------------------------------------------------------- |
+| `GET`    | `/api/ip_sources`           | 列出所有 IP 源                                          |
+| `POST`   | `/api/ip_sources`           | 添加 IP 源（URL 先经 SSRF 校验；可带解析模式）          |
+| `PUT`    | `/api/ip_sources/{id}`      | 更新 IP 源                                              |
+| `DELETE` | `/api/ip_sources/{id}`      | 删除 IP 源                                              |
+| `POST`   | `/api/ip_sources/probe`     | 探测 URL：按给定解析模式试抓取策略，回 v4/v6 计数与样例 |
+| `POST`   | `/api/ip_sources/{id}/sync` | 立即同步单个 IP 源到 GitHub（返回 SSE 日志流）          |
+| `POST`   | `/api/ip_sources/sync_all`  | 批量同步所有已启用 IP 源（返回 SSE 日志流）             |
 
 ### 订阅器代理（非 API 路径）
 
-访问 `https://<your-worker>/<github_path>`（例如 `https://cf-dns-clon.xxx.workers.dev/CloudFlareYes.txt`）会代理到 GitHub 仓库对应文件，并自带 5 分钟边缘缓存（`Cache-Control: public, max-age=60, s-maxage=300`）。仅代理 `ip_sources` 表中登记过的 `github_path`，未登记返回 404。
+访问 `https://<your-worker>/<github_path>`（例如 `https://cf-dns-clon.xxx.workers.dev/CloudFlareYes.txt`）会代理到 GitHub 仓库对应文件，并自带 5 分钟边缘缓存（`Cache-Control: public, max-age=60, s-maxage=300`）。
+
+- **主文件与伴生文件都可读**：IPv6 伴生文件（`CloudFlareYes-v6.txt`）与主文件共享同一套读取行为、Content-Type 与缓存策略，但缓存键彼此独立。派生规则见 [IPv6 伴生文件](#ipv6-伴生文件)。
+- **白名单是「已登记路径的正推结果」**：只放行 `ip_sources` 表里登记过的 `github_path` 及其唯一派生出的伴生路径。任意 `-v6` 形态不能借白名单放行；未登记路径（含未登记的伴生形态）一律 404，且不向上游发请求。
 
 ---
 
 ## 🗄️ 数据表结构
 
-D1 数据库（绑定名 `WUYA`）共 5 张表，由 `initializeAndMigrateDatabase` 在首次请求时幂等创建，24 小时内不会重复执行 DDL。
+D1 数据库（绑定名 `WUYA`）共 5 张表，由 `initializeAndMigrateDatabase` 在首次请求时幂等创建并补齐缺失列；迁移版本未变时 24 小时内不会重复执行 DDL。
+
+> 迁移是幂等的：用 `PRAGMA table_info` 对比期望列，缺哪列补哪列（`ALTER TABLE ... ADD COLUMN`）。当前迁移版本为 `2026-11-10-ip-fetch-unification`，新增列全部可空、无需回填；已部署实例在版本号变化后的**首次请求即执行**，不受 24 小时门控影响。回滚只需回退代码，多余列对旧代码无影响。
 
 ### `settings`（键值配置）
 
@@ -371,7 +435,7 @@ D1 数据库（绑定名 `WUYA`）共 5 张表，由 `initializeAndMigrateDataba
 | `key`   | TEXT PRIMARY KEY | 配置项名（如 `CF_API_TOKEN`、`BATCH_SIZE`） |
 | `value` | TEXT NOT NULL    | 配置值                                      |
 
-> 已知键：`ADMIN_PASSWORD_HASH`、`PASSWORD_SALT`、`CF_API_TOKEN`、`CF_ZONE_ID`、`CF_ZONE_NAME`、`GITHUB_TOKEN`、`GITHUB_OWNER`、`GITHUB_REPO`、`HOSTMONIT_API_KEY`（可选；留空与清除的语义见步骤 ③ 的「三网优选 IP 的 hostmonit key」）、`THREE_NETWORK_SOURCE`、`BATCH_SIZE`（默认 10）、`next_sync_task`、`last_migrated_at`
+> 已知键：`ADMIN_PASSWORD_HASH`、`PASSWORD_SALT`、`CF_API_TOKEN`、`CF_ZONE_ID`、`CF_ZONE_NAME`、`GITHUB_TOKEN`、`GITHUB_OWNER`、`GITHUB_REPO`、`HOSTMONIT_API_KEY`（可选；留空与清除的语义见步骤 ③ 的「三网优选 IP 的 hostmonit key」）、`THREE_NETWORK_SOURCE`、`BATCH_SIZE`（默认 10）、`MAX_IPS_PER_TYPE`（单类型记录上限，默认 20，1–200）、`next_sync_task`、`last_migrated_at`
 
 ### `domains`（克隆目标域名）
 
@@ -390,20 +454,27 @@ D1 数据库（绑定名 `WUYA`）共 5 张表，由 `initializeAndMigrateDataba
 | `last_sync_error`     | TEXT        | 上次失败原因                                      |
 | `is_enabled`          | INTEGER     | 1=启用；0=禁用                                    |
 | `is_system`           | INTEGER     | 1=系统预设（不可删，source 不可改）；0=用户添加   |
+| `source_type`         | TEXT        | IP 输入类型 `domain` / `url`（NULL 按 `domain`）  |
+| `source_url`          | TEXT        | `url` 类型的抓取地址（`http(s)`，≤2048 字符）     |
+| `parse_mode`          | TEXT        | 解析模式（NULL / 未知值按 `auto`）                |
+| `parse_param`         | TEXT        | 解析参数（`json_path` / `custom_regex` 使用）     |
+| `fetch_strategy`      | TEXT        | `url` 类型的历史抓取策略（URL 变化时丢弃）        |
 
 ### `ip_sources`（IP 抓取源）
 
-| 字段               | 类型        | 说明                                                              |
-| ------------------ | ----------- | ----------------------------------------------------------------- |
-| `id`               | INTEGER PK  | 自增主键                                                          |
-| `url`              | TEXT UNIQUE | 抓取地址                                                          |
-| `github_path`      | TEXT UNIQUE | 推送到 GitHub 仓库的文件路径                                      |
-| `commit_message`   | TEXT        | Git 提交信息                                                      |
-| `fetch_strategy`   | TEXT        | 抓取策略（`direct_regex` / `phantomjs_cloud` / `proxy_codetabs`） |
-| `last_synced_time` | TIMESTAMP   | 上次同步时间                                                      |
-| `last_sync_status` | TEXT        | 同上                                                              |
-| `last_sync_error`  | TEXT        | 上次失败原因                                                      |
-| `is_enabled`       | INTEGER     | 1=启用；0=禁用                                                    |
+| 字段               | 类型        | 说明                                                                                                                                                             |
+| ------------------ | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`               | INTEGER PK  | 自增主键                                                                                                                                                         |
+| `url`              | TEXT UNIQUE | 抓取地址                                                                                                                                                         |
+| `github_path`      | TEXT UNIQUE | 推送到 GitHub 仓库的文件路径                                                                                                                                     |
+| `commit_message`   | TEXT        | Git 提交信息                                                                                                                                                     |
+| `fetch_strategy`   | TEXT        | 抓取策略缓存（`direct_regex` / `phantomjs_cloud` / `proxy_codetabs` / `jina_reader` / `hostmonit_api`）；由同步实测结果写入，API 不接收该字段；URL 变更即置 NULL |
+| `parse_mode`       | TEXT        | 解析模式（同 `domains.parse_mode`，NULL 按 `auto`）                                                                                                              |
+| `parse_param`      | TEXT        | 解析参数（同 `domains.parse_param`）                                                                                                                             |
+| `last_synced_time` | TIMESTAMP   | 上次同步时间                                                                                                                                                     |
+| `last_sync_status` | TEXT        | 同上                                                                                                                                                             |
+| `last_sync_error`  | TEXT        | 上次失败原因                                                                                                                                                     |
+| `is_enabled`       | INTEGER     | 1=启用；0=禁用                                                                                                                                                   |
 
 ### `sessions`（登录会话）
 
@@ -439,7 +510,7 @@ D1 数据库（绑定名 `WUYA`）共 5 张表，由 `initializeAndMigrateDataba
 | **XSS 防护**   | UI 模板所有用户可控字段（notes、target_domain 等）经 `escapeHtml` 转义                                               |
 | **凭据隔离**   | `getSafeSettings` 在返回前端前剔除 `ADMIN_PASSWORD_HASH` / `PASSWORD_SALT` / `CF_API_TOKEN` / `GITHUB_TOKEN`         |
 | **错误脱敏**   | 非 API 路径的全局兜底返回固定文案，杜绝 stack / 凭据泄露；API 路径仅返回 `message`，不含 stack                       |
-| **写入白名单** | 设置接口仅允许写入预定义的 6 个 key，忽略任意其他字段                                                                |
+| **写入白名单** | 设置接口仅允许写入预定义的 9 个 key，忽略任意其他字段                                                                |
 | **配对校验**   | CF Token + Zone ID 必须同时提供；GitHub Token + Owner + Repo 必须同时提供                                            |
 | **网络超时**   | 所有外部 fetch 经 `fetchWithTimeout`（默认 10s）+ 指数退避重试，杜绝无界等待                                         |
 | **迁移门控**   | `last_migrated_at` 24h 门控，避免每请求执行整套 DDL                                                                  |
@@ -456,9 +527,9 @@ Worker 代码通过 `env.WUYA` 访问 D1 数据库。绑定名不符会在启动
 </details>
 
 <details>
-<summary><strong>Q2：每分钟跑一次 Cron 会不会浪费免费额度？</strong></summary>
+<summary><strong>Q2：每 30 分钟跑一次 Cron 会不会浪费免费额度？</strong></summary>
 
-每天 1,440 分钟 = 1,440 次定时调用，加上每次同步内部的 D1 + Cloudflare API + GitHub API 调用，总计约几千次/天，远低于 Cloudflare Workers 免费版的 100,000 次/天额度。如果担心，可在 `settings` 表中调大 `BATCH_SIZE` 并把 Cron 改为 `*/5 * * * *`（每 5 分钟）。
+默认 `0,30 * * * *` 每天 48 次定时调用，加上每次同步内部的 D1 + Cloudflare API + GitHub API 调用，总计约几百次/天，远低于 Cloudflare Workers 免费版的 100,000 次/天额度。如果担心，可在 `settings` 表中调大 `BATCH_SIZE` 进一步减少每轮的目标数；把 Cron 改到 `* * * * *`（每分钟）则会提高同步及时性、同时更快消耗额度。
 
 </details>
 
@@ -502,7 +573,7 @@ Worker 会代理到你的 GitHub 仓库对应文件，并自带 5 分钟边缘�
 <details>
 <summary><strong>Q7：为什么我粘贴了 <code>src/index.ts</code> 进 Dashboard 报错？</strong></summary>
 
-`src/index.ts` 是模块化源码入口，依赖十几个 `.ts` 文件，Dashboard 编辑器无法解析。请按 [网页部署指南第 ① 步](#①-创建-worker) 下载 Releases 中的 `worker.bundle.js` 或本地 `pnpm build:single` 后粘贴 `dist/worker.bundle.js`。
+`src/index.ts` 是模块化源码入口，依赖十几个 `.ts` 文件，Dashboard 编辑器无法解析。请按 [网页部署指南第 ① 步](#-创建-worker) 下载 Releases 中的 `worker.bundle.js` 或本地 `pnpm build:single` 后粘贴 `dist/worker.bundle.js`。
 
 </details>
 
@@ -568,14 +639,45 @@ DELETE FROM login_attempts WHERE ip = '你的IP';
 
 ### Cron 设了不工作
 
-1.  确认 Cron 表达式是 `* * * * *`（每分钟）。
+1.  确认 Cron 表达式是 `0,30 * * * *`（每 30 分钟），与 `wrangler.toml` 的 `[triggers] crons` 一致。
 2.  Cloudflare Dashboard → 你的 Worker → Triggers → Cron Triggers 中能看到该触发器。
-3.  查看实时日志，每分钟应出现 `定时任务开始：正在初始化...`。
+3.  查看实时日志，每次触发应出现 `定时任务开始：正在初始化...`。
 4.  若日志显示 `Cannot run scheduled ... settings are missing`，说明 CF 或 GitHub 凭据未配置。
 
 ### 订阅器代理返回 404
 
-访问的路径不在 `ip_sources.github_path` 白名单中。在后台 IP 源管理页确认路径拼写完全一致（区分大小写）。
+访问的路径不在白名单中。白名单由 `ip_sources.github_path` 已登记路径及其派生伴生路径组成：在后台 IP 源管理页确认路径拼写完全一致（区分大小写）；想读 IPv6 伴生文件，请用派生路径（`IP/x.txt` → `IP/x-v6.txt`），不要自己拼其它 `-v6` 形态。若源从未解析出 IPv6，说明远端伴生文件被删除了，404 属正常。
+
+### 某个目标的 DNS 记录变少了
+
+单类型记录上限（`MAX_IPS_PER_TYPE`，默认 20）对所有来源统一生效，超出的 A/AAAA 记录会在同步时被删除（CNAME 不截断）。这是既定行为，不是数据丢失；需要更多记录就把上限调到最大 200，见 [单类型记录上限](#单类型记录上限max_ips_per_type)。
+
+---
+
+## ⬆️ 升级须知
+
+### 当前版本的行为变化（`2026-11-10-ip-fetch-unification`）
+
+升级到这个版本后，有两处行为变化会在**下一次同步时**自动生效，升级前请确认可以接受：
+
+1. **存量域名可能被裁减记录。** 单类型记录上限（`MAX_IPS_PER_TYPE`，默认 20）不再只作用于新来源，而是对所有 IP 来源统一生效。某个目标的源站单类型原本超过 20 条时，下一轮同步会删除超出部分的 A/AAAA 记录（CNAME 不截断）。需要保留更多记录，请先把上限调到 200 再同步。
+2. **存量 IP 源可能新增伴生文件。** 默认解析模式 `auto` 会同时识别 IPv4 与 IPv6。若某个存量源实际上能解析出 IPv6，它的 GitHub 仓库里会出现派生的 `-v6` 伴生文件。**主文件内容不受影响**——主文件恒为 IPv4 列表，且内容与远端一致时不发 PUT（逐字节不变）。
+
+### 数据库迁移
+
+- 迁移随代码升级自动执行：`MIGRATION_VERSION` 变化后，已部署实例的**首次请求**就会补齐缺失列，不受 24 小时门控影响，无需手动执行 SQL。
+- 新增列全部可空（`domains.source_type` / `source_url` / `parse_mode` / `parse_param` / `fetch_strategy`，`ip_sources.parse_mode` / `parse_param`），`NULL` 即默认语义，存量数据不需要回填。
+- 迁移幂等：重复执行不报错；同一份库再跑一次不会产生副作用。
+- 回滚只需回退代码：多余列对旧代码无影响（列表接口用显式列投影，同步路径 `SELECT *` 对多余列无感知）。
+
+### 保守升级建议
+
+想先观察再放开的话，按这个顺序：
+
+1. 升级代码（迁移自动完成）。
+2. 到 **系统设置 → DNS 记录设置** 把「单类型记录上限」先调到一个不低于你现有最大记录数的值（最大 200）。
+3. 跑一轮手动同步，确认没有非预期的记录删除。
+4. 再把上限逐步收敛到目标值。
 
 ---
 

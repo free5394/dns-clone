@@ -45,3 +45,54 @@ export function escapeHtmlClient(value) {
             })[c]
     );
 }
+/**
+ * 组装「添加/编辑克隆目标」的提交体（issue #52）。
+ * 弹窗同时承载域名与 URL 两种来源，两者的有效字段互斥：
+ * - URL 类型：深度解析强制关闭（0），URL / 解析配置按输入归一，解析参数空串归一为 null；
+ * - 域名类型：URL 与解析配置一律为 null，深度开关按用户勾选。
+ * 抽成纯函数是因为这段组装逻辑会被表单直接调用——按源码字符串断言组不出来「URL 时深度开关
+ * 被强制写成 0」这类行为契约（CODING_STANDARDS.md §前端行为测试）。
+ */
+export function buildDomainSavePayload(input) {
+    const isUrl = input.sourceType === "url";
+    const parseParam = String(input.parseParam ?? "").trim();
+    return {
+        source_type: isUrl ? "url" : "domain",
+        source_domain: String(input.sourceDomain ?? ""),
+        source_url: isUrl ? String(input.sourceUrl ?? "").trim() : null,
+        parse_mode: isUrl ? input.parseMode : null,
+        parse_param: isUrl && parseParam !== "" ? parseParam : null,
+        target_domain_prefix: String(input.targetDomainPrefix ?? "").trim(),
+        is_deep_resolve: isUrl ? 0 : input.isDeepResolve ? 1 : 0,
+        ttl: parseInt(input.ttl, 10),
+        notes: input.notes ?? "",
+    };
+}
+
+/**
+ * 组装「添加/编辑 IP 源」的提交体（issue #57）。
+ * 与域名侧 buildDomainSavePayload 同形态：表单输入在这里归一成服务端契约字段。
+ * 解析参数空串/纯空白归一为 null，有值去首尾空白；url / github_path / commit_message
+ * 等字段原样透传。归一规则只允许存在这一处，保存与探测共用（CODING_STANDARDS.md §前端行为测试）。
+ * fetch_strategy 不在提交体内（issue #69）：该列是 URL 的抓取方式缓存，唯一写入方是同步链实测结果，
+ * 客户端只读不写，与域名侧契约一致。
+ */
+export function buildIpSourceSavePayload(input) {
+    const parseParam = String(input.parseParam ?? "").trim();
+    return {
+        url: input.url,
+        github_path: input.githubPath,
+        commit_message: input.commitMessage,
+        parse_mode: input.parseMode,
+        parse_param: parseParam === "" ? null : parseParam,
+    };
+}
+
+/**
+ * 探测请求体（issue #57）：从保存体投影出探测端点接受的字段。
+ * 投影而不是重写，保证「探测用的解析配置 = 保存下去的解析配置」。
+ */
+export function buildIpSourceProbePayload(input) {
+    const payload = buildIpSourceSavePayload(input);
+    return { url: payload.url, parse_mode: payload.parse_mode, parse_param: payload.parse_param };
+}

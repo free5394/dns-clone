@@ -1,11 +1,13 @@
-# ci.yml — 每次 push 到 main 与每个 PR 上跑类型检查与测试
+# ci.yml — 每次 push 到 main / dev 与每个 PR 上跑类型检查与测试
 # 仓库此前没有任何 guardrail：pnpm typecheck / pnpm test 都能跑通，但没有机制保证被跑。
 # 本 workflow 只做两件事，全部依赖已在 devDependencies 内，不额外引入新依赖。
+# dev 也列在 push 分支里：它是集成分支，门禁要在集成分支上就生效，不必等合并到 main 才发现问题。
+# push 事件使用的是被推分支上的 workflow 文件，因此加这一行不需要先合并。
 name: CI
 
 on:
     push:
-        branches: [main]
+        branches: [main, dev]
     pull_request:
 
 # 同一分支的旧运行自动取消，避免 push 频繁时排队堆积
@@ -45,6 +47,12 @@ jobs:
             # tsc --noEmit，约 0.3 秒
             - name: 类型检查
               run: pnpm typecheck
+
+            # 测试代码的类型检查（tsconfig.test.json），约 0.4 秒。
+            # 此前 test/ 不在任何 tsconfig 的 include 里，oxlint 又不做类型检查，
+            # 于是 54 处存量类型错误可以一路合进 main（issue #60）。
+            - name: 测试类型检查
+              run: pnpm typecheck:test
 
             # 只检查本次变更新增的中文档代码，存量英文测试标题不触发告警。
             - name: 语言检查

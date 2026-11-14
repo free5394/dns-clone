@@ -8,7 +8,7 @@ import {
     releaseManualSyncLock,
     createManualSyncLockRenewer,
 } from "../db/client.ts";
-import { getCurrentGitHubContent, updateFileOnGitHub } from "./github.ts";
+import { deleteFileOnGitHub, deriveCompanionPath, getCurrentGitHubContent, updateFileOnGitHub } from "./github.ts";
 import { beijingTimeLog } from "../util/log.ts";
 import { createLogStreamResponse } from "../util/sse.ts";
 import { runWithOptionalLog } from "../util/run-with-log.ts";
@@ -19,14 +19,20 @@ import { assertSafeHttpUrl } from "../util/url-safety.ts";
 import { normalizeBatchSize } from "../util/batch-size.ts";
 import { HOSTMONIT_API_KEY, normalizeHostmonitKey } from "../db/settings.ts";
 import { forEachIsolated } from "../util/batch-sync.ts";
+import { parseContent } from "./ip-parse.ts";
 
-interface IpSourceRow {
+/** ip_sources 表的一行。导出供测试夹具与路由层投影共用，避免手写形状或用 Parameters 反推类型（issue #61 / #64）。 */
+export interface IpSourceRow {
     id: number;
     url: string;
     github_path: string;
     commit_message: string;
     /** 列可空（迁移里的 fetch_strategy 无 NOT NULL），读取处一律按空串归一 */
     fetch_strategy: string | null;
+    /** 解析模式，列可空；NULL / 空串按 auto 处理（issue #48 / #50） */
+    parse_mode: string | null;
+    /** 解析参数，仅 json_path / custom_regex 使用 */
+    parse_param: string | null;
     is_enabled: number;
 }
 
@@ -38,21 +44,18 @@ export interface FetchStrategyContext {
     hostmonitKey: string;
 }
 
-type StrategyFn = (url: string, context?: FetchStrategyContext) => Promise<string[]>;
-
-/** 提取文本中的合法 IPv4（Suggestion ③：段值 ≤255，防止 999.x.x.x 伪 IP 发布给订阅器） */
-function extractIpv4(text: string): string[] {
-    const candidates = text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
-    return [...new Set(candidates.filter((ip) => ip.split(".").every((seg) => Number(seg) <= 255)))];
-}
+/**
+ * 抓取策略只负责「拿到正文」，IP 提取统一交给解析层（issue #50）。
+ * 返回值是响应原文，截断与解析由 parseContent 承担。
+ */
+type StrategyFn = (url: string, context?: FetchStrategyContext) => Promise<string>;
 
 /** 抓取策略表 */
 export const FETCH_STRATEGIES: Record<string, StrategyFn> = {
     direct_regex: async (url) => {
         const res = await fetchWithTimeout(url, { headers: { "User-Agent": "Mozilla/5.0" } }, 15000);
         if (!res.ok) throw new HttpError(res.status, `HTTP ${res.status}: ${url}`);
-        const text = await res.text();
-        return extractIpv4(text);
+        return await res.text();
     },
     phantomjs_cloud: async (url) => {
         const res = await fetchWithTimeout(
@@ -65,22 +68,20 @@ export const FETCH_STRATEGIES: Record<string, StrategyFn> = {
             20000
         );
         if (!res.ok) throw new HttpError(res.status, `PhantomJsCloud API HTTP ${res.status}`);
-        const text = await res.text();
-        return extractIpv4(text);
+        return await res.text();
     },
     proxy_codetabs: async (url) => {
         const proxyUrl = "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(url);
         const res = await fetchWithTimeout(proxyUrl, {}, 15000);
         if (!res.ok) throw new HttpError(res.status, `CodeTabs Proxy HTTP ${res.status}`);
-        const text = await res.text();
-        return extractIpv4(text);
+        return await res.text();
     },
     // 免费渲染/转发通道：源站按 Cloudflare 出口 IP 拦截（直连 403）时仍能取到正文。
     // 实测 ipdb.api.030101.xyz 直连对 Worker 403、经 jina 返回 116 个 IP。
     jina_reader: async (url) => {
         const res = await fetchWithTimeout("https://r.jina.ai/" + url, {}, 20000);
         if (!res.ok) throw new HttpError(res.status, `Jina Reader HTTP ${res.status}`);
-        return extractIpv4(await res.text());
+        return await res.text();
     },
     // hostmonit 是前端 SPA，页面本身无 IP；数据来自公开 JSON 接口（key 取自其前端 bundle），直连即可。
     // key 允许在设置页覆盖（对方轮换后无需改代码），未配置时回落到内置默认值。
@@ -95,7 +96,7 @@ export const FETCH_STRATEGIES: Record<string, StrategyFn> = {
             15000
         );
         if (!res.ok) throw new HttpError(res.status, `HostMonit API HTTP ${res.status}`);
-        return extractIpv4(await res.text());
+        return await res.text();
     },
 };
 
@@ -103,6 +104,47 @@ export const FETCH_STRATEGIES: Record<string, StrategyFn> = {
 const STRATEGY_APPLIES: Record<string, (url: string) => boolean> = {
     hostmonit_api: (url) => /(^|\.)hostmonit\.com$/i.test(new URL(url).hostname),
 };
+
+/**
+ * 策略适用性的唯一判据（issue #68）：同步尝试链、探测候选集合与 ip_sources 写入校验共用这一处。
+ * 未登记判定的策略对所有 URL 适用；URL 无法解析时按不适用处理，不把异常带进调用链。
+ */
+export function isStrategyApplicable(name: string, url: string): boolean {
+    const applies = STRATEGY_APPLIES[name];
+    if (!applies) return true;
+    try {
+        return applies(url);
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * 写库路径的 fetch_strategy 缓存裁决（issue #68 / #69）：
+ * fetch_strategy 是 URL 的抓取方式缓存而非用户偏好，唯一合法写入方是同步链的实测结果。
+ * URL 未变更且缓存策略对该 URL 仍适用时保留原值，其余（无缓存 / URL 变更 / 不适用）一律置 NULL。
+ * 判据与同步尝试链、探测候选集合共用 isStrategyApplicable；previous 快照由调用方
+ * 顺自己的 D1 扫描取回（ip_sources 写入路径复用伴生冲突检查那趟全表扫描，不加往返）。
+ * 请求体里带什么（合法名 / 未登记名 / null / 缺省）不参与本裁决也不因此报 400——
+ * 部署期新旧前端交错时不能因为多带一个字段把保存拦下来。
+ */
+export interface StrategyCacheSnapshot {
+    /** 目标行被覆盖前的 URL；决定缓存是否随旧地址失效（issue #68） */
+    url: string;
+    /** 目标行被覆盖前的策略缓存；决定未变更时保留什么（issue #69） */
+    fetchStrategy: string | null;
+}
+
+export function resolvePersistedFetchStrategy(previous: StrategyCacheSnapshot | null, nextUrl: string): string | null {
+    // 先判 null 再判适用性：空串喂给 isStrategyApplicable 会走「未登记即适用」的回落返回 true，
+    // 读起来像 null 通过了判定。
+    if (previous === null) return null;
+    const cached = previous.fetchStrategy;
+    if (cached === null) return null;
+    // URL 变更即失效；未变更才谈得上沿用，再补一道适用性判据
+    if (previous.url !== nextUrl) return null;
+    return isStrategyApplicable(cached, nextUrl) ? cached : null;
+}
 
 type LogFn = (msg: string) => void;
 
@@ -127,7 +169,7 @@ export async function syncScheduledIpSources(env: { WUYA: D1Database }): Promise
             last_synced_time ASC
         LIMIT ?`;
 
-    const sourcesToSync = await queryAll<{ id: number }>(db, query, BATCH_SIZE);
+    const sourcesToSync = await queryAll<Pick<IpSourceRow, "id">>(db, query, BATCH_SIZE);
 
     if (sourcesToSync.length === 0) {
         log("本轮没有需要同步的 IP 源。");
@@ -144,6 +186,31 @@ export async function syncScheduledIpSources(env: { WUYA: D1Database }): Promise
     );
 }
 
+type GitHubTarget = { token: string; owner: string; repo: string };
+
+/**
+ * 单个文件的「按内容比对后写入」：远端内容与待写内容 trim 归一后相同就跳过，
+ * 不同才落盘，并返回本轮是否真的写过 —— 主文件与 IPv6 伴生文件的变更检测走同一跳流水线，
+ * 只差两条日志文案，避免两段逐行重复各自漂移。
+ */
+async function writeGitHubFileIfChanged(
+    gh: GitHubTarget,
+    path: string,
+    content: string,
+    message: string,
+    log: LogFn,
+    logs: { unchanged: string; written: string }
+): Promise<boolean> {
+    const remoteContent = await getCurrentGitHubContent({ ...gh, path, log });
+    if (remoteContent !== null && content.trim() === remoteContent.trim()) {
+        log(logs.unchanged);
+        return false;
+    }
+    await updateFileOnGitHub({ ...gh, path, content, message, log });
+    log(logs.written);
+    return true;
+}
+
 /** 单个 IP 源同步入口 */
 export async function syncSingleIpSource(
     id: number,
@@ -158,7 +225,7 @@ export async function syncSingleIpSource(
         if (!githubSettings.token || !githubSettings.owner || !githubSettings.repo) {
             throw new Error("GitHub API设置不完整。");
         }
-        const gh = githubSettings as { token: string; owner: string; repo: string };
+        const gh = githubSettings as GitHubTarget;
         const source = (await db
             .prepare("SELECT * FROM ip_sources WHERE id = ? AND is_enabled = 1")
             .bind(id)
@@ -168,44 +235,72 @@ export async function syncSingleIpSource(
         log(`======== 开始同步IP源: ${source.url} ========`);
 
         try {
-            const { ips, strategy, configuredStrategy } = await fetchIpsWithStrategy(source, db);
-            // issue #22 P4：日志写实际生效策略；确实发生过回退时才点明从哪个策略退下来的
+            const { ipv4, ipv6, strategy, configuredStrategy } = await fetchIpsWithStrategy(source, db);
+            // issue #22 P4：日志写实际生效策略；确实发生过回退时才点明从哪个策略退下来的。
+            // issue #55：0 条时 strategy 为空串——既不能拼出「（抓取策略: ）」空占位，
+            // 也不能因为空串 != 配置值而误报「已从 X 回退」（那轮根本没命中任何策略）。
+            // 注意：这里不判 strategy !== ""——0 条时 fellBack 会算成 true，只是下面的三元先短路、
+            // 该值没被用到。别据此删掉三元的 strategy === "" 分支，否则 0 条会印出「已从 X 回退」。
             const fellBack = configuredStrategy !== "" && configuredStrategy !== strategy;
-            const strategyNote = fellBack
-                ? `（抓取策略: ${strategy}，已从 ${configuredStrategy} 回退）`
-                : `（抓取策略: ${strategy}）`;
-            log(`成功获取 ${ips.length} 个IP${strategyNote}。`);
-
-            const newContent = ips.join("\n");
-            const oldContent = await getCurrentGitHubContent({ ...gh, path: source.github_path, log });
-
-            if (oldContent !== null && newContent.trim() === oldContent.trim()) {
-                log(`内容无变化，无需更新 GitHub。`);
-                await db
-                    .prepare(
-                        "UPDATE ip_sources SET last_synced_time = CURRENT_TIMESTAMP, last_sync_status = 'no_change', last_sync_error = NULL WHERE id = ?"
-                    )
-                    .bind(id)
-                    .run();
-                log(`✔ 状态更新为内容一致。`);
-                return;
+            const strategyNote =
+                strategy === ""
+                    ? ""
+                    : fellBack
+                      ? `（抓取策略: ${strategy}，已从 ${configuredStrategy} 回退）`
+                      : `（抓取策略: ${strategy}）`;
+            // 日志只写策略与两类数量，不落正文（§13.2）
+            log(`成功获取 ${ipv4.length} 个IPv4、${ipv6.length} 个IPv6${strategyNote}。`);
+            if (strategy === "") {
+                // 0 条：主文件按空内容处理（issue #55），单独说明一句，免得管理员把「0 个」当成抓取坏了。
+                // 文案不写「所有策略都取得正文」——混合路径（部分策略抛错 + 部分空正文）同样走这里，
+                // 那种情况下该断言为假（issue #55 边界 2，见 test/sync.test.ts 混合情形用例）。
+                log("本轮未解析到任何 IP：主文件按空内容处理（源站无 IP，或解析规则与该页面不匹配）。");
             }
 
-            await updateFileOnGitHub({
-                ...gh,
-                path: source.github_path,
-                content: newContent,
-                message: source.commit_message,
-                log,
-            });
-            log(`✔ 成功同步到GitHub: ${source.github_path}`);
+            // 主文件仍只装 IPv4；IPv6 走伴生文件（issue #51）。两条链路的变更检测彼此独立：
+            // 主文件「无变化」不再提前返回，否则纯 IPv4 源永远走不到伴生删除、纯 IPv6 源永远走不到伴生写入。
+            const companionPath = deriveCompanionPath(source.github_path);
+            if (ipv4.length === 0 && ipv6.length > 0) {
+                log(`仅解析到 IPv6：主文件按空内容处理，IPv6 伴生文件为 ${companionPath}。`);
+            }
 
+            let wroteSomething = false;
+
+            if (
+                await writeGitHubFileIfChanged(gh, source.github_path, ipv4.join("\n"), source.commit_message, log, {
+                    unchanged: "主文件内容无变化，无需更新 GitHub。",
+                    written: `✔ 成功同步到GitHub: ${source.github_path}`,
+                })
+            ) {
+                wroteSomething = true;
+            }
+
+            // 伴生文件：非空则比对后写入；为空且远端存在才删除（deleteFileOnGitHub 内部 GET 404 时不发 DELETE）
+            if (ipv6.length > 0) {
+                if (
+                    await writeGitHubFileIfChanged(gh, companionPath, ipv6.join("\n"), source.commit_message, log, {
+                        unchanged: `IPv6 伴生文件内容无变化，无需更新: ${companionPath}`,
+                        written: `✔ 成功同步 IPv6 伴生文件到GitHub: ${companionPath}`,
+                    })
+                ) {
+                    wroteSomething = true;
+                }
+            } else if (await deleteFileOnGitHub({ ...gh, path: companionPath, message: source.commit_message, log })) {
+                log(`✔ 已删除 IPv6 伴生文件: ${companionPath}`);
+                wroteSomething = true;
+            } else {
+                log(`IPv6 为空且远端无伴生文件，跳过删除: ${companionPath}`);
+            }
+
+            // 整轮无任何写入才算 no_change；有任一文件落盘即 success
+            const status = wroteSomething ? "success" : "no_change";
             await db
                 .prepare(
-                    "UPDATE ip_sources SET last_synced_time = CURRENT_TIMESTAMP, last_sync_status = 'success', last_sync_error = NULL WHERE id = ?"
+                    "UPDATE ip_sources SET last_synced_time = CURRENT_TIMESTAMP, last_sync_status = ?, last_sync_error = NULL WHERE id = ?"
                 )
-                .bind(id)
+                .bind(status, id)
                 .run();
+            log(wroteSomething ? `✔ 状态更新为同步成功。` : `✔ 状态更新为内容一致。`);
         } catch (e) {
             log(`❌ 同步失败: ${e instanceof Error ? e.message : String(e)}`);
             await db
@@ -284,9 +379,10 @@ export function describeFetchError(e: unknown): string {
     return msg.length > 200 ? `${msg.slice(0, 200)}…` : msg;
 }
 
-/** 抓取结果：除了 IP，还要带回本次真正生效的策略（issue #22 P4）。 */
+/** 抓取结果：解析出的 IPv4 / IPv6，以及本次真正生效的策略（issue #22 P4 / #50）。 */
 export interface IpFetchResult {
-    ips: string[];
+    ipv4: string[];
+    ipv6: string[];
     /** 本次实际生效的抓取策略名（回退命中时为回退后的策略） */
     strategy: string;
     /** 调用前配置/缓存里的策略名，用于判断本次是否发生了回退 */
@@ -303,52 +399,86 @@ export async function resolveHostmonitKey(db: D1Database): Promise<string> {
     return normalizeHostmonitKey(stored) || DEFAULT_HOSTMONIT_API_KEY;
 }
 
-/** 按策略抓取 IP（带排序 + 失败自动回退），并回报实际生效的策略 */
-export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database): Promise<IpFetchResult> {
-    assertSafeHttpUrl(source.url);
+/**
+ * 抓取目标的最小形状：IP 源与域名（URL 输入）两类目标都能满足。
+ * 策略链只关心 URL 与解析配置，抓到的结果落到哪张表由调用方注入（§6.3）。
+ */
+export interface StrategyTarget {
+    id: number;
+    url: string;
+    fetch_strategy?: string | null;
+    parse_mode?: string | null;
+    parse_param?: string | null;
+}
+
+export interface StrategyFetchOptions {
+    /** 回退命中后持久化实际生效的策略；不传则只就地改写 target.fetch_strategy（不落库） */
+    persistStrategy?: (strategy: string, target: StrategyTarget) => Promise<void>;
+    /**
+     * 全链都取得正文却解析不到 IP 时返回空结果，而不是抛「[无可用IP]」。
+     * 两类生产目标都开：域名 URL 输入靠它把「取得正文但 0 条」交给 syncDomainLogic 的 0 条分支判定（§6.3 / 验收 #8）；
+     * IP 源靠它把空正文变成「主文件写空内容并标 success」（issue #55）。
+     * 不开时保留抛错语义——目前仅测试用得到（`fetchIpsForTarget` 默认不传即抛错，用来固化「0 条不能静默」的旧契约）；
+     * 生产侧的探测接口 `apiProbeIpSource` 自建策略循环，不走这条路径。
+     */
+    emptyWhenNoIps?: boolean;
+}
+
+/**
+ * 按策略抓取并解析 IP（带排序 + 失败自动回退），并回报实际生效的策略。
+ * 单一真相源：策略表、适用性判定、回退顺序与聚合错误文案都只在这里演进。
+ */
+export async function fetchIpsForTarget(
+    target: StrategyTarget,
+    db?: D1Database,
+    options: StrategyFetchOptions = {}
+): Promise<IpFetchResult> {
+    assertSafeHttpUrl(target.url);
     // 列可空：NULL 归一到空串，避免日志里出现「已从 null 回退」
-    const configuredStrategy = source.fetch_strategy ?? "";
+    const configuredStrategy = target.fetch_strategy ?? "";
     // 构造尝试顺序：缓存策略优先，回退策略按声明顺序依次尝试
-    const strategyNames = Object.keys(FETCH_STRATEGIES).filter((n) => {
-        const applies = STRATEGY_APPLIES[n];
-        return !applies || applies(source.url);
-    });
-    const orderedNames = [configuredStrategy, ...strategyNames.filter((n) => n !== configuredStrategy)];
+    const strategyNames = Object.keys(FETCH_STRATEGIES).filter((n) => isStrategyApplicable(n, target.url));
+    // 显式配置的策略与自动链共用同一判据（issue #68）：hostmonit_api 会忽略传入 url 直接请求自己的 API，
+    // 不过门控就会把别的站点当成 hostmonit 订阅源抓取，所以不适用时从链首剔除而不是照跑。
+    const orderedNames = [
+        ...(configuredStrategy !== "" && isStrategyApplicable(configuredStrategy, target.url)
+            ? [configuredStrategy]
+            : []),
+        ...strategyNames.filter((n) => n !== configuredStrategy),
+    ];
+    // 名字未必都有实现：configuredStrategy 可能是空串或已下线的策略名，这类名字会被循环跳过且不记账。
+    // 不变量（issue #67）：会跑的策略集合在进循环前按同一判据一次算定，循环体内对有名项零剔除——
+    // 「循环必跑」，因此事后拿 attempts 反推「有没有可跑的策略」必然漏掉这些无名跳过项。
+    if (!orderedNames.some((name) => FETCH_STRATEGIES[name])) {
+        throw new Error("[无可用IP] 没有适用于该URL的抓取策略，请检查URL或在添加/编辑IP源时重新探测。");
+    }
     // 设置页保存后下一次抓取立即生效：每次抓取都重新读取，不缓存到模块级变量
     const context: FetchStrategyContext = {
         hostmonitKey: db ? await resolveHostmonitKey(db) : DEFAULT_HOSTMONIT_API_KEY,
     };
 
     let lastError: unknown;
+    // 是否至少有一条策略「成功取到正文但解析 0 条」：与「全部抓取抛错」是两种不同语义（§13.1）
+    let fetchedWithoutIps = false;
     const attempts: string[] = [];
     for (const name of orderedNames) {
         const fn = FETCH_STRATEGIES[name];
         if (!fn) continue;
         try {
-            const ips = await fn(source.url, context);
-            if (ips && ips.length > 0) {
+            // 策略只返回正文；「成功」= 取得正文且统一解析后至少 1 个 IP（IPv4/IPv6 合计，§6.2）
+            const text = await fn(target.url, context);
+            const { ipv4, ipv6 } = parseContent(text, target.parse_mode, target.parse_param);
+            if (ipv4.length > 0 || ipv6.length > 0) {
                 if (name !== configuredStrategy) {
-                    // 回退策略命中：更新传入对象的 fetch_strategy（调用方可感知），若提供了 db 则持久化
-                    (source as { fetch_strategy: string }).fetch_strategy = name;
-                    if (db) {
-                        await db
-                            .prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE id = ?")
-                            .bind(name, source.id)
-                            .run();
-                    }
+                    // 回退策略命中：更新传入对象的 fetch_strategy（调用方可感知），由调用方决定是否落库
+                    (target as { fetch_strategy: string }).fetch_strategy = name;
+                    if (options.persistStrategy) await options.persistStrategy(name, target);
                 }
-                const sortIps = (a: string, b: string) => {
-                    const aParts = a.split(".").map(Number);
-                    const bParts = b.split(".").map(Number);
-                    for (let i = 0; i < 4; i++) {
-                        if (aParts[i] !== bParts[i]) return aParts[i] - bParts[i];
-                    }
-                    return 0;
-                };
-                return { ips: ips.sort(sortIps), strategy: name, configuredStrategy };
+                return { ipv4, ipv6, strategy: name, configuredStrategy };
             }
             // 空结果也记账：源站返回 200 但没有 IP 时若静默跳过，诊断文案只剩抛错的策略，
             // 会把人误导成"换个代理就好"（实测 id=8 页面 tbody 为空，文案却只显示 proxy_codetabs 超时）
+            fetchedWithoutIps = true;
             attempts.push(`${name}: 未匹配到 IP`);
         } catch (e) {
             lastError = e;
@@ -357,7 +487,14 @@ export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database)
     }
     // D3 类别化文案：类别前缀 + 每策略摘要，随 last_sync_error 落库（只存 e.message，本文案即 message）
     const detail = attempts.length > 0 ? `（${attempts.join("; ")}）` : "";
-    if (lastError === undefined) {
+    // §13.1「成功但 0 条」与「抓取抛错」是两条不同分支：只要有一条策略成功取到正文却没有 IP，
+    // 就属于前者——哪怕其它策略抛过错，也不能被 lastError 短路成抓取失败（否则 DNS 侧会误标 failed）。
+    if (options.emptyWhenNoIps && fetchedWithoutIps) {
+        return { ipv4: [], ipv6: [], strategy: "", configuredStrategy };
+    }
+    // 旧契约（issue #67，仅测试调用方不传 emptyWhenNoIps 时可见）：全部策略取到正文却 0 条、且没有任何策略抛错，
+    // 仍以 [无可用IP] + 「未返回任何 IP」收口，不得静默。混合失败（既有 0 条也有抛错）走下面的类别化文案。
+    if (fetchedWithoutIps && lastError === undefined) {
         throw new Error(
             `[无可用IP] 所有抓取策略均未能从该URL获取到IP${detail}，源站页面未返回任何 IP，请确认该列表是否已下架或在添加/编辑IP源时更换源。`
         );
@@ -366,10 +503,29 @@ export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database)
     throw new Error(`[${category}] 所有抓取策略均未能从该URL获取到IP${detail}，请检查URL或在添加/编辑IP源时重新探测。`);
 }
 
+/**
+ * 按策略抓取 IP 源（带排序 + 失败自动回退），回退命中后把策略持久化到 ip_sources。
+ * issue #55：源站返回 200 但没有 IP 时按「成功但 0 条」返回空结果，由同步层把主文件写成空内容；
+ * 「全部策略抛错」仍走抛错分支，两条语义不得合并。
+ */
+export async function fetchIpsWithStrategy(source: IpSourceRow, db?: D1Database): Promise<IpFetchResult> {
+    return fetchIpsForTarget(source, db, {
+        emptyWhenNoIps: true,
+        persistStrategy: db
+            ? async (strategy, target) => {
+                  await db
+                      .prepare("UPDATE ip_sources SET fetch_strategy = ? WHERE id = ?")
+                      .bind(strategy, target.id)
+                      .run();
+              }
+            : undefined,
+    });
+}
+
 /** @internal 兼容测试/旧调用方；生产同步走 fetchIpsWithStrategy（需要实际生效的策略信息）。 */
 export async function fetchIpsFromSource(source: IpSourceRow, db?: D1Database): Promise<string[]> {
-    const { ips } = await fetchIpsWithStrategy(source, db);
-    return ips;
+    const { ipv4 } = await fetchIpsWithStrategy(source, db);
+    return ipv4;
 }
 
 /** 三网 IP 分类（yd 移动 / dx 电信 / lt 联通），供三网抓取与表格解析共用。 */
