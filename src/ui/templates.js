@@ -859,7 +859,11 @@ function getDashboardSyncScript() {
   // 流结束后的刷新判定来自 ./dashboard-helpers.js，注入后可直接被行为测试覆盖（issue #42）。
   const planSyncCompletionActions = ${planSyncCompletionActions.toString()};
   async function handleStreamingRequest(url, btn, logOutputElem) {
-      const allButtons = document.querySelectorAll('button'); allButtons.forEach(b => b.disabled = true); if (btn) btn.setAttribute('aria-busy', 'true'); // 进度只由日志面板呈现，按钮只禁用不改文案
+      // 同步期间禁用全部按钮防止重复触发；禁用前先快照原始状态，结束时按快照还原。
+      // 不能按「是否在 dialog 内」一刀切，否则弹窗的保存/取消会被永久禁用。
+      const buttonStates = Array.from(document.querySelectorAll('button'), (b) => [b, b.disabled]);
+      for (const [b] of buttonStates) b.disabled = true;
+      if (btn) btn.setAttribute('aria-busy', 'true'); // 进度只由日志面板呈现，按钮只禁用不改文案
       logOutputElem.style.display = 'block';
       logOutputElem.textContent = '开始同步任务...\\n';
       try {
@@ -901,7 +905,8 @@ function getDashboardSyncScript() {
           logOutputElem.textContent += '\\n发生严重错误：\\n' + e.message;
           showNotification('同步任务发生错误', 'error');
       } finally {
-          allButtons.forEach(b => { if (!b.closest('dialog')) b.disabled = false; });
+          // 还原到请求开始前的状态：原本就禁用的（如待探测的 IP 源保存键）保持禁用
+          for (const [b, wasDisabled] of buttonStates) b.disabled = wasDisabled;
           if (btn) btn.removeAttribute('aria-busy');
       }
   }
