@@ -390,6 +390,32 @@ describe("同步结束后弹窗按钮恢复 (P0)", () => {
     });
 });
 
+describe("通知浮层样式与移除兜底 (P1)", () => {
+    // 全局 CSS 只在 getHtmlLayout 的 <style> 内（docs/ui-templates-refactor.md §10 第 2 条）
+    const layoutHtml = () => getHtmlLayout("测试", "");
+
+    it("通知容器固定在右上角，不参与文档流", () => {
+        const rule = layoutHtml().match(/\.notifications \{([\s\S]*?)\}/);
+        expect(rule).not.toBeNull();
+        expect(rule![1]).toMatch(/position:\s*fixed/);
+        expect(rule![1]).toMatch(/top:\s*80px/);
+        expect(rule![1]).toMatch(/right:\s*20px/);
+    });
+
+    it("成功与错误消息用语义色边条区分", () => {
+        const html = layoutHtml();
+        expect(html).toMatch(/\.toast-success\s*\{\s*border-left-color:\s*var\(--ok\)/);
+        expect(html).toMatch(/\.toast-error\s*\{\s*border-left-color:\s*var\(--danger\)/);
+    });
+
+    it("淡出后除 transitionend 外还有超时兜底移除", () => {
+        // 静态契约：移除逻辑绑定在 DOM 节点事件上，脱离 DOM 无法驱动（CODING_STANDARDS.md §前端行为测试豁免）
+        const script = getDashboardPage([], [], {});
+        expect(script).toContain("toast.addEventListener('transitionend'");
+        expect(script).toContain("setTimeout(removeToast, 400)");
+    });
+});
+
 describe("CSS 变量无孤儿 (retro #2)", () => {
     const layoutHtml = () => getHtmlLayout("测试", getDashboardPage([], [], {}));
 

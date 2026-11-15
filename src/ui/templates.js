@@ -242,7 +242,6 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
 .status-failed { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .status-no_change { color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 12%, transparent); }
 .status-pending { color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 8%, transparent); }
-.notifications, .home-toast { z-index: 1050; }
 .public-nav {
     position: sticky;
     top: 1rem;
@@ -300,6 +299,43 @@ legend { font-size: 1.25rem; font-weight: 600; padding: 0 .5rem; }
 .home-toast { position: fixed; top: 80px; right: 20px; background-color: var(--c-button-bg); color: var(--c-button-text); padding: 12px 20px; border-radius: 6px; z-index: 1000; font-weight: 500; box-shadow: var(--shadow-overlay); transition: transform 0.4s ease-in-out, opacity 0.4s ease-in-out; transform: translateY(-100px); opacity: 0; }
 .home-toast.show { transform: translateY(0); opacity: 1; }
 .home-toast.hide { transform: translateY(50px); opacity: 0; }
+/* 后台通知浮层：固定在视口右上角、纵向堆叠；首页 .home-toast 保持独立。
+   此前这里只有 z-index 没有定位，消息会作为普通文本块堆在页面最底部且不消失。 */
+.notifications {
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    max-width: min(360px, calc(100vw - 40px));
+    z-index: 1050;
+    /* 容器本身不吃点击，避免遮挡右下区域的可操作元素；单条 toast 再恢复 */
+    pointer-events: none;
+}
+.toast {
+    pointer-events: auto;
+    padding: 12px 16px;
+    border: 1px solid var(--c-card-border);
+    border-left: 4px solid var(--text-muted);
+    border-radius: var(--radius-sm);
+    background: var(--c-card-bg);
+    color: var(--c-text);
+    font-weight: 500;
+    box-shadow: var(--shadow-overlay);
+    opacity: 0;
+    transform: translateY(-8px);
+    transition:
+        opacity 0.25s ease,
+        transform 0.25s ease;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast.hide { opacity: 0; transform: translateY(-8px); }
+/* 语义色只落在左边条，文字仍用正文色，保证深浅主题下都可读 */
+.toast-success { border-left-color: var(--ok); }
+.toast-error { border-left-color: var(--danger); }
+.toast-warning { border-left-color: var(--warning, var(--danger)); }
+.toast-info { border-left-color: var(--c-button-bg); }
 
 /* 统一焦点环：键盘 Tab 才出现，鼠标点击不残留 */
 :focus-visible { outline: 2px solid var(--pico-primary); outline-offset: 2px; }
@@ -632,9 +668,13 @@ function getDashboardScript(domains, ipSources, settings) {
       setTimeout(() => toast.classList.add('show'), 10);
       setTimeout(() => {
           toast.classList.add('hide');
+          // 移除节点：transitionend 为主，定时器兜底——没有过渡事件时（如元素不可见或过渡被关掉）
+          // 单靠 transitionend 会让节点永久残留，消息越堆越多
+          const removeToast = () => toast.remove();
           toast.addEventListener('transitionend', e => {
-              if (e.target === toast) toast.remove();
+              if (e.target === toast) removeToast();
           }, { once: true });
+          setTimeout(removeToast, 400);
       }, duration);
   }
   // 统一请求封装：401 一律提示并跳登录，业务错误直接抛出后端文案。
