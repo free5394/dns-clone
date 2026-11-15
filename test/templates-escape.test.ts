@@ -378,14 +378,15 @@ describe("手动同步进度：日志框即唯一进度面 (retro #1)", () => {
 describe("同步结束后弹窗按钮恢复 (P0)", () => {
     const layoutHtml = () => getHtmlLayout("测试", getDashboardPage([], [], {}));
 
-    it("按请求前的快照恢复按钮，不再按是否在 dialog 内一刀切", () => {
+    it("同步脚本接入快照与还原助手，不再按是否在 dialog 内一刀切", () => {
         const html = layoutHtml();
         // 先确认这段脚本真的在断言范围内，避免负向断言空过
         expect(html).toContain("handleStreamingRequest");
-        // 旧实现只恢复 dialog 外的按钮，弹窗的保存/取消被永久禁用
+        // 静态契约：注入点与 DOM 接线行无法脱离浏览器驱动，状态流转本身由
+        // dashboard-helpers.test.ts 的 captureButtonStates / restoreButtonStates 行为测试覆盖
         expect(html).not.toContain("closest('dialog')");
-        expect(html).toMatch(/buttonStates/);
-        expect(html).toMatch(/b\.disabled = wasDisabled/);
+        expect(html).toContain("captureButtonStates(document.querySelectorAll('button'))");
+        expect(html).toContain("restoreButtonStates(buttonStates)");
     });
 });
 

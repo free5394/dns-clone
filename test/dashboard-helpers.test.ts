@@ -1,7 +1,7 @@
 // dashboard-helpers.test.ts — L-8：把「客户端转义助手」从源码字符串断言改成行为断言
 // 这些函数通过 toString() 注入浏览器脚本，所以这里 import 到的是页面里真正执行的同一份实现。
 import { describe, it, expect } from "vitest";
-import { escapeHtmlClient } from "../src/ui/dashboard-helpers.js";
+import { captureButtonStates, escapeHtmlClient, restoreButtonStates } from "../src/ui/dashboard-helpers.js";
 
 describe("escapeHtmlClient 客户端转义", () => {
     it("转义五种 HTML 元字符", () => {
@@ -43,5 +43,24 @@ describe("escapeHtmlClient 客户端转义", () => {
         expect(html).toContain("const esc = function escapeHtmlClient");
         // 注入的函数体与模块实现逐字一致
         expect(html).toContain(escapeHtmlClient.toString());
+    });
+});
+
+describe("按钮状态快照与还原 (P0)", () => {
+    const button = (disabled: boolean) => ({ disabled });
+
+    it("快照记录每个按钮请求前的禁用状态", () => {
+        const states = captureButtonStates([button(true), button(false)]);
+        expect(states.map(([, wasDisabled]) => wasDisabled)).toEqual([true, false]);
+    });
+
+    it("同步期间全部禁用后，还原时每个按钮回到请求前的状态", () => {
+        const gated = button(true); // 待探测的 IP 源保存键：请求前就是禁用的
+        const saveBtn = button(false); // 弹窗保存键：请求前可用，不能被永久禁用
+        const states = captureButtonStates([gated, saveBtn]);
+        for (const [b] of states) b.disabled = true;
+        restoreButtonStates(states);
+        expect(gated.disabled).toBe(true);
+        expect(saveBtn.disabled).toBe(false);
     });
 });

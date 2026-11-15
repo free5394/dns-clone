@@ -29,6 +29,21 @@ export function planSyncCompletionActions(logId) {
 }
 
 /**
+ * 流式同步开始前记录按钮的原始禁用状态。
+ * 结束后必须按快照还原，而不是按「是否在 dialog 内」一刀切——
+ * 后者会让弹窗的保存/取消按钮被永久禁用。抽成纯函数是为了让这条
+ * 状态流转由行为测试直接驱动（CODING_STANDARDS.md §前端行为测试）。
+ */
+export function captureButtonStates(buttons) {
+    return Array.from(buttons, (button) => [button, button.disabled]);
+}
+
+/** 按快照还原按钮状态：请求前就禁用的（如待探测的 IP 源保存键）保持禁用 */
+export function restoreButtonStates(states) {
+    for (const [button, wasDisabled] of states) button.disabled = wasDisabled;
+}
+
+/**
  * 客户端 HTML 转义，与服务器端 escapeHtml 同语义。
  * 所有来自数据库、又要在仪表盘里拼 HTML 的字段都必须先过这里。
  */
