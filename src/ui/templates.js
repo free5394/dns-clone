@@ -617,8 +617,8 @@ export function getDashboardPage(domains, ipSources, settings) {
             </form>
         </div>
     </div>
-    <dialog id="domainModal"><article><header><a href="#close" aria-label="Close" class="close" onclick="window.closeModal('domainModal')"></a><h3 id="modalTitle"></h3></header><form id="domainForm"><input type="hidden" id="domainId"><label for="source_type">IP 输入类型</label><select id="source_type" onchange="window.onDomainSourceTypeChange()"><option value="domain">域名</option><option value="url">URL</option></select><div id="domainSourceDomainGroup"><label for="source_domain">克隆域名</label><input type="text" id="source_domain" placeholder="example-source.com"></div><div id="domainSourceUrlGroup" hidden><label for="source_url">URL</label><input type="text" id="source_url" placeholder="https://example.com/ip_list.json" maxlength="2048"><div class="grid"><div><label for="domain_parse_mode">解析模式</label><select id="domain_parse_mode"><option value="auto">自动（全文提取）</option><option value="lines">按行提取</option><option value="json_path">JSON 路径</option><option value="custom_regex">自定义正则</option></select></div><div><label for="domain_parse_param">解析参数</label><input type="text" id="domain_parse_param" maxlength="512" placeholder="json_path: data.list.ips；custom_regex: 正则"></div></div><small>自动 / 按行不需要参数；JSON 路径最长 512 字符，自定义正则最长 200 字符。URL 类型固定为深度关闭。</small></div><label for="target_domain_prefix">我的域名前缀</label><div class="grid"><input type="text" id="target_domain_prefix" placeholder="subdomain or @" required><span id="zoneNameSuffix" style="line-height:var(--pico-form-element-height);font-weight:700">.your-zone.com</span></div><div class="grid"><div><label for="is_deep_resolve">深度 <span class="tooltip">(?)<span class="tooltip-text">开启后，如果克隆域名是CNAME，系统将递归查找最终的IP地址进行解析。关闭则直接克隆CNAME记录本身。</span></span></label><input type="checkbox" id="is_deep_resolve" role="switch" checked></div><div><label for="ttl">TTL (秒)</label><input type="number" id="ttl" min="60" max="86400" value="60" required></div></div><label for="notes">备注 (可选)</label><textarea id="notes" rows="2" placeholder="例如：主力CDN"></textarea><footer><button type="button" class="secondary" onclick="window.closeModal('domainModal')">取消</button><button type="submit" id="saveBtn">保存</button></footer></form></article></dialog>
-    <dialog id="ipSourceModal"><article><header><a href="#close" aria-label="Close" class="close" onclick="window.closeModal('ipSourceModal')"></a><h3 id="ipSourceModalTitle"></h3></header><form id="ipSourceForm"><input type="hidden" id="ipSourceId"><div class="grid"><label for="ip_source_url">IP源地址</label><button type="button" class="outline" id="probeBtn" style="width:auto;padding:0 1rem;">探测方案</button></div><input type="text" id="ip_source_url" placeholder="https://example.com/ip_list.txt" required><progress id="probeProgress" style="display:none;"></progress><p id="probeResult" style="font-size:0.9em;"></p><small>抓取策略是 URL 的抓取方式缓存：修改 IP 源地址后抓取策略会随 URL 变更重置，请重新探测后再保存。</small><div class="grid"><div><label for="parse_mode">解析模式</label><select id="parse_mode"><option value="auto">自动（全文提取）</option><option value="lines">按行提取</option><option value="json_path">JSON 路径</option><option value="custom_regex">自定义正则</option></select></div><div><label for="parse_param">解析参数</label><input type="text" id="parse_param" maxlength="512" placeholder="json_path: data.list.ips；custom_regex: 正则"></div></div><small>自动 / 按行不需要参数；JSON 路径最长 512 字符，自定义正则最长 200 字符。</small><label for="github_path">GitHub 文件路径</label><input type="text" id="github_path" placeholder="IP/Cloudflare.txt" required><label for="commit_message">Commit 信息</label><input type="text" id="commit_message" placeholder="Update Cloudflare IPs" required><footer><button type="button" class="secondary" onclick="window.closeModal('ipSourceModal')">取消</button><button type="submit" id="saveIpSourceBtn">保存</button></footer></form></article></dialog>
+    <dialog id="domainModal"><article><header><a href="#close" aria-label="Close" class="close" onclick="window.closeModal('domainModal')"></a><h3 id="modalTitle"></h3></header><form id="domainForm"><input type="hidden" id="domainId"><label for="source_type">IP 输入类型</label><select id="source_type" onchange="window.onDomainSourceTypeChange()"><option value="domain">域名</option><option value="url">URL</option></select><div id="domainSourceDomainGroup"><label for="source_domain">克隆域名</label><input type="text" id="source_domain" placeholder="example-source.com"></div><div id="domainSourceUrlGroup" hidden><label for="source_url">URL</label><input type="text" id="source_url" placeholder="https://example.com/ip_list.json" maxlength="2048"><details class="advanced-parse"><summary>高级解析设置（默认自动，可不填）</summary><div class="grid"><div><label for="domain_parse_mode">解析模式</label><select id="domain_parse_mode"><option value="auto">自动（全文提取）</option><option value="lines">按行提取</option><option value="json_path">JSON 路径</option><option value="custom_regex">自定义正则</option></select></div><div><label for="domain_parse_param">解析参数</label><input type="text" id="domain_parse_param" maxlength="512" placeholder="json_path: data.list.ips；custom_regex: 正则"></div></div><small>自动 / 按行不需要参数；JSON 路径最长 512 字符，自定义正则最长 200 字符。URL 类型固定为深度关闭。</small></details></div><label for="target_domain_prefix">我的域名前缀</label><div class="grid"><input type="text" id="target_domain_prefix" placeholder="subdomain or @" required><span id="zoneNameSuffix" style="line-height:var(--pico-form-element-height);font-weight:700">.your-zone.com</span></div><div class="grid"><div><label for="is_deep_resolve">深度 <span class="tooltip">(?)<span class="tooltip-text">开启后，如果克隆域名是CNAME，系统将递归查找最终的IP地址进行解析。关闭则直接克隆CNAME记录本身。</span></span></label><input type="checkbox" id="is_deep_resolve" role="switch" checked></div><div><label for="ttl">TTL (秒)</label><input type="number" id="ttl" min="60" max="86400" value="60" required></div></div><label for="notes">备注 (可选)</label><textarea id="notes" rows="2" placeholder="例如：主力CDN"></textarea><footer><button type="button" class="secondary" onclick="window.closeModal('domainModal')">取消</button><button type="submit" id="saveBtn">保存</button></footer></form></article></dialog>
+    <dialog id="ipSourceModal"><article><header><a href="#close" aria-label="Close" class="close" onclick="window.closeModal('ipSourceModal')"></a><h3 id="ipSourceModalTitle"></h3></header><form id="ipSourceForm"><input type="hidden" id="ipSourceId"><div class="grid"><label for="ip_source_url">IP源地址</label><button type="button" class="outline" id="probeBtn" style="width:auto;padding:0 1rem;">探测方案</button></div><input type="text" id="ip_source_url" placeholder="https://example.com/ip_list.txt" required><progress id="probeProgress" style="display:none;"></progress><p id="probeResult" style="font-size:0.9em;"></p><small>抓取策略是 URL 的抓取方式缓存：修改 IP 源地址后抓取策略会随 URL 变更重置，请重新探测后再保存。</small><details class="advanced-parse"><summary>高级解析设置（默认自动，可不填）</summary><div class="grid"><div><label for="parse_mode">解析模式</label><select id="parse_mode"><option value="auto">自动（全文提取）</option><option value="lines">按行提取</option><option value="json_path">JSON 路径</option><option value="custom_regex">自定义正则</option></select></div><div><label for="parse_param">解析参数</label><input type="text" id="parse_param" maxlength="512" placeholder="json_path: data.list.ips；custom_regex: 正则"></div></div><small>自动 / 按行不需要参数；JSON 路径最长 512 字符，自定义正则最长 200 字符。</small></details><label for="github_path">GitHub 文件路径</label><input type="text" id="github_path" placeholder="IP/Cloudflare.txt" required><label for="commit_message">Commit 信息</label><input type="text" id="commit_message" placeholder="Update Cloudflare IPs" required><footer><button type="button" class="secondary" onclick="window.closeModal('ipSourceModal')">取消</button><button type="submit" id="saveIpSourceBtn">保存</button></footer></form></article></dialog>
     <script>${getDashboardScript(domains, ipSources, settings)}</script>`;
 }
 
@@ -777,10 +777,16 @@ function getDashboardInteractionScript() {
               // 存量数据 parse_mode 可能为 NULL：按 auto 回填，避免编辑时把解析配置清成空
               document.getElementById('domain_parse_mode').value = domain.parse_mode || 'auto';
               document.getElementById('domain_parse_param').value = domain.parse_param || '';
+              // 非 auto 的存量配置必须自动展开，否则用户看不到已生效的解析规则
+              document.querySelector('#domainModal .advanced-parse').open = (domain.parse_mode || 'auto') !== 'auto';
               document.getElementById('is_deep_resolve').checked = !!domain.is_deep_resolve;
               document.getElementById('ttl').value = domain.ttl;
               document.getElementById('notes').value = domain.notes;
-          } else { document.getElementById('domainId').value = ''; }
+          } else {
+              document.getElementById('domainId').value = '';
+              // form.reset() 不重置 details 的展开状态，新建时显式收起
+              document.querySelector('#domainModal .advanced-parse').open = false;
+          }
       } else if (modalId === 'ipSourceModal') {
           const form = document.getElementById('ipSourceForm'); form.reset();
           document.getElementById('probeProgress').style.display = 'none';
@@ -797,6 +803,8 @@ function getDashboardInteractionScript() {
               // 存量数据 parse_mode 可能为 NULL：按 auto 回填，避免编辑时把解析配置清成空
               document.getElementById('parse_mode').value = source.parse_mode || 'auto';
               document.getElementById('parse_param').value = source.parse_param || '';
+              // 非 auto 的存量配置必须自动展开，否则用户看不到已生效的解析规则
+              document.querySelector('#ipSourceModal .advanced-parse').open = (source.parse_mode || 'auto') !== 'auto';
               if (source.fetch_strategy) {
                   // 缓存策略只用于展示与「能不能点保存」，不进保存体（issue #69）
                   document.getElementById('probeResult').textContent = \`已缓存策略: \${source.fetch_strategy}\`;
@@ -804,6 +812,8 @@ function getDashboardInteractionScript() {
               }
           } else {
               document.getElementById('ipSourceId').value = '';
+              // form.reset() 不重置 details 的展开状态，新建时显式收起
+              document.querySelector('#ipSourceModal .advanced-parse').open = false;
           }
       }
       modal.showModal();
@@ -1085,9 +1095,12 @@ function getDashboardBootstrapScript() {
 
           try {
               // 探测体与保存体同源（issue #57）：解析参数归一不再各写一遍
+              const parseModeSelect = document.getElementById('parse_mode');
+              // 探测只选抓取通道，正文仍按这里的解析方式处理；成功文案回显它，避免误解
+              const parseModeLabel = parseModeSelect.selectedOptions[0].textContent;
               const probePayload = buildIpSourceProbePayload({
                   url: url,
-                  parseMode: document.getElementById('parse_mode').value,
+                  parseMode: parseModeSelect.value,
                   parseParam: document.getElementById('parse_param').value,
               });
               const result = await apiFetch('/api/ip_sources/probe', { method: 'POST', body: JSON.stringify(probePayload) });
@@ -1095,7 +1108,7 @@ function getDashboardBootstrapScript() {
               const samples = [];
               if (result.sampleIps && result.sampleIps.length) samples.push(\`IPv4 样例: \${result.sampleIps.join(', ')}\`);
               if (result.sampleIpv6 && result.sampleIpv6.length) samples.push(\`IPv6 样例: \${result.sampleIpv6.join(', ')}\`);
-              resultElem.textContent = \`探测成功！策略: \${result.strategy} | 发现 \${result.ipv4Count} 个IPv4、\${result.ipv6Count} 个IPv6\` + (samples.length ? \` | \${samples.join(' | ')}\` : '');
+              resultElem.textContent = \`探测成功！策略: \${result.strategy} | 发现 \${result.ipv4Count} 个IPv4、\${result.ipv6Count} 个IPv6\` + (samples.length ? \` | \${samples.join(' | ')}\` : '') + \` | 解析方式: \${parseModeLabel}\`;
               saveBtn.disabled = false;
           } catch (error) {
               progress.style.display = 'none';

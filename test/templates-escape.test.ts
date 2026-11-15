@@ -416,6 +416,33 @@ describe("通知浮层样式与移除兜底 (P1)", () => {
     });
 });
 
+describe("解析设置收进高级折叠项 (P2)", () => {
+    const pageHtml = () => getDashboardPage([], [], {});
+
+    it("两个弹窗各有一处折叠的高级解析设置，默认文案说明可不填", () => {
+        const html = pageHtml();
+        // 静态契约：details 的展开/收起是浏览器原生行为，脱离 DOM 无法驱动
+        expect((html.match(/<details class="advanced-parse">/g) || []).length).toBe(2);
+        expect((html.match(/<summary>高级解析设置（默认自动，可不填）<\/summary>/g) || []).length).toBe(2);
+    });
+
+    it("新建时收起，编辑存量非 auto 配置时自动展开", () => {
+        const html = pageHtml();
+        expect(html).toContain(
+            "document.querySelector('#domainModal .advanced-parse').open = (domain.parse_mode || 'auto') !== 'auto';"
+        );
+        expect(html).toContain(
+            "document.querySelector('#ipSourceModal .advanced-parse').open = (source.parse_mode || 'auto') !== 'auto';"
+        );
+        // 两处新建分支都显式收起（form.reset() 不会重置 details 的展开状态）
+        expect((html.match(/\.advanced-parse'\)\.open = false;/g) || []).length).toBe(2);
+    });
+
+    it("探测成功文案回显本次使用的解析方式", () => {
+        expect(pageHtml()).toContain("| 解析方式: ${parseModeLabel}");
+    });
+});
+
 describe("CSS 变量无孤儿 (retro #2)", () => {
     const layoutHtml = () => getHtmlLayout("测试", getDashboardPage([], [], {}));
 
