@@ -8,10 +8,10 @@
 /** PBKDF2 迭代次数（与 src/util/auth.ts 的 hashPassword 一致） */
 export const PBKDF2_ITERATIONS = 100000;
 
-/** 密码长度下限（与 /api/setup、/api/recover 一致） */
+/** 密码长度下限：镜像 src/util/auth.ts 的 PASSWORD_MIN_LENGTH（test/reset-local-admin-lib.test.ts 断言两者相等） */
 export const MIN_PASSWORD_LENGTH = 8;
 
-/** 密码长度上限（与 /api/setup、/api/recover 一致） */
+/** 密码长度上限：镜像 src/util/auth.ts 的 PASSWORD_MAX_LENGTH（同上） */
 export const MAX_PASSWORD_LENGTH = 1024;
 
 /**
@@ -47,8 +47,6 @@ export async function hashPassword(password, salt, iterations = PBKDF2_ITERATION
  * 从候选 sqlite 文件中挑出本地 D1 主库，判据是「含 settings 表」。
  * 入参是 [{ path, tables }]，tables 为该文件的普通表名。
  * 少于或多于一个候选都直接报错——猜错库会把别的 miniflare 对象当 D1 写，比报错糟得多。
- */
-/**
  * @param {{ path: string, tables: string[] }[] | undefined} candidates
  * @returns {string}
  */
@@ -68,12 +66,14 @@ export function pickLocalDatabase(candidates) {
  * - hash 非空：直接写入新哈希与盐，刷新页面即可用新密码登录
  * clearSessions 默认 true：重置后旧 Cookie 必须失效，否则「重置了却还登着」。
  * clearAttempts 默认 true：清掉限流失败记录，避免刚重置就被自己的重试挡在门外。
- */
-/**
  * @param {{ hash?: string | null, salt?: string | null, clearSessions?: boolean, clearAttempts?: boolean }} [options]
+ * @returns {string[]}
  */
 export function buildResetStatements({ hash = null, salt = null, clearSessions = true, clearAttempts = true } = {}) {
     if (hash && !salt) throw new Error("写入模式必须同时提供 salt。");
+    // 这两个值会拼进 SQL 字面量，先断言字符合法：一旦上游改格式（例如盐里出现引号）立刻失败，而不是静默拼接
+    if (hash && !/^[A-Za-z0-9.$_-]+$/.test(hash)) throw new Error("哈希含非法字符，拒绝拼接进 SQL。");
+    if (salt && !/^[A-Za-z0-9.$_-]+$/.test(salt)) throw new Error("盐含非法字符，拒绝拼接进 SQL。");
 
     const statements = [];
     if (!hash) {
@@ -82,8 +82,8 @@ export function buildResetStatements({ hash = null, salt = null, clearSessions =
             "DELETE FROM settings WHERE key = 'PASSWORD_SALT'"
         );
     } else {
-        // 值为 hash/salt 生成物（十六进制与 UUID），不含引号；这里用字面量是为了让脚本
-        // 无需 sqlite 参数绑定即可执行同一串语句（wrangler d1 execute 也吃这一串）。
+        // 用字面量而非参数绑定：node:sqlite 的 exec 不接受绑定参数，脚本要在单个事务里顺序执行
+        // 这串语句；拼进去的只有上面断言过字符集的哈希与盐。
         statements.push(
             `INSERT INTO settings (key, value) VALUES ('ADMIN_PASSWORD_HASH', '${hash}') ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
             `INSERT INTO settings (key, value) VALUES ('PASSWORD_SALT', '${salt}') ON CONFLICT(key) DO UPDATE SET value = excluded.value`

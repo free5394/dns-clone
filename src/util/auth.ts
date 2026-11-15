@@ -15,6 +15,20 @@ export function timingSafeHexEqual(a: string, b: string): boolean {
 }
 
 /**
+ * 管理员密码长度边界：`/api/setup` 与 `/api/recover` 共用这一份，
+ * scripts/reset-local-admin-lib.mjs 镜像同一对常量（test/reset-local-admin-lib.test.ts 断言两处相等）。
+ */
+export const PASSWORD_MIN_LENGTH = 8;
+export const PASSWORD_MAX_LENGTH = 1024;
+
+/** 长度判据：非字符串一律拒绝，避免数字被隐式当成密码 */
+export function isValidPasswordLength(password: unknown): password is string {
+    return (
+        typeof password === "string" && password.length >= PASSWORD_MIN_LENGTH && password.length <= PASSWORD_MAX_LENGTH
+    );
+}
+
+/**
  * 哈希密码（PBKDF2，100k 迭代）
  * 隐含修正 B3：原单轮 SHA-256 升级为 PBKDF2，防彩虹表/字典攻击
  *

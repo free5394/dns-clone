@@ -312,6 +312,7 @@ pnpm reset:local-admin --password 'your-new-password'
 - 它会清空 `sessions` 与 `login_attempts`：旧登录态失效，也避免刚重置就被自己的重试挡在限流外。
 - 报 `SQLITE_BUSY` 说明本地库被 `pnpm dev` 占用——先停掉 dev server 再跑。
 - 线上实例请按 [Q8](#-常见问题faq) 处理；也可以给 Worker 配 `RECOVERY_TOKEN`，用 `POST /api/recover` 换密码（见[公开端点](#公开端点)）。
+- 本地想试恢复入口：`pnpm exec wrangler dev --var RECOVERY_TOKEN:local-test-token`（`--var` 只影响本次进程，不会写进仓库或 `.dev.vars`），随后带同样的值 `POST /api/recover`。
 
 > **应急旁路（仅排障用）**：不重置也能临时进后台——`sessions` 表里未过期的 `token` 直接当 Cookie 用（`Cookie: session=<token>`）。它只借用一条已有登录态，不解决「密码不知道」本身，token 过期或被清空即失效。
 
@@ -390,12 +391,12 @@ pnpm run deploy
 
 ### 公开端点
 
-| 方法   | 路径           | 说明                                                                                  |
-| ------ | -------------- | ------------------------------------------------------------------------------------- |
-| `GET`  | `/api/status`  | 查询系统是否已初始化（是否设置了管理员密码）                                          |
-| `POST` | `/api/setup`   | 首次设置管理员密码（密码 8–1024 字符；已初始化后 403）                                |
-| `POST` | `/api/login`   | 密码登录（5 分钟内失败 ≥ 5 次会 429 限流）                                            |
-| `POST` | `/api/recover` | 凭恢复令牌换一个新管理员密码（**可选能力**：Worker 未配 `RECOVERY_TOKEN` 时一律 404） |
+| 方法   | 路径           | 说明                                                                                      |
+| ------ | -------------- | ----------------------------------------------------------------------------------------- |
+| `GET`  | `/api/status`  | 查询系统是否已初始化（是否设置了管理员密码）                                              |
+| `POST` | `/api/setup`   | 首次设置管理员密码（密码 8–1024 字符；已初始化后 403）                                    |
+| `POST` | `/api/login`   | 密码登录（5 分钟内失败 ≥ 5 次会 429 限流）                                                |
+| `POST` | `/api/recover` | 凭恢复令牌换一个新管理员密码（**可选能力**：Worker 未配 `RECOVERY_TOKEN` 时该路径不存在） |
 
 `POST /api/recover` 请求体：
 
@@ -403,7 +404,9 @@ pnpm run deploy
 { "token": "<RECOVERY_TOKEN 的值>", "password": "<新密码，8–1024 字符>" }
 ```
 
-成功返回 `{ "success": true }`，同一批次内替换密码哈希与盐、清空全部会话与失败记录（旧 Cookie 立即失效）。令牌错误按登录失败计入同一限流桶，5 分钟内 5 次即 429。配置方式：`wrangler secret put RECOVERY_TOKEN` 或 Dashboard 的 Secrets；不配置则功能不存在。
+成功返回 `{ "success": true }`，同一批次内替换密码哈希与盐、清空全部会话与失败记录（旧 Cookie 立即失效）。令牌错误按登录失败计入同一限流桶，5 分钟内 5 次即 429。配置方式：`wrangler secret put RECOVERY_TOKEN` 或 Dashboard 的 Secrets。
+
+未配置 `RECOVERY_TOKEN` 时这条路由根本不注册：请求与任意未知路径走同一条路径（未登录一律 401，已登录一律 404 且响应体相同），因此「有没有开恢复入口」在两种状态下都探测不出来。
 
 ### 鉴权端点
 
@@ -528,22 +531,22 @@ D1 数据库（绑定名 `WUYA`）共 5 张表，由 `initializeAndMigrateDataba
 
 本项目在多个层面内置了安全防护：
 
-| 维度           | 机制                                                                                                                                                |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **密码存储**   | PBKDF2-HMAC-SHA256，100,000 次迭代 + 随机盐；登录时恒定时间比对（`timingSafeHexEqual`）                                                             |
-| **密码兼容**   | 旧版本单轮 SHA-256 哈希在登录成功后**自动升级**为 PBKDF2，无需用户改密码                                                                            |
-| **登录限流**   | 同一 IP 5 分钟内失败 ≥ 5 次返回 429；成功后清空失败记录                                                                                             |
-| **会话安全**   | Cookie 设置 `HttpOnly` + `Secure` + `SameSite=Strict`；服务端校验过期；登出立即删除                                                                 |
-| **密码强度**   | 后台设置接口校验密码长度 8–1024 字符（上限防 DoS）                                                                                                  |
-| **SSRF 防护**  | `assertSafeHttpUrl` 阻止访问内网/回环/链路本地/CGNAT/云元数据地址（含十进制、十六进制、IPv4-mapped IPv6 等绕过形式）                                |
-| **XSS 防护**   | UI 模板所有用户可控字段（notes、target_domain 等）经 `escapeHtml` 转义                                                                              |
-| **凭据隔离**   | `getSafeSettings` 在返回前端前剔除 `ADMIN_PASSWORD_HASH` / `PASSWORD_SALT` / `CF_API_TOKEN` / `GITHUB_TOKEN`                                        |
-| **错误脱敏**   | 非 API 路径的全局兜底返回固定文案，杜绝 stack / 凭据泄露；API 路径仅返回 `message`，不含 stack                                                      |
-| **写入白名单** | 设置接口仅允许写入预定义的 9 个 key，忽略任意其他字段                                                                                               |
-| **配对校验**   | CF Token + Zone ID 必须同时提供；GitHub Token + Owner + Repo 必须同时提供                                                                           |
-| **网络超时**   | 所有外部 fetch 经 `fetchWithTimeout`（默认 10s）+ 指数退避重试，杜绝无界等待                                                                        |
-| **恢复入口**   | `POST /api/recover` 仅在部署方显式配置 `RECOVERY_TOKEN` 时存在（未配置返回 404，不暴露开关）；令牌经 SHA-256 归一再恒定时间比对；成功后清空全部会话 |
-| **迁移门控**   | `last_migrated_at` 24h 门控，避免每请求执行整套 DDL                                                                                                 |
+| 维度           | 机制                                                                                                                                                                                   |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **密码存储**   | PBKDF2-HMAC-SHA256，100,000 次迭代 + 随机盐；登录时恒定时间比对（`timingSafeHexEqual`）                                                                                                |
+| **密码兼容**   | 旧版本单轮 SHA-256 哈希在登录成功后**自动升级**为 PBKDF2，无需用户改密码                                                                                                               |
+| **登录限流**   | 同一 IP 5 分钟内失败 ≥ 5 次返回 429；成功后清空失败记录                                                                                                                                |
+| **会话安全**   | Cookie 设置 `HttpOnly` + `Secure` + `SameSite=Strict`；服务端校验过期；登出立即删除                                                                                                    |
+| **密码强度**   | 后台设置接口校验密码长度 8–1024 字符（上限防 DoS）                                                                                                                                     |
+| **SSRF 防护**  | `assertSafeHttpUrl` 阻止访问内网/回环/链路本地/CGNAT/云元数据地址（含十进制、十六进制、IPv4-mapped IPv6 等绕过形式）                                                                   |
+| **XSS 防护**   | UI 模板所有用户可控字段（notes、target_domain 等）经 `escapeHtml` 转义                                                                                                                 |
+| **凭据隔离**   | `getSafeSettings` 在返回前端前剔除 `ADMIN_PASSWORD_HASH` / `PASSWORD_SALT` / `CF_API_TOKEN` / `GITHUB_TOKEN`                                                                           |
+| **错误脱敏**   | 非 API 路径的全局兜底返回固定文案，杜绝 stack / 凭据泄露；API 路径仅返回 `message`，不含 stack                                                                                         |
+| **写入白名单** | 设置接口仅允许写入预定义的 9 个 key，忽略任意其他字段                                                                                                                                  |
+| **配对校验**   | CF Token + Zone ID 必须同时提供；GitHub Token + Owner + Repo 必须同时提供                                                                                                              |
+| **网络超时**   | 所有外部 fetch 经 `fetchWithTimeout`（默认 10s）+ 指数退避重试，杜绝无界等待                                                                                                           |
+| **恢复入口**   | `POST /api/recover` 仅在部署方显式配置 `RECOVERY_TOKEN` 时注册（未配置与未知路径无差别：未登录 401 / 已登录 404，开关不可探测）；令牌经 SHA-256 归一再恒定时间比对；成功后清空全部会话 |
+| **迁移门控**   | `last_migrated_at` 24h 门控，避免每请求执行整套 DDL                                                                                                                                    |
 
 ---
 
@@ -615,6 +618,8 @@ Worker 会代理到你的 GitHub 仓库对应文件，并自带 5 分钟边缘�
 ```sql
 DELETE FROM settings WHERE key = 'ADMIN_PASSWORD_HASH';
 DELETE FROM settings WHERE key = 'PASSWORD_SALT';
+-- 顺手清掉旧会话：否则重置前签发的 Cookie 在重建密码后仍然有效
+DELETE FROM sessions;
 ```
 
 然后重新访问 Worker 首页，会引导你设置新密码。若之前给 Worker 配过 `RECOVERY_TOKEN`，也可以直接 `POST /api/recover`（带令牌与新密码），无需进控制台。

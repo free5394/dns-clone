@@ -14,7 +14,15 @@ import {
 import { ensureInitialData } from "../db/migrations.ts";
 import { jsonResponse, getCookie } from "../util/http.ts";
 import type { WaitUntil } from "../util/http.ts";
-import { hashPassword, isAuthenticated, timingSafeHexEqual, verifyPassword } from "../util/auth.ts";
+import {
+    PASSWORD_MAX_LENGTH,
+    PASSWORD_MIN_LENGTH,
+    hashPassword,
+    isAuthenticated,
+    isValidPasswordLength,
+    timingSafeHexEqual,
+    verifyPassword,
+} from "../util/auth.ts";
 import { getZoneName } from "../util/cf.ts";
 import {
     FETCH_STRATEGIES,
@@ -54,6 +62,10 @@ async function readJsonBody<T>(request: Request): Promise<T | null> {
 
 const BAD_JSON = () => jsonResponse({ error: "请求体不是合法 JSON。" }, 400);
 
+/** 未命中任何路由时的统一响应体：可选端点（如未配置令牌的 /api/recover）必须与它逐字一致，否则开关可被探测 */
+const API_NOT_FOUND = { error: "API 端点未找到" };
+const PASSWORD_LENGTH_ERROR = `密码长度必须为 ${PASSWORD_MIN_LENGTH} 到 ${PASSWORD_MAX_LENGTH} 个字符之间。`;
+
 /** API 路由分发 */
 export async function handleApiRequest(
     request: Request,
@@ -71,7 +83,10 @@ export async function handleApiRequest(
     }
     if (path === "/api/setup" && method === "POST") return await apiSetup(request, db);
     if (path === "/api/login" && method === "POST") return await apiLogin(request, db);
-    if (path === "/api/recover" && method === "POST") return await apiRecover(request, db, env.RECOVERY_TOKEN);
+    // 未配置令牌时不分发 /api/recover：让它像任何未知路径一样落到下面的鉴权与 404 尾巴，
+    // 这样「是否启用了恢复入口」在未登录（401）与已登录（404）两种状态下都不可探测
+    if (path === "/api/recover" && method === "POST" && env.RECOVERY_TOKEN)
+        return await apiRecover(request, db, env.RECOVERY_TOKEN);
 
     if (!(await isAuthenticated(request, db))) return jsonResponse({ error: "未授权" }, 401);
 
@@ -126,7 +141,7 @@ export async function handleApiRequest(
         return syncSingleIpSource(id, env, true, request.signal, waitUntil) as Promise<Response>;
     }
 
-    return jsonResponse({ error: "API 端点未找到" }, 404);
+    return jsonResponse(API_NOT_FOUND, 404);
 }
 
 /**
@@ -146,8 +161,7 @@ async function apiSetup(request: Request, db: D1Database): Promise<Response> {
     const body = await readJsonBody<{ password?: string }>(request);
     if (body === null) return BAD_JSON();
     const { password } = body;
-    if (!password || password.length < 8 || password.length > 1024)
-        return jsonResponse({ error: "密码长度必须为 8 到 1024 个字符之间。" }, 400);
+    if (!isValidPasswordLength(password)) return jsonResponse({ error: PASSWORD_LENGTH_ERROR }, 400);
 
     // L2：hash 与 salt 在同一个原子 batch 写入；并发时只有首个请求能写入。
     // 兼容旧实现的 pending 占位哈希：若上次中断留下占位，允许本次完整重写。
@@ -191,7 +205,10 @@ async function isLoginThrottled(db: D1Database, ip: string): Promise<boolean> {
     return !!recent && (recent as { n: number }).n >= LOGIN_MAX_FAILURES;
 }
 
-/** 记一次失败尝试（成功登录/恢复时由各自的批量语句清理） */
+/**
+ * 记一次失败尝试。
+ * 清理策略按入口区分：登录成功只清本 IP 的失败记录；恢复成功清全表（见 apiRecover 注释）。
+ */
 async function recordLoginFailure(db: D1Database, ip: string): Promise<void> {
     await db.prepare("INSERT INTO login_attempts (ip, success) VALUES (?, 0)").bind(ip).run();
 }
@@ -235,13 +252,12 @@ async function sha256Hex(input: string): Promise<string> {
 
 /**
  * 恢复入口（可选能力）：忘记管理员密码时，用部署方自己配置的 RECOVERY_TOKEN 换一个能登录的新密码。
- * - 未配置 RECOVERY_TOKEN 时该端点不存在（404），与未知路径表现一致，不暴露功能开关；
+ * - 未配置 RECOVERY_TOKEN 时路由层根本不分发到这里，请求与未知路径走同一条鉴权/404 路径；
  * - 令牌比对走 SHA-256 归一再做恒定时间比对；
- * - 哈希、盐、会话、失败记录在同一 batch 内落库，避免「新盐配旧哈希」的半坏状态。
+ * - 哈希、盐、会话、失败记录在同一 batch 内落库，避免「新盐配旧哈希」的半坏状态；
+ * - 失败记录清「全表」而非本 IP：恢复是持令牌的全局管理员动作，成功后 5 分钟限流窗口应从零开始。
  */
-async function apiRecover(request: Request, db: D1Database, expectedToken: string | undefined): Promise<Response> {
-    if (!expectedToken) return jsonResponse({ error: "接口不存在。" }, 404);
-
+async function apiRecover(request: Request, db: D1Database, expectedToken: string): Promise<Response> {
     const ip = request.headers.get("CF-Connecting-IP") || "unknown";
     if (await isLoginThrottled(db, ip)) return jsonResponse({ error: "尝试过于频繁，请稍后再试。" }, 429);
 
@@ -257,8 +273,7 @@ async function apiRecover(request: Request, db: D1Database, expectedToken: strin
     }
 
     const { password } = body;
-    if (!password || password.length < 8 || password.length > 1024)
-        return jsonResponse({ error: "密码长度必须为 8 到 1024 个字符之间。" }, 400);
+    if (!isValidPasswordLength(password)) return jsonResponse({ error: PASSWORD_LENGTH_ERROR }, 400);
 
     const salt = crypto.randomUUID();
     const hash = await hashPassword(password, salt);

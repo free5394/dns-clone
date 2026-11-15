@@ -13,7 +13,15 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+// node:sqlite 自 Node 22.5 起提供（早期 22.x 还需 --experimental-sqlite）：
+// 这里给出可执行的中文提示，而不是让静态 import 直接抛 ERR_UNKNOWN_BUILTIN_MODULE。
+let DatabaseSync;
+try {
+    ({ DatabaseSync } = await import("node:sqlite"));
+} catch {
+    console.error("❌ 当前 Node 不支持 node:sqlite（需要 Node ≥ 22.5，推荐 24），请升级 Node 后重试。");
+    process.exit(1);
+}
 import {
     buildResetStatements,
     generateSalt,
@@ -48,6 +56,9 @@ function parseArgs(argv) {
         } else if (arg === "--password") {
             const value = argv[i + 1];
             if (value === undefined) throw new Error("--password 后面缺少密码值。");
+            if (value.startsWith("--")) {
+                throw new Error(`--password 的值不能是另一个选项（收到 ${value}），请写成 --password=<密码>。`);
+            }
             options.password = value;
             i++;
         } else if (arg.startsWith("--password=")) {
@@ -101,8 +112,12 @@ function backupDatabase(file) {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
-    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-    const target = path.join(BACKUP_DIR, `${stamp}-${path.basename(file)}`);
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    // VACUUM INTO 要求目标文件不存在：同一秒内重跑时追加序号，避免「备份阶段就整条失败」
+    let target = path.join(BACKUP_DIR, `${stamp}-${path.basename(file)}`);
+    for (let seq = 2; fs.existsSync(target); seq++) {
+        target = path.join(BACKUP_DIR, `${stamp}-${seq}-${path.basename(file)}`);
+    }
     const db = new DatabaseSync(file);
     try {
         db.exec(`VACUUM INTO '${target.replaceAll("'", "''")}'`);
@@ -187,6 +202,7 @@ async function main() {
 
 main().catch((error) => {
     console.error(`❌ 重置失败：${error instanceof Error ? error.message : error}`);
-    if (error instanceof Error && error.stack && process.env.DEBUG) console.error(error.stack);
+    // 规范要求日志带 stack（CODING_STANDARDS.md 错误日志格式），失败时一律打印，不藏到 DEBUG 后面
+    if (error instanceof Error) console.error(error.stack);
     process.exit(1);
 });

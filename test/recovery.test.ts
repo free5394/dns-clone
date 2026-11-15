@@ -48,22 +48,46 @@ async function countRows(sql: string): Promise<number> {
     return row.n;
 }
 
-describe("/api/recover 未配置令牌时端点不存在", () => {
+// 显式省略 RECOVERY_TOKEN 调用分发器，模拟「部署方没配令牌」的实例
+const noTokenEnv = { WUYA: env.WUYA };
+
+function recoverRequest(headers: Record<string, string> = {}): Request {
+    return new Request("https://example.com/api/recover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ token: TOKEN, password: NEW_PASSWORD }),
+    });
+}
+
+describe("/api/recover 未配置令牌时与未知路径不可区分", () => {
     beforeEach(restoreSeedPassword);
 
-    it("返回 404，表现与未知路径一致，且不改任何数据", async () => {
-        const res = await handleApiRequest(
-            new Request("https://example.com/api/recover", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ token: TOKEN, password: NEW_PASSWORD }),
-            }),
-            { WUYA: env.WUYA }
-        );
-        expect(res.status).toBe(404);
-        const body = (await res.json()) as { error: string };
-        expect(body.error).toMatch(/接口不存在/);
+    it("未登录时与未知路径同为 401 且响应体相同，失败记录不增加", async () => {
+        const res = await handleApiRequest(recoverRequest(), noTokenEnv);
+        const unknown = await handleApiRequest(new Request("https://example.com/api/does-not-exist"), noTokenEnv);
+
+        expect(res.status).toBe(401);
+        expect(unknown.status).toBe(401);
+        expect(await res.json()).toEqual(await unknown.json());
         expect(await countRows("SELECT COUNT(*) AS n FROM login_attempts")).toBe(0);
+    });
+
+    it("已登录时与未知路径同为 404 且响应体相同，密码与会话不变", async () => {
+        const setCookie = (await login(SEED_PASSWORD)).headers.get("Set-Cookie") as string;
+        const cookie = setCookie.split(";")[0];
+        const res = await handleApiRequest(recoverRequest({ Cookie: cookie }), noTokenEnv);
+        const unknown = await handleApiRequest(
+            new Request("https://example.com/api/does-not-exist", { headers: { Cookie: cookie } }),
+            noTokenEnv
+        );
+
+        expect(res.status).toBe(404);
+        expect(unknown.status).toBe(404);
+        expect(await res.json()).toEqual(await unknown.json());
+
+        // 会话仍在、新密码登不进去，说明这条请求没改动任何认证状态
+        expect(await countRows("SELECT COUNT(*) AS n FROM sessions")).toBe(1);
+        expect((await login(NEW_PASSWORD)).status).toBe(401);
     });
 });
 
@@ -127,6 +151,9 @@ describe("/api/recover 恢复成功", () => {
                 new Date(Date.now() + 3_600_000).toISOString()
             ),
             env.WUYA.prepare("INSERT INTO login_attempts (ip, success) VALUES (?, 0)").bind(CLIENT_IP),
+            // 另一 IP 的失败记录：恢复入口是有意清全表，不是只清调用方 IP（与 /api/login 不同），
+            // 否则刚重置完仍可能被别处的失败计数挡在限流外
+            env.WUYA.prepare("INSERT INTO login_attempts (ip, success) VALUES (?, 0)").bind("198.51.100.77"),
         ]);
 
         const res = await postRecover({ token: TOKEN, password: NEW_PASSWORD });
