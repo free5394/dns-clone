@@ -14,6 +14,7 @@
         "deploy": "node scripts/load-deploy-env.cjs",
         "deploy:prod": "node scripts/load-deploy-env.cjs --env prod",
         "build:single": "node scripts/build-single-file.mjs",
+        "reset:local-admin": "node scripts/reset-local-admin.mjs",
         "cf-typegen": "wrangler types",
         "pretypecheck": "node scripts/ensure-worker-types.cjs",
         "typecheck": "tsc --noEmit",

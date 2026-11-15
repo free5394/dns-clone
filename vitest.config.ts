@@ -11,7 +11,8 @@ export default defineProject({
     plugins: [
         cloudflareTest({
             wrangler: { configPath: "./wrangler.toml" },
-            miniflare: { bindings: { TEST_MIGRATIONS: migrations } },
+            // RECOVERY_TOKEN 只在测试环境注入：生产/本地未设置时 /api/recover 一律 404。
+            miniflare: { bindings: { TEST_MIGRATIONS: migrations, RECOVERY_TOKEN: "test-recovery-token" } },
         }),
     ],
     test: {

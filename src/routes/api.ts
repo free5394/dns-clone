@@ -14,7 +14,7 @@ import {
 import { ensureInitialData } from "../db/migrations.ts";
 import { jsonResponse, getCookie } from "../util/http.ts";
 import type { WaitUntil } from "../util/http.ts";
-import { hashPassword, isAuthenticated, verifyPassword } from "../util/auth.ts";
+import { hashPassword, isAuthenticated, timingSafeHexEqual, verifyPassword } from "../util/auth.ts";
 import { getZoneName } from "../util/cf.ts";
 import {
     FETCH_STRATEGIES,
@@ -57,7 +57,7 @@ const BAD_JSON = () => jsonResponse({ error: "请求体不是合法 JSON。" }, 
 /** API 路由分发 */
 export async function handleApiRequest(
     request: Request,
-    env: { WUYA: D1Database },
+    env: { WUYA: D1Database; RECOVERY_TOKEN?: string },
     waitUntil?: WaitUntil
 ): Promise<Response> {
     const url = new URL(request.url);
@@ -71,6 +71,7 @@ export async function handleApiRequest(
     }
     if (path === "/api/setup" && method === "POST") return await apiSetup(request, db);
     if (path === "/api/login" && method === "POST") return await apiLogin(request, db);
+    if (path === "/api/recover" && method === "POST") return await apiRecover(request, db, env.RECOVERY_TOKEN);
 
     if (!(await isAuthenticated(request, db))) return jsonResponse({ error: "未授权" }, 401);
 
@@ -175,19 +176,29 @@ async function apiSetup(request: Request, db: D1Database): Promise<Response> {
     return jsonResponse({ success: true });
 }
 
-async function apiLogin(request: Request, db: D1Database): Promise<Response> {
-    const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+/** 限流窗口：5 分钟内同一 IP 失败达到阈值即拒绝；登录与恢复入口共用同一张 login_attempts */
+const LOGIN_WINDOW = "-5 minutes";
+const LOGIN_MAX_FAILURES = 5;
 
-    // 速率限制：5 分钟内失败 ≥5 次则拒绝
+/** 限流预检：未达阈值返回 false（不写记录） */
+async function isLoginThrottled(db: D1Database, ip: string): Promise<boolean> {
     const recent = await db
         .prepare(
-            "SELECT COUNT(*) as n FROM login_attempts WHERE ip = ? AND success = 0 AND attempted_at > datetime('now', '-5 minutes')"
+            "SELECT COUNT(*) as n FROM login_attempts WHERE ip = ? AND success = 0 AND attempted_at > datetime('now', ?)"
         )
-        .bind(ip)
+        .bind(ip, LOGIN_WINDOW)
         .first();
-    if (recent && (recent as { n: number }).n >= 5) {
-        return jsonResponse({ error: "尝试过于频繁，请稍后再试。" }, 429);
-    }
+    return !!recent && (recent as { n: number }).n >= LOGIN_MAX_FAILURES;
+}
+
+/** 记一次失败尝试（成功登录/恢复时由各自的批量语句清理） */
+async function recordLoginFailure(db: D1Database, ip: string): Promise<void> {
+    await db.prepare("INSERT INTO login_attempts (ip, success) VALUES (?, 0)").bind(ip).run();
+}
+
+async function apiLogin(request: Request, db: D1Database): Promise<Response> {
+    const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+    if (await isLoginThrottled(db, ip)) return jsonResponse({ error: "尝试过于频繁，请稍后再试。" }, 429);
 
     const loginBody = await readJsonBody<{ password?: string }>(request);
     if (loginBody === null) return BAD_JSON();
@@ -212,8 +223,58 @@ async function apiLogin(request: Request, db: D1Database): Promise<Response> {
         const sessionCookie = `session=${token}; HttpOnly; Secure; Path=/; SameSite=Strict; Max-Age=86400`;
         return jsonResponse({ success: true }, 200, { "Set-Cookie": sessionCookie });
     }
-    await db.prepare("INSERT INTO login_attempts (ip, success) VALUES (?, 0)").bind(ip).run();
+    await recordLoginFailure(db, ip);
     return jsonResponse({ error: "密码无效。" }, 401);
+}
+
+/** SHA-256 → 小写十六进制（把任意长度令牌归一为定长，比对时不再泄漏长度差异） */
+async function sha256Hex(input: string): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * 恢复入口（可选能力）：忘记管理员密码时，用部署方自己配置的 RECOVERY_TOKEN 换一个能登录的新密码。
+ * - 未配置 RECOVERY_TOKEN 时该端点不存在（404），与未知路径表现一致，不暴露功能开关；
+ * - 令牌比对走 SHA-256 归一再做恒定时间比对；
+ * - 哈希、盐、会话、失败记录在同一 batch 内落库，避免「新盐配旧哈希」的半坏状态。
+ */
+async function apiRecover(request: Request, db: D1Database, expectedToken: string | undefined): Promise<Response> {
+    if (!expectedToken) return jsonResponse({ error: "接口不存在。" }, 404);
+
+    const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+    if (await isLoginThrottled(db, ip)) return jsonResponse({ error: "尝试过于频繁，请稍后再试。" }, 429);
+
+    const body = await readJsonBody<{ token?: string; password?: string }>(request);
+    if (body === null) return BAD_JSON();
+
+    const tokenMatched =
+        typeof body.token === "string" &&
+        timingSafeHexEqual(await sha256Hex(body.token), await sha256Hex(expectedToken));
+    if (!tokenMatched) {
+        await recordLoginFailure(db, ip);
+        return jsonResponse({ error: "恢复令牌无效。" }, 401);
+    }
+
+    const { password } = body;
+    if (!password || password.length < 8 || password.length > 1024)
+        return jsonResponse({ error: "密码长度必须为 8 到 1024 个字符之间。" }, 400);
+
+    const salt = crypto.randomUUID();
+    const hash = await hashPassword(password, salt);
+    const upsert = (key: string, value: string) =>
+        db
+            .prepare(
+                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            )
+            .bind(key, value);
+    await db.batch([
+        upsert("ADMIN_PASSWORD_HASH", hash),
+        upsert("PASSWORD_SALT", salt),
+        db.prepare("DELETE FROM sessions"),
+        db.prepare("DELETE FROM login_attempts"),
+    ]);
+    return jsonResponse({ success: true });
 }
 
 async function apiLogout(request: Request, db: D1Database): Promise<Response> {

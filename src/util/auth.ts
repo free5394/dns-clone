@@ -5,7 +5,7 @@ import type { SessionRow } from "../db/client.ts";
 import { getCookie } from "./http.ts";
 
 /** 恒定时间十六进制字符串比对（先比较长度，再对每字符做 XOR 累积差异） */
-function timingSafeHexEqual(a: string, b: string): boolean {
+export function timingSafeHexEqual(a: string, b: string): boolean {
     if (a.length !== b.length) return false;
     let diff = 0;
     for (let i = 0; i < a.length; i++) {

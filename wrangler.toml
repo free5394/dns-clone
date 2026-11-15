@@ -24,3 +24,9 @@ binding = "WUYA"
 database_name = "wuya-db"
 database_id = "REPLACE_WITH_YOUR_D1_ID"
 migrations_dir = "src/db/migrations"
+
+# 恢复入口（可选）：用 `wrangler secret put RECOVERY_TOKEN` 或 Dashboard 的 Secrets 设置该变量后，
+# POST /api/recover 才存在（凭令牌换一个新管理员密码）；未设置时该端点一律 404。
+# 真实令牌只放 Secret，不写进本文件，也不要提交。
+# [vars]
+# RECOVERY_TOKEN = "REPLACE_WITH_RECOVERY_TOKEN"
