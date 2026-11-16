@@ -9,7 +9,8 @@ export default defineConfig({
         environment: "node",
         include: ["test/node/**/*.test.ts"],
         exclude: [...configDefaults.exclude, "**/.agents/**", "**/.scratch/**"],
-        // 用例以子进程方式跑 scripts/ 下的脚本，脚本不在模块图里；不显式声明，改了脚本 watch 也不会重跑
-        forceRerunTriggers: ["**/scripts/**", "**/test/node/**"],
+        // 用例以子进程方式跑 scripts/ 下的脚本，脚本不在模块图里；不显式声明，改了脚本 watch 也不会重跑。
+        // 数组是整体替换而非合并，默认的 package.json / config 触发条件必须自己带回来。
+        forceRerunTriggers: ["**/scripts/**", "**/test/node/**", "**/package.json", "**/{vitest,vite}.config.*"],
     },
 });
