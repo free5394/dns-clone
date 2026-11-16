@@ -267,11 +267,11 @@ Cron `0,30 * * * *`（每 30 分钟）触发 `scheduled` handler，通过 `setti
 
 ### 环境要求
 
-| 工具            | 版本要求                        | 说明                                                      |
-| --------------- | ------------------------------- | --------------------------------------------------------- |
-| Node.js         | ≥ 22.12（推荐 24，见 `.nvmrc`） | 项目要求 `engines.node >= 22.12`（wrangler 4.162 的下限） |
-| pnpm            | ≥ 11                            | 直接安装（或 `corepack enable` 后使用）                   |
-| Cloudflare 账号 | ——                              | 需要 API Token（"编辑区域 DNS"模板）                      |
+| 工具            | 版本要求                        | 说明                                                                                                                                                                              |
+| --------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Node.js         | ≥ 22.12（推荐 24，见 `.nvmrc`） | 项目要求 `engines.node >= 22.12`：下限来自 vitest 的 engines（当前 5.1.0 为 `^22.12.0 \|\| ^24.0.0 \|\| >=26.0.0`，不含 23/25，本仓库未额外排除）；wrangler 4.158.0 只要求 ≥ 22.0 |
+| pnpm            | ≥ 11                            | 直接安装（或 `corepack enable` 后使用）                                                                                                                                           |
+| Cloudflare 账号 | ——                              | 需要 API Token（"编辑区域 DNS"模板）                                                                                                                                              |
 
 > Windows 11 原生支持，无需 WSL。
 
@@ -318,22 +318,24 @@ pnpm reset:local-admin --password 'your-new-password'
 
 ### 常用脚本
 
-| 命令                           | 作用                                                                                                                                          |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm dev`                     | 启动本地 workerd 调试环境（默认 8787 端口）                                                                                                   |
-| `pnpm reset:local-admin`       | 重置本地库管理员密码（默认删行回初始化页，`--password` 直接写入；写前备份）                                                                   |
-| `pnpm test`                    | 运行 `@cloudflare/vitest-plugin` 测试套件（workerd 内执行）                                                                                   |
-| `pnpm test:coverage`           | 运行测试并生成覆盖率报告（istanbul 插桩）                                                                                                     |
-| `pnpm check`                   | 静态门禁：typecheck、测试类型检查、语言、UTF-8、lint、格式（pre-commit 跑的这条）                                                             |
-| `pnpm verify`                  | `pnpm check` + 全量测试，想一次跑完时用                                                                                                       |
-| `pnpm check:dashboard`         | 渲染仪表盘并解析注入的客户端脚本（Node 侧语法闸门，不进 CI）                                                                                  |
-| `pnpm typecheck`               | TypeScript 严格模式检查（`tsc --noEmit`）                                                                                                     |
-| `pnpm typecheck:test`          | 测试目录类型检查（`tsc --noEmit -p tsconfig.test.json`）                                                                                      |
-| `pnpm build:single`            | 用 esbuild 打包 `src/index.ts` → `dist/worker.bundle.js`                                                                                      |
-| `pnpm run deploy`              | CLI 部署（自动注入 `.env` 中的 `CLOUDFLARE_API_TOKEN`；`--env <name>` 可切换 `.env.<name>` + `wrangler.<name>.toml`）                         |
-| `pnpm run deploy:prod`         | 生产部署：等价 `deploy --env prod`，需本机 `.env.prod` 与 `wrangler.prod.toml`（均不入库）                                                    |
-| `pnpm run deploy --print-args` | 干跑：只回显 wrangler 会收到的参数后退出，不触网、不需要 Token；但与 `--env <name>` 同用时仍要求 `.env.<name>` 与 `wrangler.<name>.toml` 就位 |
-| `pnpm cf-typegen`              | 重新生成 `worker-configuration.d.ts`（gitignore）                                                                                             |
+| 命令                           | 作用                                                                                                                                                                                            |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm dev`                     | 启动本地 workerd 调试环境（默认 8787 端口）                                                                                                                                                     |
+| `pnpm reset:local-admin`       | 重置本地库管理员密码（默认删行回初始化页，`--password` 直接写入；写前备份）                                                                                                                     |
+| `pnpm test`                    | 两个项目依次跑：workerd 内测试套件 + `test/node/` 的 Node 环境用例                                                                                                                              |
+| `pnpm test:coverage`           | 两个项目依次跑，覆盖率报告（istanbul 插桩）只统计 workerd 项目的 `src/**`（不含 `src/ui/**` 与 `src/index.js`）                                                                                 |
+| `pnpm test:node`               | 只跑 Node 环境用例：`scripts/` 下部署脚本的进程级接线（参数剥接、退出码）                                                                                                                       |
+| `pnpm test:watch:node`         | 热跑 Node 环境用例（改 `scripts/` 或 `test/node/` 时用；`pnpm test:watch` 只覆盖 workerd 项目）                                                                                                 |
+| `pnpm check`                   | 静态门禁：typecheck、测试类型检查、语言、UTF-8、lint、格式（pre-commit 跑的这条）                                                                                                               |
+| `pnpm verify`                  | `pnpm check` + 全量测试，想一次跑完时用                                                                                                                                                         |
+| `pnpm check:dashboard`         | 渲染仪表盘并解析注入的客户端脚本（Node 侧语法闸门，不进 CI）                                                                                                                                    |
+| `pnpm typecheck`               | TypeScript 严格模式检查（`tsc --noEmit`）                                                                                                                                                       |
+| `pnpm typecheck:test`          | 测试目录类型检查（`tsc --noEmit -p tsconfig.test.json`）                                                                                                                                        |
+| `pnpm build:single`            | 用 esbuild 打包 `src/index.ts` → `dist/worker.bundle.js`                                                                                                                                        |
+| `pnpm run deploy`              | CLI 部署（自动注入 `.env` 中的 `CLOUDFLARE_API_TOKEN`；`--env <name>` 可切换 `.env.<name>` + `wrangler.<name>.toml`）                                                                           |
+| `pnpm run deploy:prod`         | 生产部署：等价 `deploy --env prod`，需本机 `.env.prod` 与 `wrangler.prod.toml`（均不入库）                                                                                                      |
+| `pnpm run deploy --print-args` | 干跑：只回显 wrangler 会收到的参数后退出，不触网、不需要 Token；但与 `--env <name>` 同用时仍要求 `.env.<name>` 与 `wrangler.<name>.toml` 就位（`DEPLOY_ROOT` 生效时会先往 stderr 多打一行告警） |
+| `pnpm cf-typegen`              | 重新生成 `worker-configuration.d.ts`（gitignore）                                                                                                                                               |
 
 ### CLI 部署（`pnpm run deploy`）
 
@@ -373,26 +375,27 @@ pnpm run deploy
 
 ```text
 .
-├── README.md            # 本文档
-├── CLAUDE.md            # 给 AI 助手的代码事实摘要
-├── package.json         # 脚本：dev / test / typecheck / deploy / cf-typegen
-├── wrangler.toml       # Worker 配置，兼自助部署模板（compatibility_date 2026-05-20，keep_vars；database_id 为哨兵值）
-├── tsconfig.json        # TypeScript strict 配置
-├── vitest.config.ts     # @cloudflare/vitest-plugin 测试配置
+├── README.md                 # 本文档
+├── CLAUDE.md                 # 给 AI 助手的代码事实摘要
+├── package.json              # 脚本：dev / test / typecheck / deploy / cf-typegen
+├── wrangler.toml             # Worker 配置，兼自助部署模板（compatibility_date 2026-05-20，keep_vars；database_id 为哨兵值）
+├── tsconfig.json             # TypeScript strict 配置
+├── vitest.config.ts          # @cloudflare/vitest-plugin 测试配置（workerd 内跑）
+├── vitest.node.config.ts     # Node 环境用例配置（test/node/，跑 scripts/ 的子进程接线）
 ├── scripts/
-│   ├── build-single-file.mjs  # esbuild 打包 → dist/worker.bundle.js
-│   ├── load-deploy-env.mjs    # pnpm run deploy 前置：解析 --env、注入 .env / .env.<env> 并选择 wrangler 配置
-│   └── lib/deploy-argv.mjs    # 上面那份参数解析的纯函数实现（被 test/deploy-argv.test.ts 覆盖）
-├── docs/                # 文档（ip-fetch-unification-plan.md：IP 抓取统一化方案；agents/：协作约定）
+│   ├── build-single-file.mjs # esbuild 打包 → dist/worker.bundle.js
+│   ├── load-deploy-env.mjs   # pnpm run deploy 前置：解析 --env、注入 .env / .env.<env> 并选择 wrangler 配置（DEPLOY_ROOT 仅供测试指夹具目录，生效时会打告警）
+│   └── lib/deploy-argv.mjs   # 上面那份参数解析的纯函数实现（被 test/deploy-argv.test.ts 覆盖）
+├── docs/                     # 文档（ip-fetch-unification-plan.md：IP 抓取统一化方案；agents/：协作约定）
 ├── src/
-│   ├── index.ts         # Worker 入口（fetch + scheduled 组装，约 80 行）
-│   ├── db/              # client.ts（D1 封装）+ migrations.ts（幂等建表）+ migrations/*.sql（测试用）
-│   ├── routes/          # api.ts / ui.ts / github-proxy.ts
-│   ├── sync/            # domains.ts / ip-sources.ts / github.ts
-│   ├── ui/              # templates.js（UI 模板，纯 JS，tsc 不参与）
-│   └── util/            # auth / http / log / sse / fetch / cf / url-safety / http-error / run-with-log
-├── test/                # @cloudflare/vitest-plugin 测试（29 文件，workerd 内跑）
-└── img/                 # README 截图
+│   ├── index.ts              # Worker 入口（fetch + scheduled 组装，约 80 行）
+│   ├── db/                   # client.ts（D1 封装）+ migrations.ts（幂等建表）+ migrations/*.sql（测试用）
+│   ├── routes/               # api.ts / ui.ts / github-proxy.ts
+│   ├── sync/                 # domains.ts / ip-sources.ts / github.ts
+│   ├── ui/                   # templates.js（UI 模板，纯 JS，tsc 不参与）
+│   └── util/                 # auth / http / log / sse / fetch / cf / url-safety / http-error / run-with-log
+├── test/                     # workerd 内测试（33 文件）+ test/node/（Node 环境，跑部署脚本子进程）
+└── img/                      # README 截图
 ```
 
 ---

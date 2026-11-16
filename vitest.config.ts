@@ -19,7 +19,9 @@ export default defineProject({
         // 仓库树下的本地副本工作树会被 vitest 一起收集：.scratch/worktrees/*（已注册 worktree，
         // 实测多出 27 个 test 文件）与 .agents/worktrees/*（DSH 默认落点）。不排除会让同一批
         // 用例跑两遍（27 → 54 个文件），且旧副本的失败会冒充主仓失败。
-        exclude: [...configDefaults.exclude, "**/.agents/**", "**/.scratch/**"],
+        // test/node/** 属于 Node 环境项目（vitest.node.config.ts）：那里要用 node:child_process
+        // 启动脚本子进程，workerd 内没有这些内置模块，收集进来必定失败。
+        exclude: [...configDefaults.exclude, "**/.agents/**", "**/.scratch/**", "**/test/node/**"],
         globalSetup: ["./test/global-setup.ts"],
         setupFiles: ["./test/apply-migrations.ts"],
         // Q14 决策：单 worker 串行（避免 D1 SQLite 多进程锁）+ 文件级并行

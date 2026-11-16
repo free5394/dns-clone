@@ -29,9 +29,11 @@
         "lint": "oxlint",
         "format": "prettier --write --ignore-unknown .",
         "format:check": "prettier --check --ignore-unknown .",
-        "test": "vitest run",
+        "test": "vitest run && vitest run --config vitest.node.config.ts",
         "test:watch": "vitest",
-        "test:coverage": "vitest run --coverage"
+        "test:watch:node": "vitest --config vitest.node.config.ts",
+        "test:coverage": "vitest run --coverage && vitest run --config vitest.node.config.ts",
+        "test:node": "vitest run --config vitest.node.config.ts"
     },
     "devDependencies": {
         "@cloudflare/vitest-plugin": "1.6.0",
@@ -42,6 +44,6 @@
         "prettier": "~3.10.1",
         "typescript": "7.0.2",
         "vitest": "^5.1.0",
-        "wrangler": "4.162.0"
+        "wrangler": "4.158.0"
     }
 }
