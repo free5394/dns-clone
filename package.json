@@ -31,8 +31,7 @@
         "format:check": "prettier --check --ignore-unknown .",
         "test": "vitest run",
         "test:watch": "vitest",
-        "test:coverage": "vitest run --coverage",
-        "merge:pr": "node scripts/merge-pr.mjs"
+        "test:coverage": "vitest run --coverage"
     },
     "devDependencies": {
         "@cloudflare/vitest-plugin": "1.6.0",
