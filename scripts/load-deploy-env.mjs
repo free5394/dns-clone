@@ -1,19 +1,23 @@
-// load-deploy-env.cjs — pnpm deploy 前置：解析 --env，注入对应 .env 文件后 spawn wrangler deploy
+// load-deploy-env.mjs — pnpm deploy 前置：解析参数、注入对应 .env 文件，然后 spawn wrangler deploy
 // 零依赖、跨平台（Windows + POSIX），只服务 wrangler CLI 认证，与 Worker 运行时无关。
 //
-// --env 语义（本脚本拦截，不透传 wrangler）：
-//   pnpm run deploy                  → 旧行为：读 .env，wrangler 自动发现 wrangler.toml
-//   pnpm run deploy --env prod       → 读 .env.prod，并注入 --config wrangler.prod.toml
-//   pnpm run deploy:prod             → 等价于 deploy --env prod（package.json 内置 --env prod）
-//   --env 由本脚本剥离：wrangler 原生 --env 选的是配置文件内 [env.x] 段落，
-//   wrangler.<env>.toml 没有这种段落，透传必报错。其余参数原样透传给 wrangler deploy
-//   （如 --dry-run --outdir），供发布前验证。
+// 参数语义（--env 与 --print-args 由本脚本剥离，不透传 wrangler）：
+//   pnpm run deploy                   → 旧行为：读 .env，wrangler 自动发现 wrangler.toml
+//   pnpm run deploy --env prod        → 读 .env.prod，并注入 --config wrangler.prod.toml
+//   pnpm run deploy:prod              → 等价于 deploy --env prod（package.json 内置 --env prod）
+//   pnpm run deploy:prod --print-args → 干跑：回显 wrangler 会收到的参数后退出，不触网、不要 token
+//   --env 由本脚本剥离：wrangler 原生 --env 选的是配置文件内 [env.x] 段落，wrangler.<env>.toml
+//   没有这种段落，透传必报错。其余参数原样透传给 wrangler deploy（如 --dry-run --outdir）。
 
-const fs = require("node:fs");
-const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { parseDeployArgs } from "./lib/deploy-argv.mjs";
 
-const ROOT = path.join(__dirname, "..");
+const ROOT = path.join(import.meta.dirname, "..");
+const require = createRequire(import.meta.url);
+
 // 通过 require.resolve 拿 wrangler 包根，避免直接 spawn pnpm shim：
 //   1) Windows child_process 不补 .cmd/.ps1 后缀，spawnSync("wrangler") → ENOENT
 //   2) 即使显式指向 .cmd，spawnSync 在 Windows 下不带 shell:true 也不允许直接执行 .cmd（CVE-2024-27980）
@@ -22,56 +26,37 @@ const WRANGLER_ENTRY = require.resolve("wrangler", { paths: [ROOT] });
 const NODE_BIN = process.execPath; // 当前 node 解释器路径
 const KEY_TOKEN = "CLOUDFLARE_API_TOKEN";
 
-// 解析并剥离 --env <name> / --env=<name>，出现多次时取最后一次
-// （deploy:prod 内置的 --env prod 与显式重复传入结果一致）。
-function parseEnv(argv) {
-    let envName = null;
-    const rest = [];
-    for (let i = 0; i < argv.length; i++) {
-        const arg = argv[i];
-        // pnpm run <script> -- <args> 会把分隔符 "--" 原样放进 argv。不剥离的后果不是少传一个参数，
-        // 而是参数全失效：wrangler 遇到 "--" 即停止选项解析，其后的 --dry-run 退化成位置参数被忽略，
-        // 命令直接变成真实发布（2026-11-16 实测：pnpm run deploy:prod -- --dry-run 推上了生产）。
-        if (arg === "--") {
-            continue;
-        }
-        const eq = arg.match(/^--env=(.+)$/);
-        if (eq) {
-            envName = eq[1];
-            continue;
-        }
-        if (arg === "--env") {
-            const value = argv[++i];
-            if (value === undefined) {
-                console.error("❌ --env 缺少值（用法：--env prod 或 --env=prod）。");
-                process.exit(1);
-            }
-            envName = value;
-            continue;
-        }
-        rest.push(arg);
-    }
-    return { envName, wranglerArgs: rest };
+// 回显用：绝对路径折叠成仓库相对路径，含空格等特殊字符的项加 JSON 引号，避免被误读成两个参数
+function quoteArg(arg) {
+    const shown = path.isAbsolute(arg) ? path.relative(ROOT, arg) : arg;
+    return /^[A-Za-z0-9_@%+=:,./-]+$/.test(shown) ? shown : JSON.stringify(shown);
 }
 
 // 朴素的 .env 解析：KEY=VALUE，忽略空行与 # 注释，去掉两端成对引号
-// 不支持 export 前缀 / \\ 转义 / 多行值 —— 本项目 token 不含特殊字符，足够
+// 键名只认大写（与 .env.example 一致）：POSIX 的 process.env 精确匹配键名，
+// 若放行小写键会写进一个后续永远读不到的小写变量，登录态看起来「配置了却不生效」。
+// 不支持 export 前缀 / 反斜杠转义 / 多行值 —— 本项目 token 不含特殊字符，足够
 function loadDotenv(filePath) {
     if (!fs.existsSync(filePath)) return; // 无 .env 不报错，由 token 检查统一处理
     const lines = fs.readFileSync(filePath, "utf-8").split(/\r?\n/);
     for (const raw of lines) {
         const line = raw.trim();
         if (!line || line.startsWith("#")) continue;
-        const m = line.match(/^([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/i);
+        const m = line.match(/^([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/);
         if (!m) continue;
         const [, key, value] = m;
         const val = value.replace(/^['"]|['"]$/g, "");
-        // 不覆盖已存在的 shell 环境变量；保持"显式 > 文件"的优先级
+        // 不覆盖已存在的 shell 环境变量；保持「显式 > 文件」的优先级
         if (process.env[key] === undefined) process.env[key] = val;
     }
 }
 
-const { envName, wranglerArgs } = parseEnv(process.argv.slice(2));
+const parsed = parseDeployArgs(process.argv.slice(2));
+if (parsed.error) {
+    console.error(`❌ ${parsed.error}`);
+    process.exit(1);
+}
+const { envName, wranglerArgs, printArgs } = parsed;
 
 const envFile = envName ? `.env.${envName}` : ".env";
 const ENV_PATH = path.join(ROOT, envFile);
@@ -98,10 +83,12 @@ if (envName) {
 
 loadDotenv(ENV_PATH);
 
-// 解析干跑：只打印 wrangler 实际会收到的参数后退出，不触网、不需要有效 token。
-// 用来在发布前确认 --dry-run 这类参数真的透传到了 wrangler（见 parseEnv 里 "--" 剥离的注释）。
-if (process.env.DEPLOY_PRINT_ARGS === "1") {
-    console.log(JSON.stringify(["deploy", ...wranglerArgs]));
+// 干跑：只回显 wrangler 实际会收到的参数，不触网、不需要有效 token。
+// 必须显式传 --print-args 才触发（旧实现用环境变量 DEPLOY_PRINT_ARGS=1，遗留就会把真实发布
+// 静默变成 no-op）。横幅与内容都走 stderr，让「没发布」在日志里一眼可辨。
+if (printArgs) {
+    console.error("[干跑] 未执行发布。wrangler 将收到的参数：");
+    console.error(JSON.stringify(["deploy", ...wranglerArgs]));
     process.exit(0);
 }
 
@@ -117,7 +104,7 @@ if (!process.env[KEY_TOKEN]) {
 
 // 回显实际命令：2026-11-16 的误发布事故里，多出来的 "--" 只体现在这一行参数上，
 // 打出来才能当场看出 --dry-run 是否真的在参数里。
-console.log(`→ 实际执行：wrangler ${["deploy", ...wranglerArgs].join(" ")}`);
+console.log(`→ 实际执行：wrangler ${["deploy", ...wranglerArgs].map(quoteArg).join(" ")}`);
 
 // 不传 shell:true：避免 PowerShell / Git Bash 对 token 中的 & $ 等做 shell 转义
 const result = spawnSync(NODE_BIN, [WRANGLER_ENTRY, "deploy", ...wranglerArgs], {
@@ -126,15 +113,24 @@ const result = spawnSync(NODE_BIN, [WRANGLER_ENTRY, "deploy", ...wranglerArgs], 
 });
 
 // spawnSync 在二进制不存在时 status=null、error.code=ENOENT，stdio:'inherit' 不会把这些打到终端
-// 主动打印出来，避免"ELIFECYCLE Command failed with exit code 1"但看不到任何错信息的盲区
+// 主动打印出来，避免「ELIFECYCLE Command failed with exit code 1」但看不到任何错信息的盲区
 if (result.error) {
     console.error(`❌ 无法执行 ${NODE_BIN} ${WRANGLER_ENTRY}：${result.error.message}`);
     if (result.error.code === "ENOENT") {
         console.error(
-            "   请先运行 pnpm install 生成 wrangler 安装（scripts/load-deploy-env.cjs 依赖 require.resolve('wrangler')）。"
+            "   请先运行 pnpm install 生成 wrangler 安装（scripts/load-deploy-env.mjs 依赖 require.resolve('wrangler')）。"
         );
     }
     process.exit(1);
+}
+
+// 被信号中断（如 Ctrl-C）时 status 为 null，统一 exit(1) 会把「用户主动中止」记成失败。
+if (result.signal) {
+    try {
+        process.kill(process.pid, result.signal);
+    } catch {
+        process.exit(1);
+    }
 }
 
 process.exit(result.status ?? 1);

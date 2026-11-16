@@ -4,15 +4,15 @@
     "type": "module",
     "packageManager": "pnpm@12.11.2",
     "engines": {
-        "node": ">=22.0.0"
+        "node": ">=22.12.0"
     },
     "volta": {
         "node": "24.0.0"
     },
     "scripts": {
         "dev": "wrangler dev",
-        "deploy": "node scripts/load-deploy-env.cjs",
-        "deploy:prod": "node scripts/load-deploy-env.cjs --env prod",
+        "deploy": "node scripts/load-deploy-env.mjs",
+        "deploy:prod": "node scripts/load-deploy-env.mjs --env prod",
         "build:single": "node scripts/build-single-file.mjs",
         "reset:local-admin": "node scripts/reset-local-admin.mjs",
         "cf-typegen": "wrangler types",
