@@ -64,12 +64,9 @@ describe("部署脚本接线（Node 环境）", () => {
         expect(result.output).toContain("[干跑]");
         const args = parsePrintedArgs(result.output);
         expect(args[0]).toBe("deploy");
-        // 顺序提示：--config 必须排在 deploy 之后、透传参数之中
-        expect(args).toContain("--config");
-        expect(args).toContain(path.join(fixtureRoot, "wrangler.fixture.toml"));
-        // --env 与其值、--print-args 都由脚本剥离，透传出去就会打乱 wrangler 的参数解析
-        expect(args).not.toContain("--env");
-        expect(args).not.toContain("--print-args");
+        // 精确比对整份参数数组：既证明 --config 与配置路径就位，也证明 --env 的「值」没被当位置参数漏出
+        // （纯函数层跳过 --env 值的那一步是回归面，只断言 flag 被剥离盖不住它）
+        expect(args).toEqual(["deploy", "--config", path.join(fixtureRoot, "wrangler.fixture.toml")]);
         // 干跑不能真起 wrangler：启动横幅与真实构建输出都是「起过」的证据
         expect(result.output).not.toContain("wrangler 4.");
         expect(result.output).not.toContain("Total Upload");
