@@ -318,22 +318,22 @@ pnpm reset:local-admin --password 'your-new-password'
 
 ### 常用脚本
 
-| 命令                           | 作用                                                                                                                  |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `pnpm dev`                     | 启动本地 workerd 调试环境（默认 8787 端口）                                                                           |
-| `pnpm reset:local-admin`       | 重置本地库管理员密码（默认删行回初始化页，`--password` 直接写入；写前备份）                                           |
-| `pnpm test`                    | 运行 `@cloudflare/vitest-plugin` 测试套件（workerd 内执行）                                                           |
-| `pnpm test:coverage`           | 运行测试并生成覆盖率报告（istanbul 插桩）                                                                             |
-| `pnpm check`                   | 静态门禁：typecheck、测试类型检查、语言、UTF-8、lint、格式（pre-commit 跑的这条）                                     |
-| `pnpm verify`                  | `pnpm check` + 全量测试，想一次跑完时用                                                                               |
-| `pnpm check:dashboard`         | 渲染仪表盘并解析注入的客户端脚本（Node 侧语法闸门，不进 CI）                                                          |
-| `pnpm typecheck`               | TypeScript 严格模式检查（`tsc --noEmit`）                                                                             |
-| `pnpm typecheck:test`          | 测试目录类型检查（`tsc --noEmit -p tsconfig.test.json`）                                                              |
-| `pnpm build:single`            | 用 esbuild 打包 `src/index.ts` → `dist/worker.bundle.js`                                                              |
-| `pnpm run deploy`              | CLI 部署（自动注入 `.env` 中的 `CLOUDFLARE_API_TOKEN`；`--env <name>` 可切换 `.env.<name>` + `wrangler.<name>.toml`） |
-| `pnpm run deploy:prod`         | 生产部署：等价 `deploy --env prod`，需本机 `.env.prod` 与 `wrangler.prod.toml`（均不入库）                            |
-| `pnpm run deploy --print-args` | 干跑：只回显 wrangler 会收到的参数后退出，不触网、不需要 Token                                                        |
-| `pnpm cf-typegen`              | 重新生成 `worker-configuration.d.ts`（gitignore）                                                                     |
+| 命令                           | 作用                                                                                                                                          |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm dev`                     | 启动本地 workerd 调试环境（默认 8787 端口）                                                                                                   |
+| `pnpm reset:local-admin`       | 重置本地库管理员密码（默认删行回初始化页，`--password` 直接写入；写前备份）                                                                   |
+| `pnpm test`                    | 运行 `@cloudflare/vitest-plugin` 测试套件（workerd 内执行）                                                                                   |
+| `pnpm test:coverage`           | 运行测试并生成覆盖率报告（istanbul 插桩）                                                                                                     |
+| `pnpm check`                   | 静态门禁：typecheck、测试类型检查、语言、UTF-8、lint、格式（pre-commit 跑的这条）                                                             |
+| `pnpm verify`                  | `pnpm check` + 全量测试，想一次跑完时用                                                                                                       |
+| `pnpm check:dashboard`         | 渲染仪表盘并解析注入的客户端脚本（Node 侧语法闸门，不进 CI）                                                                                  |
+| `pnpm typecheck`               | TypeScript 严格模式检查（`tsc --noEmit`）                                                                                                     |
+| `pnpm typecheck:test`          | 测试目录类型检查（`tsc --noEmit -p tsconfig.test.json`）                                                                                      |
+| `pnpm build:single`            | 用 esbuild 打包 `src/index.ts` → `dist/worker.bundle.js`                                                                                      |
+| `pnpm run deploy`              | CLI 部署（自动注入 `.env` 中的 `CLOUDFLARE_API_TOKEN`；`--env <name>` 可切换 `.env.<name>` + `wrangler.<name>.toml`）                         |
+| `pnpm run deploy:prod`         | 生产部署：等价 `deploy --env prod`，需本机 `.env.prod` 与 `wrangler.prod.toml`（均不入库）                                                    |
+| `pnpm run deploy --print-args` | 干跑：只回显 wrangler 会收到的参数后退出，不触网、不需要 Token；但与 `--env <name>` 同用时仍要求 `.env.<name>` 与 `wrangler.<name>.toml` 就位 |
+| `pnpm cf-typegen`              | 重新生成 `worker-configuration.d.ts`（gitignore）                                                                                             |
 
 ### CLI 部署（`pnpm run deploy`）
 

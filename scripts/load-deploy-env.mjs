@@ -28,7 +28,9 @@ const KEY_TOKEN = "CLOUDFLARE_API_TOKEN";
 
 // 回显用：绝对路径折叠成仓库相对路径，含空格等特殊字符的项加 JSON 引号，避免被误读成两个参数
 function quoteArg(arg) {
-    const shown = path.isAbsolute(arg) ? path.relative(ROOT, arg) : arg;
+    // 只折叠仓库内路径：仓库外的 --outdir（如 C:\tmp\x）折成 ../../tmp/x 会误导事故复盘
+    const relative = path.relative(ROOT, arg);
+    const shown = path.isAbsolute(arg) && !relative.startsWith("..") ? relative : arg;
     return /^[A-Za-z0-9_@%+=:,./-]+$/.test(shown) ? shown : JSON.stringify(shown);
 }
 
@@ -57,6 +59,11 @@ if (parsed.error) {
     process.exit(1);
 }
 const { envName, wranglerArgs, printArgs } = parsed;
+
+// 不足以中止但会让部署目标偏离预期的情况（如 --env 重复），必须留痕
+for (const warning of parsed.warnings) {
+    console.error(`⚠️  ${warning}`);
+}
 
 const envFile = envName ? `.env.${envName}` : ".env";
 const ENV_PATH = path.join(ROOT, envFile);
