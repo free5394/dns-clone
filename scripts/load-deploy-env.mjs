@@ -15,14 +15,17 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { parseDeployArgs } from "./lib/deploy-argv.mjs";
 
-const ROOT = path.join(import.meta.dirname, "..");
+// ROOT 默认是仓库根；DEPLOY_ROOT 只服务于自动化测试，把夹具目录当根，避免用例往仓库根写假的
+// .env.<name> / wrangler.<name>.toml。wrangler 入口始终从脚本所在仓库解析，跟随夹具目录会解析失败。
+const SCRIPT_ROOT = path.join(import.meta.dirname, "..");
+const ROOT = process.env.DEPLOY_ROOT ? path.resolve(process.env.DEPLOY_ROOT) : SCRIPT_ROOT;
 const require = createRequire(import.meta.url);
 
 // 通过 require.resolve 拿 wrangler 包根，避免直接 spawn pnpm shim：
 //   1) Windows child_process 不补 .cmd/.ps1 后缀，spawnSync("wrangler") → ENOENT
 //   2) 即使显式指向 .cmd，spawnSync 在 Windows 下不带 shell:true 也不允许直接执行 .cmd（CVE-2024-27980）
 //   3) 改用 node 调用 wrangler 的 JS 入口，零 shim、零 shell 介入，token 中的 & $ 等不会被 shell 转义
-const WRANGLER_ENTRY = require.resolve("wrangler", { paths: [ROOT] });
+const WRANGLER_ENTRY = require.resolve("wrangler", { paths: [SCRIPT_ROOT] });
 const NODE_BIN = process.execPath; // 当前 node 解释器路径
 const KEY_TOKEN = "CLOUDFLARE_API_TOKEN";
 

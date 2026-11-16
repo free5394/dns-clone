@@ -1,0 +1,106 @@
+// test/node/deploy-script.test.ts — Node 环境用例：覆盖 scripts/load-deploy-env.mjs 的进程级接线
+// 被测对象是子进程行为：参数剥接、凭据与配置文件的存在性检查、干跑退出、token 门控顺序。
+// 夹具走 DEPLOY_ROOT 指向临时目录，绝不读写仓库根的 .env.prod / wrangler.prod.toml。
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+const REPO_ROOT = path.join(import.meta.dirname, "..", "..");
+const SCRIPT_PATH = path.join(REPO_ROOT, "scripts", "load-deploy-env.mjs");
+
+let fixtureRoot = "";
+
+function writeFixtureFile(name: string, content: string): void {
+    fs.writeFileSync(path.join(fixtureRoot, name), content, "utf-8");
+}
+
+interface RunResult {
+    status: number | null;
+    output: string;
+}
+
+/** DEPLOY_ROOT 把脚本眼里的仓库根指向夹具目录；子进程环境里剥掉真实 token */
+function runScript(args: string[], options: { withToken?: boolean } = {}): RunResult {
+    const env: NodeJS.ProcessEnv = { ...process.env, DEPLOY_ROOT: fixtureRoot };
+    delete env.CLOUDFLARE_API_TOKEN;
+    if (options.withToken) env.CLOUDFLARE_API_TOKEN = "fixture-token";
+    const result = spawnSync(process.execPath, [SCRIPT_PATH, ...args], {
+        cwd: fixtureRoot,
+        env,
+        encoding: "utf-8",
+        timeout: 20000,
+    });
+    return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+}
+
+/** 从干跑输出里取回 wrangler 实际会收到的参数数组 */
+function parsePrintedArgs(output: string): string[] {
+    const line = output.split(/\r?\n/).find((row) => row.trim().startsWith('["deploy"') && row.trim().endsWith("]"));
+    if (!line) throw new Error(`干跑输出里没有参数行：${output}`);
+    return JSON.parse(line) as string[];
+}
+
+beforeAll(() => {
+    fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "deploy-env-fixture-"));
+    writeFixtureFile(".env.fixture", "CLOUDFLARE_API_TOKEN=fixture-token\n");
+    writeFixtureFile(".env.notoken", "# 故意不含 token：用于验证干跑先于 token 检查\n");
+    // 配置文件的存在性检查在 token 检查之前，所以 token 用例也要把这个文件摆好
+    writeFixtureFile("wrangler.notoken.toml", 'name = "notoken"\n');
+    writeFixtureFile("wrangler.fixture.toml", 'name = "fixture"\nmain = "src/index.ts"\n');
+});
+
+afterAll(() => {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+});
+
+describe("部署脚本接线（Node 环境）", () => {
+    it("干跑只回显参数，不启动 wrangler", () => {
+        const result = runScript(["--env", "fixture", "--print-args"]);
+        expect(result.status).toBe(0);
+        expect(result.output).toContain("[干跑]");
+        const args = parsePrintedArgs(result.output);
+        expect(args[0]).toBe("deploy");
+        expect(args).toContain("--config");
+        expect(args).toContain(path.join(fixtureRoot, "wrangler.fixture.toml"));
+        // --env 与其值、--print-args 都由脚本剥离，透传出去就会打乱 wrangler 的参数解析
+        expect(args).not.toContain("--env");
+        expect(args).not.toContain("fixture");
+        expect(args).not.toContain("--print-args");
+        expect(result.output).not.toContain("wrangler 4.");
+    });
+
+    it("缺少凭据文件时按文件名报错退出", () => {
+        const result = runScript(["--env", "absent", "--print-args"]);
+        expect(result.status).toBe(1);
+        expect(result.output).toContain("未找到 .env.absent");
+    });
+
+    it("缺少配置文件时单独报错，不回退默认配置", () => {
+        writeFixtureFile(".env.noconfig", "CLOUDFLARE_API_TOKEN=fixture-token\n");
+        const result = runScript(["--env", "noconfig", "--print-args"]);
+        expect(result.status).toBe(1);
+        expect(result.output).toContain("未找到配置文件 wrangler.noconfig.toml");
+    });
+
+    it("干跑先于 token 检查：无 token 也返回 0", () => {
+        const result = runScript(["--env", "notoken", "--print-args"]);
+        expect(result.status).toBe(0);
+        expect(result.output).toContain("[干跑]");
+    });
+
+    it("无 token 且非干跑时退出 1，且不启动 wrangler", () => {
+        const result = runScript(["--env", "notoken"]);
+        expect(result.status).toBe(1);
+        expect(result.output).toContain("未检测到 CLOUDFLARE_API_TOKEN");
+        expect(result.output).not.toContain("wrangler 4.");
+    });
+
+    it("重复 --env 走 stderr 告警但以最后一次为准、不阻断", () => {
+        const result = runScript(["--env", "absent", "--env", "fixture", "--print-args"]);
+        expect(result.status).toBe(0);
+        expect(result.output).toContain("重复出现");
+        expect(parsePrintedArgs(result.output)).toContain(path.join(fixtureRoot, "wrangler.fixture.toml"));
+    });
+});

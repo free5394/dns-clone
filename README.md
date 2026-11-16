@@ -322,8 +322,9 @@ pnpm reset:local-admin --password 'your-new-password'
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `pnpm dev`                     | 启动本地 workerd 调试环境（默认 8787 端口）                                                                                                   |
 | `pnpm reset:local-admin`       | 重置本地库管理员密码（默认删行回初始化页，`--password` 直接写入；写前备份）                                                                   |
-| `pnpm test`                    | 运行 `@cloudflare/vitest-plugin` 测试套件（workerd 内执行）                                                                                   |
+| `pnpm test`                    | 两个项目依次跑：workerd 内测试套件 + `test/node/` 的 Node 环境用例                                                                            |
 | `pnpm test:coverage`           | 运行测试并生成覆盖率报告（istanbul 插桩）                                                                                                     |
+| `pnpm test:node`               | 只跑 Node 环境用例：`scripts/` 下部署脚本的进程级接线（参数剥接、退出码）                                                                     |
 | `pnpm check`                   | 静态门禁：typecheck、测试类型检查、语言、UTF-8、lint、格式（pre-commit 跑的这条）                                                             |
 | `pnpm verify`                  | `pnpm check` + 全量测试，想一次跑完时用                                                                                                       |
 | `pnpm check:dashboard`         | 渲染仪表盘并解析注入的客户端脚本（Node 侧语法闸门，不进 CI）                                                                                  |
@@ -378,10 +379,11 @@ pnpm run deploy
 ├── package.json         # 脚本：dev / test / typecheck / deploy / cf-typegen
 ├── wrangler.toml       # Worker 配置，兼自助部署模板（compatibility_date 2026-05-20，keep_vars；database_id 为哨兵值）
 ├── tsconfig.json        # TypeScript strict 配置
-├── vitest.config.ts     # @cloudflare/vitest-plugin 测试配置
+├── vitest.config.ts     # @cloudflare/vitest-plugin 测试配置（workerd 内跑）
+├── vitest.node.config.ts # Node 环境用例配置（test/node/，跑 scripts/ 的子进程接线）
 ├── scripts/
 │   ├── build-single-file.mjs  # esbuild 打包 → dist/worker.bundle.js
-│   ├── load-deploy-env.mjs    # pnpm run deploy 前置：解析 --env、注入 .env / .env.<env> 并选择 wrangler 配置
+│   ├── load-deploy-env.mjs    # pnpm run deploy 前置：解析 --env、注入 .env / .env.<env> 并选择 wrangler 配置（DEPLOY_ROOT 仅供测试指夹具目录）
 │   └── lib/deploy-argv.mjs    # 上面那份参数解析的纯函数实现（被 test/deploy-argv.test.ts 覆盖）
 ├── docs/                # 文档（ip-fetch-unification-plan.md：IP 抓取统一化方案；agents/：协作约定）
 ├── src/
@@ -391,7 +393,7 @@ pnpm run deploy
 │   ├── sync/            # domains.ts / ip-sources.ts / github.ts
 │   ├── ui/              # templates.js（UI 模板，纯 JS，tsc 不参与）
 │   └── util/            # auth / http / log / sse / fetch / cf / url-safety / http-error / run-with-log
-├── test/                # @cloudflare/vitest-plugin 测试（29 文件，workerd 内跑）
+├── test/                # workerd 内测试（33 文件）+ test/node/（Node 环境，跑部署脚本子进程）
 └── img/                 # README 截图
 ```
 
