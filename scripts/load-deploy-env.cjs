@@ -29,6 +29,12 @@ function parseEnv(argv) {
     const rest = [];
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
+        // pnpm run <script> -- <args> 会把分隔符 "--" 原样放进 argv。不剥离的后果不是少传一个参数，
+        // 而是参数全失效：wrangler 遇到 "--" 即停止选项解析，其后的 --dry-run 退化成位置参数被忽略，
+        // 命令直接变成真实发布（2026-11-16 实测：pnpm run deploy:prod -- --dry-run 推上了生产）。
+        if (arg === "--") {
+            continue;
+        }
         const eq = arg.match(/^--env=(.+)$/);
         if (eq) {
             envName = eq[1];
@@ -92,6 +98,13 @@ if (envName) {
 
 loadDotenv(ENV_PATH);
 
+// 解析干跑：只打印 wrangler 实际会收到的参数后退出，不触网、不需要有效 token。
+// 用来在发布前确认 --dry-run 这类参数真的透传到了 wrangler（见 parseEnv 里 "--" 剥离的注释）。
+if (process.env.DEPLOY_PRINT_ARGS === "1") {
+    console.log(JSON.stringify(["deploy", ...wranglerArgs]));
+    process.exit(0);
+}
+
 if (!process.env[KEY_TOKEN]) {
     console.error(
         `❌ 未检测到 CLOUDFLARE_API_TOKEN。\n` +
@@ -101,6 +114,10 @@ if (!process.env[KEY_TOKEN]) {
     );
     process.exit(1);
 }
+
+// 回显实际命令：2026-11-16 的误发布事故里，多出来的 "--" 只体现在这一行参数上，
+// 打出来才能当场看出 --dry-run 是否真的在参数里。
+console.log(`→ 实际执行：wrangler ${["deploy", ...wranglerArgs].join(" ")}`);
 
 // 不传 shell:true：避免 PowerShell / Git Bash 对 token 中的 & $ 等做 shell 转义
 const result = spawnSync(NODE_BIN, [WRANGLER_ENTRY, "deploy", ...wranglerArgs], {
