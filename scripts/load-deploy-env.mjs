@@ -19,6 +19,11 @@ import { parseDeployArgs } from "./lib/deploy-argv.mjs";
 // .env.<name> / wrangler.<name>.toml。wrangler 入口始终从脚本所在仓库解析，跟随夹具目录会解析失败。
 const SCRIPT_ROOT = path.join(import.meta.dirname, "..");
 const ROOT = process.env.DEPLOY_ROOT ? path.resolve(process.env.DEPLOY_ROOT) : SCRIPT_ROOT;
+// DEPLOY_ROOT 同时改写 .env.<env> 与 wrangler.<env>.toml 的读取目录：残留的该变量会让发布静默
+// 读另一份副本的凭据与配置、并把 --config 指过去，所以生效时必须留痕，不能悄悄换根。
+if (process.env.DEPLOY_ROOT) {
+    console.error(`⚠️  检测到 DEPLOY_ROOT，配置与凭据根改为：${ROOT}（仅测试钩子，正常发布请清除该变量）`);
+}
 const require = createRequire(import.meta.url);
 
 // 通过 require.resolve 拿 wrangler 包根，避免直接 spawn pnpm shim：

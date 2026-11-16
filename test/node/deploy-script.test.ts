@@ -25,6 +25,8 @@ interface RunResult {
 function runScript(args: string[], options: { withToken?: boolean } = {}): RunResult {
     const env: NodeJS.ProcessEnv = { ...process.env, DEPLOY_ROOT: fixtureRoot };
     delete env.CLOUDFLARE_API_TOKEN;
+    // wrangler 的启动横幅可被 WRANGLER_HIDE_BANNER 关掉，留着会让「是否真起过 wrangler」的断言恒真
+    delete env.WRANGLER_HIDE_BANNER;
     if (options.withToken) env.CLOUDFLARE_API_TOKEN = "fixture-token";
     const result = spawnSync(process.execPath, [SCRIPT_PATH, ...args], {
         cwd: fixtureRoot,
@@ -62,13 +64,25 @@ describe("部署脚本接线（Node 环境）", () => {
         expect(result.output).toContain("[干跑]");
         const args = parsePrintedArgs(result.output);
         expect(args[0]).toBe("deploy");
+        // 顺序提示：--config 必须排在 deploy 之后、透传参数之中
         expect(args).toContain("--config");
         expect(args).toContain(path.join(fixtureRoot, "wrangler.fixture.toml"));
         // --env 与其值、--print-args 都由脚本剥离，透传出去就会打乱 wrangler 的参数解析
         expect(args).not.toContain("--env");
-        expect(args).not.toContain("fixture");
         expect(args).not.toContain("--print-args");
+        // 干跑不能真起 wrangler：启动横幅与真实构建输出都是「起过」的证据
         expect(result.output).not.toContain("wrangler 4.");
+        expect(result.output).not.toContain("Total Upload");
+    });
+
+    // 2026-11-16 误发布事故的原始形状：pnpm 把裸分隔符原样交给脚本，wrangler 随后停止解析选项，
+    // --dry-run 退化成位置参数被忽略。这条用例把事故形态钉在进程级，避免只靠纯函数用例兜底。
+    it("裸分隔符被剥离，其后的 --dry-run 仍到达 wrangler", () => {
+        const result = runScript(["--env", "fixture", "--print-args", "--", "--dry-run"]);
+        expect(result.status).toBe(0);
+        const args = parsePrintedArgs(result.output);
+        expect(args).toContain("--dry-run");
+        expect(args).not.toContain("--");
     });
 
     it("缺少凭据文件时按文件名报错退出", () => {
