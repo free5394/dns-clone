@@ -36,14 +36,14 @@
         "test:node": "vitest run --config vitest.node.config.ts"
     },
     "devDependencies": {
-        "@cloudflare/vitest-plugin": "1.6.0",
-        "@types/node": "^24.19.2",
-        "@vitest/coverage-istanbul": "5.1.0",
+        "@cloudflare/vitest-plugin": "1.9.0",
+        "@types/node": "^26.6.6",
+        "@vitest/coverage-istanbul": "5.1.1",
         "esbuild": "^0.28.2",
-        "oxlint": "~1.93.0",
+        "oxlint": "~1.95.0",
         "prettier": "~3.10.1",
         "typescript": "7.0.2",
-        "vitest": "^5.1.0",
-        "wrangler": "4.158.0"
+        "vitest": "^5.1.1",
+        "wrangler": "4.166.0"
     }
 }
